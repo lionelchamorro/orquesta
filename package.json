@@ -1,0 +1,33 @@
+{
+  "name": "orquesta",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/daemon/index.ts",
+    "dev:all": "bash scripts/dev.sh",
+    "ui": "bunx vite",
+    "cli": "bun run src/cli/orq.ts",
+    "test": "bun test",
+    "build": "bun build src/daemon/index.ts src/ui/main.tsx --outdir dist"
+  },
+  "dependencies": {
+    "@xterm/addon-clipboard": "^0.1.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0"
+  },
+  "engines": {
+    "bun": ">=1.3.5"
+  }
+}

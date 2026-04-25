@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "jsx": "react-jsx",
+    "types": [
+      "bun-types"
+    ],
+    "allowJs": false,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "baseUrl": "."
+  },
+  "include": [
+    "src/**/*",
+    "demo/WebTTY.tsx",
+    "vite.config.ts"
+  ]
+}
