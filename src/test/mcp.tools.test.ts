@@ -8,6 +8,16 @@ import { PlanStore } from "../core/plan-store";
 import { AskRouter } from "../daemon/ask-router";
 import { createToolHandlers } from "../mcp/tools";
 
+const savePlannerAgent = (store: PlanStore, id = "agent-1") =>
+  store.saveAgent({
+    id,
+    role: "planner",
+    cli: "claude",
+    model: "m",
+    status: "live",
+    session_cwd: ".",
+  });
+
 test("emit_tasks creates tasks", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
@@ -18,6 +28,7 @@ test("emit_tasks creates tasks", async () => {
   const bus = new Bus();
   const pool = new AgentPool(root, store, bus);
   const askRouter = new AskRouter(store, pool, bus);
+  await savePlannerAgent(store);
   const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
   await tools.emit_tasks("agent-1", { tasks: [{ title: "A", depends_on: [] }] });
   expect((await store.loadTasks()).length).toBe(1);
@@ -35,6 +46,7 @@ test("emit_tasks replaces previous iteration tasks by default", async () => {
   const bus = new Bus();
   const pool = new AgentPool(root, store, bus);
   const askRouter = new AskRouter(store, pool, bus);
+  await savePlannerAgent(store);
   const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
   await tools.emit_tasks("agent-1", { tasks: [{ title: "A", depends_on: [] }, { title: "B", depends_on: [] }] });
   expect((await store.loadTasks()).length).toBe(2);
@@ -56,10 +68,45 @@ test("emit_tasks with replace:false appends", async () => {
   const bus = new Bus();
   const pool = new AgentPool(root, store, bus);
   const askRouter = new AskRouter(store, pool, bus);
+  await savePlannerAgent(store);
   const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
   await tools.emit_tasks("agent-1", { tasks: [{ title: "A", depends_on: [] }] });
   await tools.emit_tasks("agent-1", { replace: false, tasks: [{ title: "B", depends_on: [] }] });
   expect((await store.loadTasks()).length).toBe(2);
+  askRouter.close();
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("emit_tasks rejects unauthorized roles and validator replacement", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-authz-"));
+  mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
+  await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "running", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
+  }));
+  const store = new PlanStore(root);
+  const bus = new Bus();
+  const pool = new AgentPool(root, store, bus);
+  const askRouter = new AskRouter(store, pool, bus);
+  await store.saveAgent({
+    id: "agent-coder",
+    role: "coder",
+    cli: "claude",
+    model: "m",
+    status: "live",
+    session_cwd: ".",
+  });
+  await store.saveAgent({
+    id: "agent-qa",
+    role: "qa",
+    cli: "claude",
+    model: "m",
+    status: "live",
+    session_cwd: ".",
+  });
+  const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
+
+  await expect(tools.emit_tasks("agent-coder", { tasks: [{ title: "A" }] })).rejects.toThrow("not allowed");
+  await expect(tools.emit_tasks("agent-qa", { replace: true, tasks: [{ title: "A" }] })).rejects.toThrow("replace is only allowed");
   askRouter.close();
   rmSync(root, { recursive: true, force: true });
 });

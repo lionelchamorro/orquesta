@@ -8,7 +8,11 @@
     "ui": "bunx vite",
     "cli": "bun run src/cli/orq.ts",
     "test": "bun test",
-    "build": "bun build src/daemon/index.ts src/ui/main.tsx --outdir dist"
+    "typecheck": "bunx tsc --noEmit",
+    "build:daemon": "bun build src/daemon/index.ts --target bun --outdir dist/daemon",
+    "build:ui": "bunx vite build --outDir ../../dist/ui --emptyOutDir",
+    "build": "bun run build:daemon && bun run build:ui",
+    "check": "bun run typecheck && bun test && bun run build"
   },
   "dependencies": {
     "@xterm/addon-clipboard": "^0.1.0",

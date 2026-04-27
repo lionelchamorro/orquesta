@@ -44,6 +44,37 @@ const makeHandler = async (plannerService: PlannerService | undefined, planStatu
   return { root, handler };
 };
 
+test("protected mutations require the daemon session token when configured", async () => {
+  const { service, calls } = makeFakePlannerService();
+  const { root, handler } = await makeHandler(service, "done");
+  const protectedHandler = createHttpHandler({
+    root,
+    store: new PlanStore(root),
+    pool: { write() {}, kill() {} } as never,
+    bus: new Bus(),
+    askRouter: { answer: async () => {} } as never,
+    mcpHandler: async () => new Response("ok"),
+    plannerService: service,
+    sessionToken: "secret-token",
+  });
+
+  const unauthorized = await protectedHandler(new Request("http://localhost/api/plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "build a hello CLI" }),
+  }));
+  const authorized = await protectedHandler(new Request("http://localhost/api/plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Orquesta-Token": "secret-token" },
+    body: JSON.stringify({ prompt: "build a hello CLI" }),
+  }));
+
+  expect(unauthorized.status).toBe(401);
+  expect(authorized.status).toBe(200);
+  expect(calls).toEqual([{ method: "startPlanner", prompt: "build a hello CLI" }]);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("POST /api/plan starts planner and returns agentId", async () => {
   const { service, calls } = makeFakePlannerService();
   const { root, handler } = await makeHandler(service, "done");

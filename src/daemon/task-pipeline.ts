@@ -1,6 +1,6 @@
 import type { AgentPool } from "../agents/pool";
 import type { Bus } from "../bus/bus";
-import { createTaskWorktree, ensureRepoReady, safeGitOutput } from "../core/git";
+import { createTaskWorktree, ensureRepoReady, hasUncommittedChanges, safeGitOutput } from "../core/git";
 import { nextSubtaskId } from "../core/ids";
 import type { PlanStore } from "../core/plan-store";
 import type { Config, Role, Subtask, SubtaskType, Task } from "../core/types";
@@ -117,17 +117,14 @@ export class TaskPipeline {
       command: member.command,
       sessionDir,
     });
-    await this.store.saveSubtask({
-      ...subtask,
-      status: "running",
+    await this.store.transitionSubtask(task.id, subtask.id, "running", {
       started_at: new Date().toISOString(),
       agentId: agent.id,
     });
-    await this.store.saveTask({ ...task, status: "running", started_at: task.started_at ?? new Date().toISOString(), attempt_count: task.attempt_count + 1 });
     const outcome = await waitForSubtask(this.bus, this.pool, agent.id, subtask.id);
     const result = await this.store.loadSubtask(task.id, subtask.id);
     if (outcome === "failed" || result.status === "failed") {
-      await this.store.saveTask({ ...task, status: "failed", updated_at: new Date().toISOString() });
+      await this.store.transitionTask(task.id, "failed");
       throw new Error(`Subtask ${subtask.id} failed`);
     }
     return result;
@@ -137,8 +134,15 @@ export class TaskPipeline {
     let current = await this.store.loadTask(task.id);
     let closureReason: NonNullable<Task["closure_reason"]> = "critic_ok";
     try {
+      current = await this.store.incrementTaskAttempt(current.id);
+      if (current.status !== "running") {
+        current = await this.store.transitionTask(current.id, "running", {
+          started_at: current.started_at ?? new Date().toISOString(),
+        });
+      }
       if (this.config.git?.enabled && ensureRepoReady(this.store.root, this.config.git.baseBranch)) {
-        const workspace = createTaskWorktree(this.store.root, task.id, this.config.git.baseBranch);
+        const plan = await this.store.loadPlan();
+        const workspace = createTaskWorktree(this.store.root, task.id, this.config.git.baseBranch, plan.runId);
         current = {
           ...current,
           worktree_path: workspace.worktreePath,
@@ -151,6 +155,18 @@ export class TaskPipeline {
       const coderPrompt = buildScopedPrompt(current, "coder", "Implement the task as described above. Stay strictly within the task's stated scope.");
       const code = await this.runSingle(current, "code", "coder", coderPrompt);
       current = await this.store.loadTask(task.id);
+      const coderProducedChanges = current.worktree_path && current.base_branch
+        ? safeGitOutput(current.worktree_path, ["diff", "--name-only", `${current.base_branch}..HEAD`]).trim().length > 0
+          || hasUncommittedChanges(current.worktree_path)
+        : true;
+      if (!coderProducedChanges) {
+        closureReason = "no_changes";
+        this.bus.publish({
+          tags: [task.id, `iter-${task.iteration}`],
+          payload: { type: "activity", fromAgent: "system", message: `Coder produced no diff vs ${current.base_branch}; skipping tester/critic.` },
+        });
+        return;
+      }
       const testerPrompt = buildScopedPrompt(current, "tester", "Run any existing tests that exercise the files in the diff above. Do NOT create new test files in this subtask — writing new tests is the job of a dedicated test task in this run. If no tests exist for the changed files, report that fact in `report_complete` (do not invent tests).");
       let test = await this.runSingle(current, "test", "tester", testerPrompt, [code.id]);
       current = await this.store.loadTask(task.id);

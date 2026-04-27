@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs";
+import { detectCycle } from "../core/dag";
 import { nextSubtaskId, nextTaskId } from "../core/ids";
 import type { Bus } from "../bus/bus";
 import type { PlanStore } from "../core/plan-store";
@@ -52,7 +53,7 @@ const parseEmitTasks = (value: unknown) => {
   const record = parseRecord(value, "emit_tasks");
   if (!Array.isArray(record.tasks)) throw new Error("Invalid emit_tasks arguments");
   return {
-    replace: record.replace === false ? false : true,
+    replace: typeof record.replace === "boolean" ? record.replace : undefined,
     tasks: record.tasks.map((task) => {
       const item = parseRecord(task, "emit_tasks.task");
       if (typeof item.title !== "string") throw new Error("Invalid emit_tasks task title");
@@ -133,6 +134,16 @@ const updateTaskSummary = async (store: PlanStore, taskId: string, summary: stri
   await store.saveTask(next);
 };
 
+const requireAgent = async (store: PlanStore, agentId: string) => {
+  const agent = await store.loadAgent(agentId);
+  if (!agent) throw new Error("Unknown agent");
+  return agent;
+};
+
+const requireRole = (role: Role, allowed: Role[], tool: string) => {
+  if (!allowed.includes(role)) throw new Error(`${tool}: role ${role} is not allowed`);
+};
+
 export const toolDefinitions = [
   { name: "ask_user", description: "Ask the PM agent a question.", inputSchema: { type: "object" } },
   { name: "answer_peer", description: "Answer a routed PM question.", inputSchema: { type: "object" } },
@@ -152,6 +163,8 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
 
   async answer_peer(agentId: string, arguments_: unknown) {
     const args = parseAnswerPeer(arguments_);
+    const agent = await requireAgent(store, agentId);
+    requireRole(agent.role, ["pm"], "answer_peer");
     await askRouter.answer(args.askId, args.answer, agentId);
     return toolResult({ ok: true });
   },
@@ -194,8 +207,7 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
 
   async report_complete(agentId: string, arguments_: unknown) {
     const args = parseReportComplete(arguments_);
-    const agent = await store.loadAgent(agentId);
-    if (!agent) return toolResult({ ok: false, error: "Unknown agent" });
+    const agent = await requireAgent(store, agentId);
     if (!agent.bound_subtask) {
       bus.publish({
         tags: [agentId, agent.role],
@@ -206,6 +218,7 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
     }
     const taskId = agent.bound_task ?? (await store.loadTasks()).find((item) => item.subtasks.includes(agent.bound_subtask!))?.id;
     if (!taskId) return toolResult({ ok: false, error: "No task for subtask" });
+    if (agent.bound_task && agent.bound_task !== taskId) throw new Error("report_complete: agent is not bound to this task");
     const task = await store.loadTask(taskId);
     const subtask = await store.loadSubtask(task.id, agent.bound_subtask);
     // Publish completion before terminating the PTY so MCP callers receive a clean response.
@@ -216,7 +229,7 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
       summary: args.summary,
       artifacts: args.evidence?.artifacts,
     };
-    await store.saveSubtask(nextSubtask);
+    await store.transitionSubtask(task.id, subtask.id, "done", nextSubtask);
     await updateTaskSummary(store, task.id, args.summary, args.evidence);
     bus.publish({
       tags: [agentId, task.id, subtask.id, agent.role],
@@ -230,12 +243,13 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
     const args = parseReviewSubtask(arguments_);
     const agent = await store.loadAgent(agentId);
     if (!agent?.bound_subtask) return toolResult({ ok: false, error: "No bound subtask" });
+    requireRole(agent.role, ["critic"], "request_review_subtask");
     const taskId = agent.bound_task ?? (await store.loadTasks()).find((item) => item.subtasks.includes(agent.bound_subtask!))?.id;
     if (!taskId) return toolResult({ ok: false, error: "No task for subtask" });
     const task = await store.loadTask(taskId);
     const existing = await store.loadSubtasks(task.id);
     const subtaskId = nextSubtaskId(existing.map((item) => item.id));
-    const subtask: Subtask = {
+    const fixSubtask: Subtask = {
       id: subtaskId,
       taskId: task.id,
       type: "fix",
@@ -248,18 +262,41 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
     };
     task.subtasks.push(subtaskId);
     task.updated_at = new Date().toISOString();
-    await store.saveSubtask(subtask);
+    await store.saveSubtask(fixSubtask);
     await store.saveTask(task);
+    const criticSubtask = await store.loadSubtask(task.id, agent.bound_subtask);
+    if (criticSubtask.status === "running") {
+      const summary = `Filed ${args.findings.length} finding${args.findings.length === 1 ? "" : "s"}; fix subtask ${subtaskId} created.`;
+      await store.transitionSubtask(task.id, criticSubtask.id, "done", {
+        completed_at: new Date().toISOString(),
+        summary,
+        findings: args.findings as CriticFinding[],
+      });
+      bus.publish({
+        tags: [agentId, task.id, criticSubtask.id, agent.role],
+        payload: { type: "subtask_completed", subtaskId: criticSubtask.id, summary },
+      });
+    }
     bus.publish({
-      tags: [task.id, subtask.id, agentId, agent.role],
+      tags: [task.id, subtaskId, agentId, agent.role],
       payload: { type: "critic_findings", subtaskId, findings: args.findings as CriticFinding[] },
     });
+    agentPool.kill(agentId);
     return toolResult({ ok: true, subtaskId });
   },
 
   async emit_tasks(agentId: string, arguments_: unknown) {
     const args = parseEmitTasks(arguments_);
+    const agent = await requireAgent(store, agentId);
+    requireRole(agent.role, ["planner", "architect", "pm", "qa"], "emit_tasks");
     const plan = await store.loadPlan();
+    if (!["drafting", "awaiting_approval", "approved", "running"].includes(plan.status)) {
+      throw new Error(`emit_tasks: cannot emit tasks while plan is ${plan.status}`);
+    }
+    const replace = args.replace ?? (agent.role === "planner" && plan.status === "drafting");
+    if (replace && !(agent.role === "planner" && plan.status === "drafting")) {
+      throw new Error("emit_tasks: replace is only allowed for planner while drafting");
+    }
     let existing = await store.loadTasks();
     const created: string[] = [];
     const iterations = await store.loadIterations();
@@ -267,7 +304,7 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
     let currentIteration = existingIteration
       ? { ...existingIteration, task_ids: [...existingIteration.task_ids] }
       : null;
-    if (args.replace) {
+    if (replace) {
       const toRemove = existing.filter((task) => task.iteration === plan.current_iteration);
       for (const task of toRemove) {
         rmSync(store.crewPath("tasks", `${task.id}.json`), { force: true });
@@ -293,11 +330,11 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
     }
     const existingIds = new Set(existing.map((task) => task.id));
 
-    // Second pass: persist tasks with resolved dependencies.
+    const newTasks: Task[] = [];
     for (const [index, taskInput] of args.tasks.entries()) {
       const taskId = pendingCanonicalIds[index];
       const resolvedDeps = resolveDependencies(taskInput.depends_on, localIdMap, existingIds);
-      const task: Task = {
+      newTasks.push({
         id: taskId,
         title: taskInput.title,
         description: taskInput.description,
@@ -308,14 +345,21 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
         updated_at: new Date().toISOString(),
         attempt_count: 0,
         subtasks: [],
-      };
+      });
+    }
+    const graph = [...existing, ...newTasks];
+    const cycle = detectCycle(graph);
+    if (cycle && cycle.length > 0) throw new Error(`emit_tasks: dependency cycle detected: ${cycle.join(" -> ")}`);
+
+    // Third pass: persist tasks after validating the complete DAG.
+    for (const task of newTasks) {
       await store.saveTask(task);
       if (currentIteration) {
-        currentIteration.task_ids.push(taskId);
+        currentIteration.task_ids.push(task.id);
       }
-      created.push(taskId);
+      created.push(task.id);
       if (task.depends_on.length === 0) {
-        bus.publish({ tags: [task.id, `iter-${task.iteration}`, agentId], payload: { type: "task_ready", taskId } });
+        bus.publish({ tags: [task.id, `iter-${task.iteration}`, agentId], payload: { type: "task_ready", taskId: task.id } });
       }
     }
     if (currentIteration) {
@@ -330,7 +374,8 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
 
   async broadcast(agentId: string, arguments_: unknown) {
     const args = parseBroadcast(arguments_);
-    const from = await store.loadAgent(agentId);
+    const from = await requireAgent(store, agentId);
+    requireRole(from.role, ["pm"], "broadcast");
     agentPool.write(args.toAgent, `${args.message}\n`);
     bus.publish({
       tags: [agentId, args.toAgent],

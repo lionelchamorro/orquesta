@@ -1,11 +1,21 @@
-import type { Server } from "bun";
+import type { Server, ServerWebSocket } from "bun";
 import type { Bus } from "../bus/bus";
 import type { AgentPool } from "../agents/pool";
 import type { Journal } from "../bus/journal";
 
 type WsData = { kind: "events" | "tty"; agentId?: string; tags?: string[] };
 
-export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Journal) => {
+const MAX_TTY_INPUT_BYTES = 16 * 1024;
+
+const originAllowed = (req: Request) => {
+  const origin = req.headers.get("origin");
+  if (!origin) return true;
+  const requestUrl = new URL(req.url);
+  const originUrl = new URL(origin);
+  return originUrl.host === requestUrl.host && ["http:", "https:"].includes(originUrl.protocol);
+};
+
+export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Journal, options: { sessionToken?: string } = {}) => {
   const eventClients = new Set<ServerWebSocket<WsData>>();
   const ttyClients = new Map<string, Set<ServerWebSocket<WsData>>>();
 
@@ -34,12 +44,19 @@ export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Jou
   });
 
   return {
-    upgrade(req: Request, server: Server) {
+    upgrade(req: Request, server: Server<WsData>) {
+      if (!originAllowed(req)) return false;
       const url = new URL(req.url);
       if (url.pathname === "/events") return server.upgrade(req, { data: { kind: "events" } });
       if (url.pathname.startsWith("/tty/")) {
         const agentId = url.pathname.split("/").at(-1);
         if (!agentId) return false;
+        const token =
+          req.headers.get("x-orquesta-token") ??
+          req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ??
+          url.searchParams.get("token") ??
+          req.headers.get("cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith("orquesta_token="))?.split("=")[1];
+        if (options.sessionToken && decodeURIComponent(token ?? "") !== options.sessionToken) return false;
         return server.upgrade(req, { data: { kind: "tty", agentId } });
       }
       return false;
@@ -75,6 +92,10 @@ export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Jou
           return;
         }
         if (ws.data.kind !== "tty" || !ws.data.agentId) return;
+        if (Buffer.byteLength(message) > MAX_TTY_INPUT_BYTES) {
+          ws.close(1009, "terminal input too large");
+          return;
+        }
         try {
           const parsed = JSON.parse(String(message)) as { type?: string; cols?: number; rows?: number; data?: string };
           if (parsed.type === "resize" && parsed.cols && parsed.rows) {

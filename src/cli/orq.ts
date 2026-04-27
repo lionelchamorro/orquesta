@@ -3,7 +3,10 @@ import path from "node:path";
 import { AgentPool } from "../agents/pool";
 import { Bus } from "../bus/bus";
 import { Journal } from "../bus/journal";
+import { gitAvailable, isGitRepo, safeGitOutput } from "../core/git";
+import { newRunId } from "../core/ids";
 import { PlanStore } from "../core/plan-store";
+import { getOrCreateSessionToken } from "../core/session-token";
 import type { Config, Plan } from "../core/types";
 import { AskRouter } from "../daemon/ask-router";
 import { createMcpHandler } from "../mcp/server";
@@ -32,7 +35,7 @@ const defaultConfig = (): Config => ({
 const plannerMember = (config: Config) => config.team.find((member) => member.role === "planner") ?? config.team[0];
 
 const clearPreviousTasks = () => {
-  for (const relative of ["tasks", "subtasks", "iterations", "agents", "sessions"]) {
+  for (const relative of ["tasks", "subtasks", "iterations", "agents", "sessions", "worktrees", "asks"]) {
     rmSync(store.crewPath(relative), { recursive: true, force: true });
     mkdirSync(store.crewPath(relative), { recursive: true });
   }
@@ -44,7 +47,7 @@ const clearPreviousTasks = () => {
 const ensurePlanScaffold = async (prompt: string) => {
   const now = new Date().toISOString();
   const plan: Plan = {
-    runId: "run-1",
+    runId: newRunId(),
     prd: "(prompt)",
     prompt,
     status: "drafting",
@@ -110,12 +113,13 @@ const ensurePlannerProducedTasks = async () => {
 export const runPlanner = async (plan: Plan, config: Config) => {
   const journal = new Journal(store.crewPath("journal.sqlite"));
   const bus = new Bus({ journal });
-  const pool = new AgentPool(root, store, bus, { templatesDir });
+  const sessionToken = await getOrCreateSessionToken(store);
+  const pool = new AgentPool(root, store, bus, { templatesDir, mcpToken: sessionToken });
   const askRouter = new AskRouter(store, pool, bus);
   let server: ReturnType<typeof Bun.serve> | null = null;
 
   try {
-    const mcpHandler = createMcpHandler({ store, bus, askRouter, agentPool: pool });
+    const mcpHandler = createMcpHandler({ store, bus, askRouter, agentPool: pool, sessionToken });
     server = serveEphemeralMcp((req) => mcpHandler(req));
 
     const member = plannerMember(config);
@@ -143,7 +147,7 @@ export const runPlanner = async (plan: Plan, config: Config) => {
 export const main = async () => {
   const [command, ...rest] = Bun.argv.slice(2);
   if (!command) {
-    console.log("Usage: orq <plan|approve|start|status>");
+    console.log("Usage: orq <plan|approve|start|status|logs|doctor>");
     return;
   }
 
@@ -155,10 +159,11 @@ export const main = async () => {
     }
     const daemonPort = Number(Bun.env.ORQ_PORT ?? 8000);
     const daemonUrl = `http://localhost:${daemonPort}/api/plan`;
+    const sessionToken = await Bun.file(store.crewPath("session.token")).text().then((text) => text.trim()).catch(() => "");
     try {
       const response = await fetch(daemonUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(sessionToken ? { "X-Orquesta-Token": sessionToken } : {}) },
         body: JSON.stringify({ prompt }),
       });
       if (response.ok) {
@@ -204,6 +209,22 @@ export const main = async () => {
       console.log(`${event.ts} ${event.payload.type} ${event.tags.join(",")}`);
     }
     journal.close();
+    return;
+  }
+
+  if (command === "doctor") {
+    const plan = await store.loadPlan();
+    const tasks = await store.loadTasks();
+    const tokenExists = await Bun.file(store.crewPath("session.token")).exists();
+    console.log(`Bun: ${Bun.version}`);
+    console.log(`Git available: ${gitAvailable() ? "yes" : "no"}`);
+    console.log(`Git repo: ${isGitRepo(root) ? "yes" : "no"}`);
+    console.log(`Branch: ${safeGitOutput(root, ["branch", "--show-current"]).trim() || "-"}`);
+    console.log(`Dirty: ${safeGitOutput(root, ["status", "--porcelain"]).trim() ? "yes" : "no"}`);
+    console.log(`CLIs: claude=${Bun.which("claude") ? "yes" : "no"} codex=${Bun.which("codex") ? "yes" : "no"} gemini=${Bun.which("gemini") ? "yes" : "no"}`);
+    console.log(`Session token: ${tokenExists ? "present" : "missing"}`);
+    console.log(`Crew dir: ${store.crewPath()}`);
+    console.log(`Plan: ${plan.runId} ${plan.status} tasks=${tasks.length} completed=${tasks.filter((task) => task.status === "done").length}`);
     return;
   }
 

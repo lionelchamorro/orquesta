@@ -19,15 +19,17 @@ export class AgentPool {
     private readonly root: string,
     private readonly store: PlanStore,
     private readonly bus: Bus,
-    private readonly options: { mcpPort?: number; templatesDir?: string } = {},
+    private readonly options: { mcpPort?: number; templatesDir?: string; mcpToken?: string } = {},
   ) {}
 
   async spawn(role: Role, cli: CliName, model: string, subtaskPrompt: string, options: { taskId?: string; subtaskId?: string; command?: string[]; port?: number; sessionDir?: string } = {}) {
     const id = newAgentId();
-    const { dir: cwd, roleTemplate } = await seedSession(this.root, id, role, subtaskPrompt, {
+    const { dir: cwd, roleTemplate, env } = await seedSession(this.root, id, role, subtaskPrompt, {
+      cli,
       port: options.port ?? this.options.mcpPort,
       sessionDir: options.sessionDir,
       templatesDir: this.options.templatesDir,
+      sessionToken: this.options.mcpToken,
     });
     const extraArgs = cli === "claude" ? ["--append-system-prompt", roleTemplate] : [];
     const agent: Agent = {
@@ -67,6 +69,7 @@ export class AgentPool {
           payload: { type: "subtask_output", subtaskId: options.subtaskId ?? "", chunk: text },
         });
       },
+      env,
     );
     this.terminals.set(id, terminal);
     if (options.taskId && options.subtaskId) {

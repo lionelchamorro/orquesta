@@ -14,5 +14,6 @@ const nextByPrefix = (existing: string[], prefix: string) => {
 export const nextTaskId = (existing: string[]) => nextByPrefix(existing, "task");
 export const nextSubtaskId = (existing: string[]) => nextByPrefix(existing, "sub");
 export const nextIterationId = (existing: string[]) => nextByPrefix(existing, "iter");
+export const newRunId = () => `run-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
 export const newAgentId = () => crypto.randomUUID();
 export const newEventId = () => crypto.randomUUID();

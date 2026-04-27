@@ -7,6 +7,7 @@ export class AgentTerminal {
     public readonly cmd: string[],
     public readonly cwd: string,
     public readonly onData: (chunk: Uint8Array) => void,
+    private readonly env: Record<string, string> = {},
   ) {
     this.terminal = new Bun.Terminal({
       cols: 100,
@@ -19,6 +20,7 @@ export class AgentTerminal {
       terminal: this.terminal,
       env: {
         ...process.env,
+        ...env,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
       },

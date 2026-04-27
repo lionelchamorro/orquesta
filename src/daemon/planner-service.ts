@@ -1,12 +1,13 @@
 import { mkdirSync, rmSync } from "node:fs";
 import type { AgentPool } from "../agents/pool";
+import { newRunId } from "../core/ids";
 import type { PlanStore } from "../core/plan-store";
 import type { Config, Plan } from "../core/types";
 
 const PLANNER_PROMPT_PREFIX = "Initial user prompt:";
 
 const clearPreviousTasks = (store: PlanStore) => {
-  for (const relative of ["tasks", "subtasks", "iterations", "agents", "sessions"]) {
+  for (const relative of ["tasks", "subtasks", "iterations", "agents", "sessions", "worktrees", "asks"]) {
     rmSync(store.crewPath(relative), { recursive: true, force: true });
     mkdirSync(store.crewPath(relative), { recursive: true });
   }
@@ -15,7 +16,7 @@ const clearPreviousTasks = (store: PlanStore) => {
 const makePlan = (prompt: string): Plan => {
   const now = new Date().toISOString();
   return {
-    runId: "run-1",
+    runId: newRunId(),
     prd: "(prompt)",
     prompt,
     status: "drafting",

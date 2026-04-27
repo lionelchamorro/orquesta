@@ -63,13 +63,14 @@ test("startPlanner scaffolds plan and spawns planner agent", async () => {
 
   const result = await service.startPlanner("build a hello CLI");
 
-  expect(result.runId).toBe("run-1");
+  expect(result.runId.startsWith("run-")).toBeTrue();
   expect(spawns.length).toBe(1);
   expect(spawns[0].role).toBe("planner");
   expect(spawns[0].port).toBe(1234);
   expect(spawns[0].prompt).toContain("build a hello CLI");
 
   const plan = await store.loadPlan();
+  expect(plan.runId).toBe(result.runId);
   expect(plan.status).toBe("drafting");
   expect(plan.prompt).toBe("build a hello CLI");
   expect(service.getCurrentAgentId()).toBe(result.agentId);

@@ -58,3 +58,49 @@ test("http handler serves task history and archive listing", async () => {
   expect(archiveBody.length).toBe(1);
   rmSync(root, { recursive: true, force: true });
 });
+
+test("http handler returns 404 for missing task records", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "orq-http-missing-task-"));
+  mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
+  const store = new PlanStore(root);
+  const handler = createHttpHandler({
+    root,
+    store,
+    pool: { write() {} } as never,
+    bus: new Bus(),
+    askRouter: { answer: async () => {} } as never,
+    mcpHandler: async () => new Response("ok"),
+  });
+
+  const response = await handler(new Request("http://localhost/api/tasks/task-missing"));
+
+  expect(response.status).toBe(404);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("http handler serves health and diagnostics", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "orq-http-diagnostics-"));
+  mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
+  const store = new PlanStore(root);
+  const handler = createHttpHandler({
+    root,
+    store,
+    pool: { write() {} } as never,
+    bus: new Bus(),
+    askRouter: { answer: async () => {} } as never,
+    mcpHandler: async () => new Response("ok"),
+    sessionToken: "secret",
+  });
+
+  const health = await handler(new Request("http://localhost/api/health"));
+  const diagnostics = await handler(new Request("http://localhost/api/diagnostics"));
+  const exported = await handler(new Request("http://localhost/api/export"));
+  const body = await diagnostics.json();
+  const exportBody = await exported.json();
+
+  expect(health.status).toBe(200);
+  expect(body.ok).toBeTrue();
+  expect(body.token.configured).toBeTrue();
+  expect(exportBody.plan.runId).toBe("run-1");
+  rmSync(root, { recursive: true, force: true });
+});

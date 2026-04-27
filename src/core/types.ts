@@ -59,9 +59,10 @@ export interface Task {
   branch?: string;
   base_branch?: string;
   merge_commit?: string;
+  merge_error?: string;
   merged_at?: string;
   archive_path?: string;
-  closure_reason?: "critic_ok" | "max_attempts" | "merge_conflict" | "failed_subtask" | "blocked_by_dep";
+  closure_reason?: "critic_ok" | "max_attempts" | "merge_conflict" | "failed_subtask" | "blocked_by_dep" | "no_changes";
   created_at: string;
   updated_at: string;
   attempt_count: number;
@@ -129,6 +130,18 @@ export interface Agent {
   is_error?: boolean;
 }
 
+export interface PendingAsk {
+  id: string;
+  fromAgent: string;
+  question: string;
+  options?: string[];
+  status: "pending" | "fallback" | "answered" | "timed_out";
+  created_at: string;
+  updated_at: string;
+  answer?: string;
+  answered_by?: string;
+}
+
 export type BusEvent =
   | { type: "plan_approved"; runId: string; at: string }
   | { type: "iteration_started"; iterationId: string; number: number; trigger: IterationTrigger }
@@ -146,6 +159,7 @@ export type BusEvent =
   | { type: "task_archived"; taskId: string; agents: string[] }
   | { type: "ask_user"; askId: string; fromAgent: string; question: string; options?: string[]; fallback?: boolean }
   | { type: "ask_user_answered"; askId: string; answer: string; fromAgent: string }
+  | { type: "ask_timed_out"; askId: string; fromAgent: string }
   | { type: "activity"; fromAgent: string; toAgent?: string; message: string }
   | { type: "agent_completed"; agentId: string; summary: string }
   | { type: "agent_failed"; agentId: string; reason: string }

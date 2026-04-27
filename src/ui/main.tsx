@@ -22,7 +22,7 @@ const resolveMode = (plan: Plan | null, plannerAgentId: string | null, tasks: Ta
   if (!plan) return "empty";
   if (plannerAgentId) return "planner";
   if (plan.status === "drafting" || plan.status === "awaiting_approval") return "planner";
-  if (plan.status === "done" || tasks.length === 0) return "empty";
+  if (tasks.length === 0) return "empty";
   return "run";
 };
 
@@ -106,32 +106,20 @@ function App() {
       setPlan((current) => current ? { ...current, current_iteration: payload.number } : current);
       return;
     }
-    if (payload.type === "task_ready") {
-      setTasks((current) => current.map((task) => task.id === payload.taskId ? { ...task, status: "ready" } : task));
-      return;
-    }
-    if (payload.type === "task_completed") {
-      setTasks((current) => current.map((task) => task.id === payload.taskId ? { ...task, status: "done" } : task));
-      return;
-    }
-    if (payload.type === "task_cancelled") {
-      setTasks((current) => current.map((task) => task.id === payload.taskId ? { ...task, status: "cancelled" } : task));
-      return;
-    }
-    if (payload.type === "subtask_started") {
-      setTasks((current) => current.map((task) => task.id === payload.taskId ? { ...task, status: "running" } : task));
-      setAgents((current) => current.some((agent) => agent.id === payload.agentId) ? current : [
-        ...current,
-        {
-          id: payload.agentId,
-          role: "coder",
-          cli: "claude",
-          model: "unknown",
-          status: "live",
-          session_cwd: "",
-          bound_subtask: payload.subtaskId,
-        },
-      ]);
+    if (
+      payload.type === "task_ready" ||
+      payload.type === "task_started" ||
+      payload.type === "task_completed" ||
+      payload.type === "task_cancelled" ||
+      payload.type === "subtask_started" ||
+      payload.type === "subtask_completed" ||
+      payload.type === "subtask_failed" ||
+      payload.type === "critic_findings" ||
+      payload.type === "task_merged" ||
+      payload.type === "task_archived" ||
+      payload.type === "ask_user_answered"
+    ) {
+      void refresh();
       return;
     }
     if (payload.type === "agent_completed" || payload.type === "agent_failed") {

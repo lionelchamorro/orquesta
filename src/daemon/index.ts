@@ -12,23 +12,26 @@ import { createMcpHandler } from "../mcp/server";
 import { Orchestrator } from "./orchestrator";
 import { PlannerService } from "./planner-service";
 import { TaskPipeline } from "./task-pipeline";
+import { getOrCreateSessionToken } from "../core/session-token";
 
 const root = process.cwd();
 const packageRoot = path.resolve(import.meta.dir, "..", "..");
 const templatesDir = path.join(packageRoot, "templates");
 const store = new PlanStore(root);
 mkdirSync(store.crewPath(), { recursive: true });
+const sessionToken = await getOrCreateSessionToken(store);
 const journal = new Journal(store.crewPath("journal.sqlite"));
 const bus = new Bus({ journal });
 const port = Number(Bun.env.ORQ_PORT ?? 8000);
-const pool = new AgentPool(root, store, bus, { mcpPort: port, templatesDir });
+const pool = new AgentPool(root, store, bus, { mcpPort: port, templatesDir, mcpToken: sessionToken });
 const askRouter = new AskRouter(store, pool, bus);
 const config = await store.loadConfig();
+const recovered = await store.recoverInterruptedRun();
 const pipeline = new TaskPipeline(store, bus, pool, config);
 const iterationManager = new IterationManager(store, pool, bus, config);
 const orchestrator = new Orchestrator(store, pipeline, iterationManager, config);
 const plannerService = new PlannerService(store, pool, { mcpPort: port });
-const mcpHandler = createMcpHandler({ store, bus, askRouter, agentPool: pool });
+const mcpHandler = createMcpHandler({ store, bus, askRouter, agentPool: pool, sessionToken });
 const uiBuildDir = path.join(root, ".orquesta", "build", "ui");
 mkdirSync(uiBuildDir, { recursive: true });
 const uiBuild = await Bun.build({
@@ -58,10 +61,12 @@ await Bun.write(
   </body>
 </html>`,
 );
-const httpHandler = createHttpHandler({ root: packageRoot, store, pool, bus, askRouter, mcpHandler, plannerService, uiBuildDir });
-const wsHandlers = createWebSocketHandlers(bus, pool, journal);
+await askRouter.recoverPendingAsks();
+const httpHandler = createHttpHandler({ root: packageRoot, store, pool, bus, askRouter, mcpHandler, plannerService, uiBuildDir, sessionToken, journal });
+const wsHandlers = createWebSocketHandlers(bus, pool, journal, { sessionToken });
 
 const server = Bun.serve({
+  hostname: Bun.env.ORQ_HOST ?? "127.0.0.1",
   port,
   fetch(req, server) {
     if (wsHandlers.upgrade(req, server)) return;
@@ -92,4 +97,9 @@ const shutdown = () => {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-console.log(`orquesta daemon listening on http://localhost:${port}`);
+console.log(`orquesta daemon listening on http://${server.hostname}:${port}`);
+if (recovered.tasks.length || recovered.subtasks.length || recovered.agents.length) {
+  console.log(
+    `[daemon] recovered interrupted state tasks=${recovered.tasks.length} subtasks=${recovered.subtasks.length} agents=${recovered.agents.length}`,
+  );
+}
