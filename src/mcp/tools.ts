@@ -145,13 +145,130 @@ const requireRole = (role: Role, allowed: Role[], tool: string) => {
 };
 
 export const toolDefinitions = [
-  { name: "ask_user", description: "Ask the PM agent a question.", inputSchema: { type: "object" } },
-  { name: "answer_peer", description: "Answer a routed PM question.", inputSchema: { type: "object" } },
-  { name: "report_progress", description: "Emit activity from the current agent.", inputSchema: { type: "object" } },
-  { name: "report_complete", description: "Mark the bound subtask completed.", inputSchema: { type: "object" } },
-  { name: "request_review_subtask", description: "Create fix subtasks from critic findings.", inputSchema: { type: "object" } },
-  { name: "emit_tasks", description: "Emit tasks into the current iteration.", inputSchema: { type: "object" } },
-  { name: "broadcast", description: "Send a message to another live agent terminal.", inputSchema: { type: "object" } },
+  {
+    name: "ask_user",
+    description: "Ask the PM agent a question.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "The question to ask the PM agent." },
+        options: { type: "array", items: { type: "string" }, description: "Optional suggested answers." },
+      },
+      required: ["question"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "answer_peer",
+    description: "Answer a routed PM question.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        askId: { type: "string", description: "The routed question identifier." },
+        answer: { type: "string", description: "The answer to send." },
+      },
+      required: ["askId", "answer"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "report_progress",
+    description: "Emit activity from the current agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", description: "Short status label, for example working, testing, or failed." },
+        note: { type: "string", description: "Human-readable progress note." },
+      },
+      required: ["status", "note"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "report_complete",
+    description: "Mark the bound subtask completed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "Short completion summary." },
+        evidence: {
+          type: "object",
+          properties: {
+            commits: { type: "array", items: { type: "string" } },
+            tests: { type: "array", items: { type: "string" } },
+            artifacts: { type: "array", items: { type: "string" } },
+          },
+          additionalProperties: false,
+        },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "request_review_subtask",
+    description: "Create fix subtasks from critic findings.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        findings: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              severity: { type: "string", enum: ["low", "medium", "high"] },
+              description: { type: "string" },
+              file: { type: "string" },
+              suggestion: { type: "string" },
+            },
+            required: ["severity", "description"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["findings"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "emit_tasks",
+    description: "Emit tasks into the current iteration.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        replace: { type: "boolean", description: "Whether to replace the current iteration tasks." },
+        tasks: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Optional local task id for dependency references." },
+              title: { type: "string" },
+              description: { type: "string" },
+              depends_on: { type: "array", items: { type: "string" } },
+            },
+            required: ["title"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["tasks"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "broadcast",
+    description: "Send a message to another live agent terminal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        toAgent: { type: "string", description: "Recipient agent id." },
+        message: { type: "string", description: "Message to send." },
+      },
+      required: ["toAgent", "message"],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDeps) => ({

@@ -3,7 +3,7 @@ import type { Bus } from "../bus/bus";
 import type { AgentPool } from "../agents/pool";
 import type { Journal } from "../bus/journal";
 
-type WsData = { kind: "events" | "tty"; agentId?: string; tags?: string[] };
+type WsData = { kind: "events" | "tty"; agentId?: string; tags?: string[]; unsubscribeTty?: () => void };
 
 const MAX_TTY_INPUT_BYTES = 16 * 1024;
 
@@ -27,19 +27,6 @@ export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Jou
       try {
         client.send(JSON.stringify(event));
       } catch {}
-    }
-
-    const payload = event.payload as { type?: string; chunk?: string } | undefined;
-    if (payload?.type === "subtask_output" && typeof payload.chunk === "string") {
-      for (const tag of event.tags) {
-        const subscribers = ttyClients.get(tag);
-        if (!subscribers) continue;
-        for (const client of subscribers) {
-          try {
-            client.send(payload.chunk);
-          } catch {}
-        }
-      }
     }
   });
 
@@ -79,8 +66,26 @@ export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Jou
             ttyClients.set(agentId, subscribers);
           }
           subscribers.add(ws);
+          if (pool.get(agentId) === undefined) {
+            try { ws.send("\r\n\x1b[33m[agent exited]\x1b[0m\r\n"); } catch {}
+            try { ws.close(1000, "agent exited"); } catch {}
+            return;
+          }
           const buffer = pool.getOutputBuffer(agentId);
-          if (buffer) ws.send(buffer);
+          if (buffer.byteLength > 0) {
+            // Full terminal reset (RIS, ESC c) ahead of the replay so xterm.js
+            // processes recorded escapes from a known-clean state. Without it,
+            // any client connecting mid-session may inherit residual alt-screen
+            // / DEC charset state that renders box-drawing chars as literal `q`.
+            const reset = new Uint8Array([0x1b, 0x63]);
+            const framed = new Uint8Array(reset.byteLength + buffer.byteLength);
+            framed.set(reset, 0);
+            framed.set(buffer, reset.byteLength);
+            try { ws.send(framed); } catch {}
+          }
+          ws.data.unsubscribeTty = pool.subscribeTty(agentId, (chunk) => {
+            try { ws.send(chunk); } catch {}
+          });
         }
       },
       message(ws: ServerWebSocket<WsData>, message: string | Buffer) {
@@ -94,6 +99,10 @@ export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Jou
         if (ws.data.kind !== "tty" || !ws.data.agentId) return;
         if (Buffer.byteLength(message) > MAX_TTY_INPUT_BYTES) {
           ws.close(1009, "terminal input too large");
+          return;
+        }
+        if (message instanceof Buffer || message instanceof Uint8Array) {
+          pool.write(ws.data.agentId, message);
           return;
         }
         try {
@@ -112,6 +121,8 @@ export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Jou
       close(ws: ServerWebSocket<WsData>) {
         if (ws.data.kind === "events") eventClients.delete(ws);
         if (ws.data.kind === "tty" && ws.data.agentId) {
+          ws.data.unsubscribeTty?.();
+          ws.data.unsubscribeTty = undefined;
           const subscribers = ttyClients.get(ws.data.agentId);
           if (subscribers) {
             subscribers.delete(ws);

@@ -41,6 +41,10 @@ export const createMcpHandler = (deps: {
       return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
     }
 
+    if (body.id === undefined) {
+      return new Response(null, { status: 202 });
+    }
+
     const id = body.id ?? null;
     if (body.method === "initialize") {
       return Response.json({

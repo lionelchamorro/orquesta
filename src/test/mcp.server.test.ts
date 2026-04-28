@@ -39,3 +39,31 @@ test("mcp handler rejects requests without the daemon session token", async () =
   askRouter.close();
   rmSync(root, { recursive: true, force: true });
 });
+
+test("mcp handler accepts initialized notifications without a JSON-RPC response", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "orq-mcp-notify-"));
+  mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
+  const store = new PlanStore(root);
+  await store.saveAgent({
+    id: "agent-1",
+    role: "planner",
+    cli: "claude",
+    model: "m",
+    status: "live",
+    session_cwd: ".",
+  });
+  const bus = new Bus();
+  const pool = { write() {}, kill() {} } as never;
+  const askRouter = new AskRouter(store, pool, bus);
+  const handler = createMcpHandler({ store, bus, askRouter, agentPool: pool });
+
+  const response = await handler(new Request("http://localhost/mcp/agent-1", {
+    method: "POST",
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+  }));
+
+  expect(response.status).toBe(202);
+  expect(await response.text()).toBe("");
+  askRouter.close();
+  rmSync(root, { recursive: true, force: true });
+});

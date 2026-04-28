@@ -125,7 +125,10 @@ export const closeTask = async (deps: {
         const target = path.join(archiveRoot, `${agent.role}-${agent.id}`);
         archiveSessionDir(agent.session_cwd, target);
         archivePath = archiveRoot;
-        await store.saveAgent({ ...agent, session_cwd: target, status: "dead", last_activity_at: new Date().toISOString() });
+        // Re-load: the pool's exit handler may have written cli_session_id / metrics
+        // after we killed the process. The `agent` snapshot from line 66 is stale.
+        const fresh = (await store.loadAgent(agent.id)) ?? agent;
+        await store.saveAgent({ ...fresh, session_cwd: target, status: "dead", last_activity_at: new Date().toISOString() });
       }
     }
   }

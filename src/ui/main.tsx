@@ -26,6 +26,12 @@ const resolveMode = (plan: Plan | null, plannerAgentId: string | null, tasks: Ta
   return "run";
 };
 
+const selectedRunAgent = (agents: Agent[], selectedAgentId?: string): Agent | undefined => {
+  const selected = selectedAgentId ? agents.find((agent) => agent.id === selectedAgentId) : undefined;
+  if (selected && selected.role !== "planner") return selected;
+  return agents.find((agent) => agent.role !== "planner" && agent.status !== "dead");
+};
+
 function App() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -71,7 +77,11 @@ function App() {
       setSelectedIterationNumber(data.plan.current_iteration);
     }
     if (!selectedTaskId && data.tasks[0]) setSelectedTaskId(data.tasks[0].id);
-    if (!selectedAgentId && data.agents[0]) setSelectedAgentId(data.agents[0].id);
+    const mode = resolveMode(data.plan, data.plannerAgentId ?? null, data.tasks);
+    const nextAgent = mode === "run"
+      ? selectedRunAgent(data.agents, selectedAgentId)
+      : (!selectedAgentId ? data.agents[0] : undefined);
+    if (nextAgent) setSelectedAgentId(nextAgent.id);
   }, [selectedTaskId, selectedAgentId]);
 
   useEffect(() => {
@@ -190,6 +200,9 @@ function App() {
   }, [refresh]);
 
   const mode = resolveMode(plan, plannerAgentId, tasks);
+  const selectedTerminalAgent = mode === "run" ? selectedRunAgent(agents, selectedAgentId) : undefined;
+  const effectiveSelectedAgentId = mode === "run" ? selectedTerminalAgent?.id : selectedAgentId;
+  const chatTargetAgentId = selectedTerminalAgent?.status === "dead" ? undefined : effectiveSelectedAgentId;
 
   return (
     <div className="app-shell">
@@ -198,7 +211,7 @@ function App() {
         <PlanPrompt onStarted={(agentId) => { setPlannerAgentId(agentId); void refresh(); }} />
       )}
       {mode === "planner" && (
-        <>
+        <div className="planner-mode">
           {(plan?.status === "awaiting_approval" || iterationTasks.length > 0) && plan?.status !== "approved" && plan?.status !== "running" && (
             <div className="planner-approve">
               <div>
@@ -230,7 +243,7 @@ function App() {
                 onSelect={selectTask}
               />
             </div>
-            <div className="column">
+            <div className="column live">
               <LiveStream agent={plannerAgent} />
             </div>
             <div className="column right">
@@ -246,7 +259,7 @@ function App() {
               />
             </div>
           </div>
-        </>
+        </div>
       )}
       {mode === "run" && (
         <>
@@ -279,7 +292,7 @@ function App() {
                 <AgentsPanel
                   agents={agents}
                   agentTaskId={agentTaskId}
-                  selectedAgentId={selectedAgentId}
+                  selectedAgentId={effectiveSelectedAgentId}
                   selectedTaskId={selectedTaskId}
                   selectedTaskLabel={selectedTask ? taskDisplayId(selectedTask.id) : undefined}
                   pinnedAgentIds={pinnedAgentIds}
@@ -287,12 +300,14 @@ function App() {
                   onSelect={setSelectedAgentId}
                   onOpenTerminal={setDrawerAgentId}
                 />
-                <ChatComposer targetAgentId={selectedAgentId} label="as PM" />
+                <ChatComposer targetAgentId={chatTargetAgentId} label="as PM" />
               </div>
             </div>
-            <div className="live-row">
-              <LiveStream agent={agents.find((agent) => agent.id === selectedAgentId)} />
-            </div>
+            {selectedTerminalAgent && (
+              <div className="live-row">
+                <LiveStream agent={selectedTerminalAgent} />
+              </div>
+            )}
           </div>
         </>
       )}

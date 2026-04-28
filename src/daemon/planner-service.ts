@@ -1,5 +1,6 @@
 import { mkdirSync, rmSync } from "node:fs";
 import type { AgentPool } from "../agents/pool";
+import type { Bus } from "../bus/bus";
 import { newRunId } from "../core/ids";
 import type { PlanStore } from "../core/plan-store";
 import type { Config, Plan } from "../core/types";
@@ -38,7 +39,7 @@ export class PlannerService {
   constructor(
     private readonly store: PlanStore,
     private readonly pool: AgentPool,
-    private readonly options: { mcpPort: number },
+    private readonly options: { mcpPort: number; bus?: Bus; autonomous?: boolean },
   ) {}
 
   getCurrentAgentId(): string | null {
@@ -81,12 +82,21 @@ export class PlannerService {
       if (current.status === "drafting") {
         const tasks = await this.store.loadTasks();
         if (tasks.length > 0) {
-          await this.store.savePlan({
+          const updatedAt = new Date().toISOString();
+          const autoApprove = this.options.autonomous ?? false;
+          const next: Plan = {
             ...current,
             task_count: tasks.length,
-            status: "awaiting_approval",
-            updated_at: new Date().toISOString(),
-          });
+            status: autoApprove ? "approved" : "awaiting_approval",
+            updated_at: updatedAt,
+          };
+          await this.store.savePlan(next);
+          if (autoApprove) {
+            this.options.bus?.publish({
+              tags: [next.runId],
+              payload: { type: "plan_approved", runId: next.runId, at: updatedAt },
+            });
+          }
         }
       }
     });

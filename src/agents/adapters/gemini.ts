@@ -1,7 +1,8 @@
-export const argv = (model: string, extra: string[] = [], initialPrompt?: string) => [
+export const argv = (model: string, extra: string[] = [], prompt?: string) => [
   "gemini",
   "--model",
   model,
+  "--yolo",
   ...extra,
-  ...(initialPrompt ? [initialPrompt] : []),
+  ...(prompt ? [prompt] : []),
 ];

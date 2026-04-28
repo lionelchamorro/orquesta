@@ -1,4 +1,4 @@
-import WebTTY from "../../../demo/WebTTY";
+import WebTTY from "./WebTTY";
 import type { Agent } from "../../core/types";
 
 export function LiveStream({ agent }: { agent?: Agent }) {

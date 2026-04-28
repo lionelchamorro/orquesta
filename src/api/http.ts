@@ -20,6 +20,7 @@ const mutatingRoutes = [
   /^\/api\/plan\/reset$/,
   /^\/api\/approve$/,
   /^\/api\/agents\/[^/]+\/input$/,
+  /^\/api\/agents\/[^/]+\/resume$/,
   /^\/api\/tasks\/[^/]+\/cancel$/,
   /^\/api\/ask\/[^/]+\/answer$/,
 ];
@@ -221,6 +222,16 @@ export const createHttpHandler = (deps: {
       await deps.store.savePlan(next);
       deps.bus.publish({ tags: [plan.runId], payload: { type: "plan_approved", runId: plan.runId, at: next.updated_at } });
       return json({ ok: true, plan: next });
+    }
+
+    if (req.method === "POST" && url.pathname.match(/^\/api\/agents\/[^/]+\/resume$/)) {
+      const agentId = url.pathname.split("/")[3];
+      try {
+        const ttyId = await deps.pool.startResume(agentId);
+        return json({ ok: true, ttyId });
+      } catch (error) {
+        return json({ ok: false, error: error instanceof Error ? error.message : "resume failed" }, { status: 400 });
+      }
     }
 
     if (req.method === "POST" && url.pathname.match(/^\/api\/agents\/[^/]+\/input$/)) {

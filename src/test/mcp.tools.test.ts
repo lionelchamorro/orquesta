@@ -6,7 +6,7 @@ import { AgentPool } from "../agents/pool";
 import { Bus } from "../bus/bus";
 import { PlanStore } from "../core/plan-store";
 import { AskRouter } from "../daemon/ask-router";
-import { createToolHandlers } from "../mcp/tools";
+import { createToolHandlers, toolDefinitions } from "../mcp/tools";
 
 const savePlannerAgent = (store: PlanStore, id = "agent-1") =>
   store.saveAgent({
@@ -109,6 +109,18 @@ test("emit_tasks rejects unauthorized roles and validator replacement", async ()
   await expect(tools.emit_tasks("agent-qa", { replace: true, tasks: [{ title: "A" }] })).rejects.toThrow("replace is only allowed");
   askRouter.close();
   rmSync(root, { recursive: true, force: true });
+});
+
+test("MCP tool schemas document required arguments", () => {
+  const byName = new Map(toolDefinitions.map((tool) => [tool.name, tool.inputSchema]));
+
+  expect(byName.get("ask_user")?.required).toContain("question");
+  expect(byName.get("ask_user")?.properties).toHaveProperty("question");
+  expect(byName.get("report_progress")?.required).toEqual(["status", "note"]);
+  expect(byName.get("report_progress")?.properties).toHaveProperty("status");
+  expect(byName.get("report_progress")?.properties).toHaveProperty("note");
+  expect(byName.get("report_complete")?.required).toEqual(["summary"]);
+  expect(byName.get("report_complete")?.properties).toHaveProperty("summary");
 });
 
 test("report_complete for unbound agent emits agent_completed", async () => {
