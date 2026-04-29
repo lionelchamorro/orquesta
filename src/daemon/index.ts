@@ -33,38 +33,25 @@ const iterationManager = new IterationManager(store, pool, bus, config);
 const orchestrator = new Orchestrator(store, pipeline, iterationManager, config);
 const plannerService = new PlannerService(store, pool, { mcpPort: port, bus, autonomous });
 const mcpHandler = createMcpHandler({ store, bus, askRouter, agentPool: pool, sessionToken });
-const uiBuildDir = path.join(root, ".orquesta", "build", "ui");
-mkdirSync(uiBuildDir, { recursive: true });
-const uiBuild = await Bun.build({
-  entrypoints: [path.join(packageRoot, "src", "ui", "main.tsx")],
-  outdir: path.join(uiBuildDir, "assets"),
-  target: "browser",
-  splitting: false,
-  minify: false,
-});
-if (!uiBuild.success) {
-  console.error("ui build failed", uiBuild.logs);
-  process.exit(1);
-}
-await Bun.write(
-  path.join(uiBuildDir, "index.html"),
-  `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Orquesta</title>
-    <link rel="stylesheet" href="/theme.css" />
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/assets/main.js"></script>
-  </body>
-</html>`,
-);
+const uiBuildDir = path.join(packageRoot, "dist", "ui");
 await askRouter.recoverPendingAsks();
-const httpHandler = createHttpHandler({ root: packageRoot, store, pool, bus, askRouter, mcpHandler, plannerService, uiBuildDir, sessionToken, journal });
-const wsHandlers = createWebSocketHandlers(bus, pool, journal, { sessionToken });
+const httpHandler = createHttpHandler({
+  root: packageRoot,
+  store,
+  pool,
+  bus,
+  askRouter,
+  mcpHandler,
+  plannerService,
+  uiBuildDir,
+  sessionToken,
+  journal,
+  corsOrigin: Bun.env.ORQ_CORS_ORIGIN,
+});
+const wsHandlers = createWebSocketHandlers(bus, pool, journal, {
+  sessionToken,
+  corsOrigin: Bun.env.ORQ_CORS_ORIGIN,
+});
 
 const server = Bun.serve({
   hostname: Bun.env.ORQ_HOST ?? "127.0.0.1",

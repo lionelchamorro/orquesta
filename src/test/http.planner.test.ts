@@ -75,6 +75,29 @@ test("protected mutations require the daemon session token when configured", asy
   rmSync(root, { recursive: true, force: true });
 });
 
+test("http handler emits CORS headers and handles preflight when configured", async () => {
+  const { root } = await makeHandler(undefined, "done");
+  const corsHandler = createHttpHandler({
+    root,
+    store: new PlanStore(root),
+    pool: { write() {}, kill() {} } as never,
+    bus: new Bus(),
+    askRouter: { answer: async () => {} } as never,
+    mcpHandler: async () => new Response("ok"),
+    corsOrigin: "http://localhost:4173",
+    sessionToken: "secret-token",
+  });
+
+  const preflight = await corsHandler(new Request("http://localhost/api/plan", { method: "OPTIONS" }));
+  const health = await corsHandler(new Request("http://localhost/api/health"));
+
+  expect(preflight.status).toBe(204);
+  expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:4173");
+  expect(health.headers.get("Access-Control-Allow-Credentials")).toBe("true");
+  expect(health.headers.get("Set-Cookie")).toContain("orquesta_token=");
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("POST /api/plan starts planner and returns agentId", async () => {
   const { service, calls } = makeFakePlannerService();
   const { root, handler } = await makeHandler(service, "done");

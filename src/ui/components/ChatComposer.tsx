@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { DAEMON_HTTP } from "../config";
 
 export function ChatComposer({
   targetAgentId,
@@ -13,8 +14,9 @@ export function ChatComposer({
 
   const send = async () => {
     if (!targetAgentId || !value.trim()) return;
-    await fetch(`/api/agents/${targetAgentId}/input`, {
+    await fetch(`${DAEMON_HTTP}/api/agents/${targetAgentId}/input`, {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: `[human/pm]: ${value}`, role: "pm" }),
     });

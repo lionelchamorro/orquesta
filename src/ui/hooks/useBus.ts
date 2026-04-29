@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { TaggedBusEvent } from "../../core/types";
+import { DAEMON_WS } from "../config";
 
 export const useBus = () => {
   const [events, setEvents] = useState<TaggedBusEvent[]>([]);
@@ -11,7 +12,8 @@ export const useBus = () => {
     let reconnectTimer: number | undefined;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const connect = () => {
-      ws = new WebSocket(`${proto}://${location.host}/events`);
+      const target = DAEMON_WS || `${proto}://${location.host}`;
+      ws = new WebSocket(`${target}/events`);
       ws.onopen = () => {
         retry = 500;
       };

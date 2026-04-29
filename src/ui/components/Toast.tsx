@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { BusEvent, TaggedBusEvent } from "../../core/types";
+import { DAEMON_HTTP } from "../config";
 
 const isFallbackAsk = (payload: BusEvent): payload is Extract<BusEvent, { type: "ask_user" }> =>
   payload.type === "ask_user" && payload.fallback === true;
@@ -12,8 +13,9 @@ export function Toast({ events }: { events: TaggedBusEvent[] }) {
 
   const answer = async (submitted: string) => {
     if (!submitted.trim()) return;
-    await fetch(`/api/ask/${askPayload.askId}/answer`, {
+    await fetch(`${DAEMON_HTTP}/api/ask/${askPayload.askId}/answer`, {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ answer: submitted }),
     });

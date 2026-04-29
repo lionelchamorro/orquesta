@@ -1,6 +1,7 @@
 import { useState } from "react";
 import WebTTY from "./WebTTY";
 import type { Agent } from "../../core/types";
+import { DAEMON_HTTP, DAEMON_WS } from "../config";
 
 const RESUME_SUPPORTED_CLIS = new Set(["claude", "codex"]);
 
@@ -31,7 +32,7 @@ export function TerminalDrawer({
     setResuming(true);
     setResumeError(null);
     try {
-      const res = await fetch(`/api/agents/${agentId}/resume`, { method: "POST" });
+      const res = await fetch(`${DAEMON_HTTP}/api/agents/${agentId}/resume`, { method: "POST", credentials: "include" });
       const body = (await res.json()) as { ok: boolean; ttyId?: string; error?: string };
       if (!res.ok || !body.ok || !body.ttyId) {
         setResumeError(body.error ?? `resume failed (${res.status})`);
@@ -65,7 +66,7 @@ export function TerminalDrawer({
         <button onClick={onClose}>close</button>
       </div>
       <div className="terminal-host">
-        <WebTTY wsUrl={`/tty/${ttyTarget}`} readOnly={isDead && !resumeTtyId} />
+        <WebTTY wsUrl={`${DAEMON_WS}/tty/${ttyTarget}`} readOnly={isDead && !resumeTtyId} />
       </div>
     </div>
   );

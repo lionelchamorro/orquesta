@@ -15,6 +15,27 @@ const json = (data: unknown, init?: ResponseInit) =>
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
 
+const corsHeaders = (origin: string): HeadersInit => ({
+  "Access-Control-Allow-Origin": origin,
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, x-orquesta-token",
+  "Access-Control-Allow-Credentials": "true",
+});
+
+const withCors = (response: Response, origin?: string, sessionToken?: string): Response => {
+  if (!origin) return response;
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(corsHeaders(origin))) {
+    headers.set(key, value);
+  }
+  if (sessionToken && !headers.has("Set-Cookie")) headers.set("Set-Cookie", sessionCookie(sessionToken));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
 const mutatingRoutes = [
   /^\/api\/plan$/,
   /^\/api\/plan\/reset$/,
@@ -53,9 +74,13 @@ export const createHttpHandler = (deps: {
   uiBuildDir?: string;
   sessionToken?: string;
   journal?: Journal;
+  corsOrigin?: string;
 }) => {
-  return async (req: Request) => {
+  const handle = async (req: Request) => {
     const url = new URL(req.url);
+    if (deps.corsOrigin && req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders(deps.corsOrigin) });
+    }
     if (isProtectedMutation(req, url.pathname) && !requestHasSessionToken(req, deps.sessionToken)) {
       return json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
@@ -111,7 +136,12 @@ export const createHttpHandler = (deps: {
       if (deps.uiBuildDir) return new Response(Bun.file(path.join(deps.uiBuildDir, "index.html")), { headers });
       return new Response(Bun.file(path.join(deps.root, "src", "ui", "index.html")), { headers });
     }
-    if (url.pathname === "/theme.css") return new Response(Bun.file(path.join(deps.root, "src", "ui", "theme.css")));
+    if (url.pathname === "/theme.css") {
+      const cssPath = deps.uiBuildDir
+        ? path.join(deps.uiBuildDir, "theme.css")
+        : path.join(deps.root, "src", "ui", "theme.css");
+      return new Response(Bun.file(cssPath));
+    }
     if (url.pathname.startsWith("/assets/") && deps.uiBuildDir) {
       return new Response(Bun.file(path.join(deps.uiBuildDir, url.pathname.slice(1))));
     }
@@ -278,4 +308,5 @@ export const createHttpHandler = (deps: {
 
     return new Response("not found", { status: 404 });
   };
+  return async (req: Request) => withCors(await handle(req), deps.corsOrigin, deps.sessionToken);
 };

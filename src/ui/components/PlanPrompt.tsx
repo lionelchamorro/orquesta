@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { DAEMON_HTTP } from "../config";
 
 export function PlanPrompt({ onStarted }: { onStarted: (agentId: string, runId: string) => void }) {
   const [prompt, setPrompt] = useState("");
@@ -11,8 +12,9 @@ export function PlanPrompt({ onStarted }: { onStarted: (agentId: string, runId: 
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch("/api/plan", {
+      const response = await fetch(`${DAEMON_HTTP}/api/plan`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: trimmed }),
       });

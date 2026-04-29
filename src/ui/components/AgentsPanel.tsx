@@ -1,5 +1,5 @@
 import type { Agent } from "../../core/types";
-import { taskDisplayId } from "../main";
+import { taskDisplayId } from "../utils/format";
 
 const roleGlyph: Record<Agent["role"], string> = {
   planner: "✦",

@@ -7,15 +7,16 @@ type WsData = { kind: "events" | "tty"; agentId?: string; tags?: string[]; unsub
 
 const MAX_TTY_INPUT_BYTES = 16 * 1024;
 
-const originAllowed = (req: Request) => {
+const originAllowed = (req: Request, corsOrigin?: string) => {
   const origin = req.headers.get("origin");
   if (!origin) return true;
+  if (corsOrigin && origin === corsOrigin) return true;
   const requestUrl = new URL(req.url);
   const originUrl = new URL(origin);
   return originUrl.host === requestUrl.host && ["http:", "https:"].includes(originUrl.protocol);
 };
 
-export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Journal, options: { sessionToken?: string } = {}) => {
+export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Journal, options: { sessionToken?: string; corsOrigin?: string } = {}) => {
   const eventClients = new Set<ServerWebSocket<WsData>>();
   const ttyClients = new Map<string, Set<ServerWebSocket<WsData>>>();
 
@@ -32,7 +33,7 @@ export const createWebSocketHandlers = (bus: Bus, pool: AgentPool, journal?: Jou
 
   return {
     upgrade(req: Request, server: Server<WsData>) {
-      if (!originAllowed(req)) return false;
+      if (!originAllowed(req, options.corsOrigin)) return false;
       const url = new URL(req.url);
       if (url.pathname === "/events") return server.upgrade(req, { data: { kind: "events" } });
       if (url.pathname.startsWith("/tty/")) {
