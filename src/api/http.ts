@@ -4,6 +4,7 @@ import type { Bus } from "../bus/bus";
 import type { Journal } from "../bus/journal";
 import { HUMAN_FALLBACK_AGENT_ID, type AskRouter } from "../daemon/ask-router";
 import type { PlannerService } from "../daemon/planner-service";
+import { importTasks } from "../daemon/task-import";
 import { ensureRepoReady, gitAvailable, isGitRepo, safeGitOutput } from "../core/git";
 import type { PlanStore } from "../core/plan-store";
 import { requestHasSessionToken, sessionCookie } from "../core/session-token";
@@ -40,6 +41,7 @@ const mutatingRoutes = [
   /^\/api\/plan$/,
   /^\/api\/plan\/reset$/,
   /^\/api\/approve$/,
+  /^\/api\/tasks\/import$/,
   /^\/api\/agents\/[^/]+\/input$/,
   /^\/api\/agents\/[^/]+\/resume$/,
   /^\/api\/tasks\/[^/]+\/cancel$/,
@@ -285,6 +287,18 @@ export const createHttpHandler = (deps: {
       }
       const result = await deps.plannerService.startPlanner(prompt);
       return json({ ok: true, ...result });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/tasks/import") {
+      const body = await readJsonBody<unknown>(req).catch((error) => error);
+      if (body instanceof Error) return jsonBodyError(body);
+      const result = await importTasks(deps.store, body);
+      if (!result.ok) {
+        const status = result.error.code === "run_in_progress" ? 409 : 400;
+        return json({ ok: false, error: result.error }, { status });
+      }
+      deps.bus.publish({ tags: [result.runId], payload: { type: "plan_approved", runId: result.runId, at: new Date().toISOString() } });
+      return json({ ok: true, runId: result.runId });
     }
 
     if (req.method === "POST" && url.pathname === "/api/plan/reset") {

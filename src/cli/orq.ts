@@ -9,6 +9,7 @@ import { PlanStore } from "../core/plan-store";
 import { getOrCreateSessionToken } from "../core/session-token";
 import type { Config, Plan } from "../core/types";
 import { AskRouter } from "../daemon/ask-router";
+import { importTasks, readRunSource } from "../daemon/task-import";
 import { createMcpHandler } from "../mcp/server";
 
 const root = process.cwd();
@@ -180,7 +181,7 @@ export const runPlanner = async (plan: Plan, config: Config) => {
 export const main = async () => {
   const [command, ...rest] = Bun.argv.slice(2);
   if (!command) {
-    console.log("Usage: orq <plan|approve|start|status|logs|doctor>");
+    console.log("Usage: orq <plan|import|approve|start|status|logs|doctor>");
     return;
   }
 
@@ -214,6 +215,56 @@ export const main = async () => {
       const config = await store.loadConfig().catch(() => defaultConfig());
       await runPlanner(plan, config);
       await printStatus();
+      return;
+    }
+  }
+
+  if (command === "import") {
+    const file = rest[0];
+    if (!file) {
+      console.log("Usage: orq import <file>");
+      return;
+    }
+    const filePath = path.resolve(root, file);
+    const fileHandle = Bun.file(filePath);
+    if (!(await fileHandle.exists())) {
+      console.error(`Import file not found: ${filePath}`);
+      process.exitCode = 1;
+      return;
+    }
+    const payload = await fileHandle.json().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to parse ${filePath}: ${message}`);
+      process.exitCode = 1;
+      return null;
+    });
+    if (payload === null) return;
+
+    const daemonPort = Number(Bun.env.ORQ_PORT ?? 8000);
+    const sessionToken = await Bun.file(store.crewPath("session.token")).text().then((text) => text.trim()).catch(() => "");
+    try {
+      const response = await fetch(`http://localhost:${daemonPort}/api/tasks/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(sessionToken ? { "X-Orquesta-Token": sessionToken } : {}) },
+        body: JSON.stringify(payload),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok) {
+        console.log(`Imported via daemon: runId=${body.runId}`);
+        return;
+      }
+      console.error(`Daemon rejected import (${response.status}): ${body.error?.message ?? body.error ?? "unknown error"}`);
+      process.exitCode = 1;
+      return;
+    } catch {
+      console.log(`Daemon not reachable on :${daemonPort}. Importing in-process…`);
+      const result = await importTasks(store, payload);
+      if (!result.ok) {
+        console.error(`Import failed (${result.error.code}): ${result.error.message}`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Imported in-process: runId=${result.runId}`);
       return;
     }
   }
@@ -259,6 +310,13 @@ export const main = async () => {
     console.log(`Session token: ${tokenExists ? "present" : "missing"}`);
     console.log(`Crew dir: ${store.crewPath()}`);
     console.log(`Plan: ${plan.runId} ${plan.status} tasks=${tasks.length} completed=${tasks.filter((task) => task.status === "done").length}`);
+    console.log(`Imported-run support: ok`);
+    console.log(`Run source: ${await readRunSource(store)}`);
+    return;
+  }
+
+  if (!command) {
+    console.log("Usage: orq <plan|import|approve|start|status|logs|doctor>");
     return;
   }
 

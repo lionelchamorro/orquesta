@@ -83,6 +83,7 @@ export class PlannerService {
     const plan = makePlan(prompt);
     clearPreviousTasks(this.store);
     await this.store.savePlan(plan);
+    await Bun.write(this.store.crewPath("run.source"), "planner\n");
     const config = await this.store.loadConfig();
     const member = plannerMember(config);
     const spawnPrompt = `${PLANNER_PROMPT_PREFIX}\n\n${prompt}`;
