@@ -52,6 +52,11 @@ export class Bus {
       tags: event.tags,
       payload: event.payload,
     };
+    // Reject ill-formed subtask_output (empty subtaskId): the producer should
+    // have emitted agent_output for the planner / unbound agents instead.
+    if (tagged.payload.type === "subtask_output" && !tagged.payload.subtaskId) {
+      return tagged;
+    }
     const key = dedupKeyFor(tagged);
     if (key) {
       const now = Date.now();
