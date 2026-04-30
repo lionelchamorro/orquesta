@@ -6,7 +6,7 @@ import { ActivityFeed } from "./components/ActivityFeed";
 import { AgentsPanel } from "./components/AgentsPanel";
 import { LiveStream } from "./components/LiveStream";
 import { ChatComposer } from "./components/ChatComposer";
-import { PlanPrompt } from "./components/PlanPrompt";
+import { EmptyState } from "./components/EmptyState";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { Toast } from "./components/Toast";
 import { useRunState } from "./hooks/useRunState";
@@ -18,8 +18,6 @@ function App() {
     agents,
     events,
     subtasks,
-    plannerAgentId,
-    setPlannerAgentId,
     selectedTaskId,
     setSelectedAgentId,
     drawerAgentId,
@@ -28,15 +26,11 @@ function App() {
     setSelectedIterationNumber,
     pinnedAgentIds,
     togglePin,
-    refresh,
     selectedIteration,
     iterationTasks,
     selectedTask,
     agentTaskId,
     selectTask,
-    plannerAgent,
-    approve,
-    resetPlan,
     mode,
     selectedTerminalAgent,
     effectiveSelectedAgentId,
@@ -46,60 +40,7 @@ function App() {
   return (
     <div className="app-shell">
       <Shell plan={plan} />
-      {mode === "empty" && (
-        <PlanPrompt onStarted={(agentId) => { setPlannerAgentId(agentId); void refresh(); }} />
-      )}
-      {mode === "planner" && (
-        <div className="planner-mode">
-          {(plan?.status === "awaiting_approval" || iterationTasks.length > 0) && plan?.status !== "approved" && plan?.status !== "running" && (
-            <div className="planner-approve">
-              <div>
-                <strong>
-                  {plan?.status === "awaiting_approval" ? "Planner ready." : "Tasks drafted."}
-                </strong>{" "}
-                <span className="muted">
-                  {plan?.status === "awaiting_approval"
-                    ? "Review tasks below and approve to start the run."
-                    : "You can run them now or keep iterating with the planner."}
-                </span>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="secondary" onClick={() => void resetPlan()}>Reset</button>
-                <button onClick={() => void approve()}>
-                  {plan?.status === "awaiting_approval" ? "Approve & Start" : "Run"}
-                </button>
-              </div>
-            </div>
-          )}
-          <div className="planner-layout">
-            <div className="column tasks">
-              <TasksPanel
-                tasks={iterationTasks}
-                subtasks={subtasks}
-                agents={agents}
-                iterationNumber={selectedIterationNumber}
-                selectedTaskId={selectedTaskId}
-                onSelect={selectTask}
-              />
-            </div>
-            <div className="column live">
-              <LiveStream agent={plannerAgent} />
-            </div>
-            <div className="column right">
-              <ChatComposer
-                targetAgentId={plannerAgentId ?? undefined}
-                label="to planner"
-                placeholder="Ask the planner to adjust, add, or remove tasks…"
-              />
-              <ActivityFeed
-                events={events}
-                iterationNumber={selectedIterationNumber}
-                selectedTaskId={selectedTaskId}
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      {mode === "empty" && <EmptyState />}
       {mode === "run" && (
         <>
           <IterationNav

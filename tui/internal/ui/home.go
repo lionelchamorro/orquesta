@@ -129,6 +129,9 @@ func (h Home) View() string {
 	if h.err != nil {
 		return bad.Render(h.err.Error())
 	}
+	if isEmptyRun(h.state) {
+		return renderEmpty(width, height) + "\n" + muted.Render("r refresh  q quit")
+	}
 	footer := muted.Render("j/k select agent  pgup/pgdn page  g/G top/bottom  enter attach  r refresh  q quit")
 	contentHeight := max(1, height-1)
 	if width >= 80 {
@@ -222,6 +225,25 @@ func pageSize(height int) int {
 		return 1
 	}
 	return height - 1
+}
+
+func isEmptyRun(state client.RunState) bool {
+	return state.Plan.RunID == "" || state.Plan.RunID == "run-1" || len(state.Tasks) == 0
+}
+
+func renderEmpty(width, height int) string {
+	body := strings.Join([]string{
+		title.Render("No run yet"),
+		"",
+		"Build a Task DAG and start a run with:",
+		"",
+		"  orq import <file>",
+		"  orq start",
+		"",
+		muted.Render("See tasks/prd/0001-tui-fix-and-planner-ui-strip.md"),
+		muted.Render("for the import payload format."),
+	}, "\n")
+	return border.Width(width).Height(max(1, height-1)).Render(body)
 }
 
 func (h Home) fetchRunState() tea.Cmd {

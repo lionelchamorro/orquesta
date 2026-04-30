@@ -3,12 +3,10 @@ import type { Agent, Iteration, Plan, Subtask, Task } from "../../core/types";
 import { DAEMON_HTTP } from "../config";
 import { useBus } from "./useBus";
 
-export type Mode = "empty" | "planner" | "run";
+export type Mode = "empty" | "run";
 
-const resolveMode = (plan: Plan | null, plannerAgentId: string | null, tasks: Task[]): Mode => {
+const resolveMode = (plan: Plan | null, tasks: Task[]): Mode => {
   if (!plan) return "empty";
-  if (plannerAgentId) return "planner";
-  if (plan.status === "drafting" || plan.status === "awaiting_approval") return "planner";
   if (tasks.length === 0) return "empty";
   return "run";
 };
@@ -25,7 +23,6 @@ export const useRunState = () => {
   const [iterations, setIterations] = useState<Iteration[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [subtasks, setSubtasks] = useState<Subtask[]>([]);
-  const [plannerAgentId, setPlannerAgentId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [selectedAgentId, setSelectedAgentId] = useState<string>();
   const [drawerAgentId, setDrawerAgentId] = useState<string>();
@@ -51,12 +48,11 @@ export const useRunState = () => {
     setIterations(data.iterations);
     setAgents(data.agents);
     setSubtasks(data.subtasks ?? []);
-    setPlannerAgentId(data.plannerAgentId ?? null);
     if (typeof data.plan?.current_iteration === "number") {
       setSelectedIterationNumber(data.plan.current_iteration);
     }
     if (!selectedTaskId && data.tasks[0]) setSelectedTaskId(data.tasks[0].id);
-    const mode = resolveMode(data.plan, data.plannerAgentId ?? null, data.tasks);
+    const mode = resolveMode(data.plan, data.tasks);
     const nextAgent = mode === "run"
       ? selectedRunAgent(data.agents, selectedAgentId)
       : (!selectedAgentId ? data.agents[0] : undefined);
@@ -73,7 +69,7 @@ export const useRunState = () => {
     const payload = last.payload;
     if (payload.type === "plan_approved") {
       setPlan((current) => current ? { ...current, status: "approved", updated_at: payload.at } : current);
-      setPlannerAgentId(null);
+      void refresh();
       return;
     }
     if (payload.type === "tasks_emitted") {
@@ -120,16 +116,12 @@ export const useRunState = () => {
         try { localStorage.setItem("orq.pinnedAgents", JSON.stringify([...next])); } catch {}
         return next;
       });
-      if (payload.agentId === plannerAgentId) {
-        setPlannerAgentId(null);
-        void refresh();
-      }
       return;
     }
     if (payload.type === "run_completed") {
       setPlan((current) => current ? { ...current, status: "done" } : current);
     }
-  }, [events, refresh, plan?.runId, plannerAgentId]);
+  }, [events, refresh, plan?.runId]);
 
   const togglePin = useCallback((agentId: string) => {
     setPinnedAgentIds((current) => {
@@ -169,29 +161,8 @@ export const useRunState = () => {
     const next = live ?? fallback;
     if (next) setSelectedAgentId(next.id);
   }, [agents, agentTaskId]);
-  const plannerAgent = useMemo(
-    () => agents.find((agent) => agent.id === plannerAgentId) ?? (plannerAgentId ? {
-      id: plannerAgentId,
-      role: "planner" as const,
-      cli: "claude" as const,
-      model: "unknown",
-      status: "live" as const,
-      session_cwd: "",
-    } : undefined),
-    [agents, plannerAgentId],
-  );
 
-  const approve = useCallback(async () => {
-    await fetch(`${DAEMON_HTTP}/api/approve`, { method: "POST", credentials: "include" });
-    await refresh();
-  }, [refresh]);
-
-  const resetPlan = useCallback(async () => {
-    await fetch(`${DAEMON_HTTP}/api/plan/reset`, { method: "POST", credentials: "include" });
-    await refresh();
-  }, [refresh]);
-
-  const mode = resolveMode(plan, plannerAgentId, tasks);
+  const mode = resolveMode(plan, tasks);
   const selectedTerminalAgent = mode === "run" ? selectedRunAgent(agents, selectedAgentId) : undefined;
   const effectiveSelectedAgentId = mode === "run" ? selectedTerminalAgent?.id : selectedAgentId;
   const chatTargetAgentId = selectedTerminalAgent?.status === "dead" ? undefined : effectiveSelectedAgentId;
@@ -202,8 +173,6 @@ export const useRunState = () => {
     agents,
     events,
     subtasks,
-    plannerAgentId,
-    setPlannerAgentId,
     selectedTaskId,
     selectedAgentId,
     setSelectedAgentId,
@@ -219,9 +188,6 @@ export const useRunState = () => {
     selectedTask,
     agentTaskId,
     selectTask,
-    plannerAgent,
-    approve,
-    resetPlan,
     mode,
     selectedTerminalAgent,
     effectiveSelectedAgentId,
