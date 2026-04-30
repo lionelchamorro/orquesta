@@ -31,6 +31,7 @@ type Home struct {
 	displayedIter     int
 	pinnedAgents      map[string]bool
 	iterationOverride bool
+	helpOpen          bool
 	err               error
 }
 
@@ -88,6 +89,17 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.width = msg.Width
 		h.height = msg.Height
 	case tea.KeyMsg:
+		if h.helpOpen {
+			switch msg.String() {
+			case "esc", "?", "q":
+				h.helpOpen = false
+				return h, nil
+			case "ctrl+c":
+				return h, tea.Quit
+			default:
+				return h, nil
+			}
+		}
 		// Chat overlay swallows all keys when open.
 		if h.chat.Open {
 			switch msg.String() {
@@ -219,6 +231,9 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return h, tea.Batch(h.startTTY(agent.ID), waitTTY(h.ttyEvents))
+		case "?":
+			h.helpOpen = true
+			return h, nil
 		case "/":
 			if h.pane.Mode != ModeAgentDetail || h.pane.AgentID == "" {
 				return h, nil
@@ -343,6 +358,9 @@ func (h Home) View() string {
 		footer = muted.Render(footerDigest(pending)) + "  " + footer
 	}
 	overlay := renderChatOverlay(h.chat, width)
+	if h.helpOpen {
+		overlay = renderHelp(h.pane.Mode, h.chat.Open, width)
+	}
 	visibleToasts := h.toasts.Visible(time.Now(), defaultToastTimeout)
 	toastBlock := renderToasts(visibleToasts, width)
 
