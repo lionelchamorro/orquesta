@@ -95,6 +95,24 @@ export const waitForAgentCompletion = (bus: Bus, pool: AgentPool, agentId: strin
     });
   });
 
+const isMissedPlannerCompletion = (error: unknown, agentId: string) =>
+  error instanceof Error && error.message === `Agent ${agentId} exited before completion`;
+
+export const waitForPlannerCompletionOrTasks = async (
+  bus: Bus,
+  pool: AgentPool,
+  agentId: string,
+  loadTasks: () => Promise<unknown[]>,
+) => {
+  try {
+    return await waitForAgentCompletion(bus, pool, agentId);
+  } catch (error) {
+    const tasks = await loadTasks();
+    if (tasks.length === 0 || !isMissedPlannerCompletion(error, agentId)) throw error;
+    return "";
+  }
+};
+
 const serveEphemeralMcp = (handler: (req: Request) => Promise<Response>) => {
   return Bun.serve({ port: 0, fetch: handler });
 };
@@ -124,7 +142,7 @@ export const runPlanner = async (plan: Plan, config: Config) => {
       command: member.command,
       port: server.port,
     });
-    const summary = await waitForAgentCompletion(bus, pool, agent.id);
+    const summary = await waitForPlannerCompletionOrTasks(bus, pool, agent.id, () => store.loadTasks());
     const tasks = await ensurePlannerProducedTasks();
     await store.savePlan({
       ...plan,
