@@ -26,9 +26,12 @@ type Home struct {
 	ttyAgentID     string
 	ttyBuffer      string
 	ttyEvents      chan ttyMsg
-	chat           ChatOverlay
-	toasts         ToastQueue
-	err            error
+	chat              ChatOverlay
+	toasts            ToastQueue
+	displayedIter     int
+	pinnedAgents      map[string]bool
+	iterationOverride bool
+	err               error
 }
 
 const maxActivityBuffer = 1000
@@ -63,7 +66,7 @@ type chatSendMsg struct {
 }
 
 func NewHome(api *client.Client, events <-chan client.TaggedEvent) Home {
-	return Home{api: api, events: events, ttyEvents: make(chan ttyMsg, 64)}
+	return Home{api: api, events: events, ttyEvents: make(chan ttyMsg, 64), pinnedAgents: map[string]bool{}, displayedIter: 1}
 }
 
 func (h Home) Init() tea.Cmd {
@@ -143,11 +146,12 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY || h.pane.Mode == ModeResumedPTY {
 				h.closeTTY()
 			}
-			if h.cursor < len(h.state.Agents)-1 {
+			agents := h.visibleAgents()
+			if h.cursor < len(agents)-1 {
 				h.cursor++
 			}
-			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
-			h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
+			h.listOffset = settleListOffset(h.listStateFiltered(), h.cursor, h.listOffset, h.listPaneHeight())
+			h.pane = focusForCursor(h.pane, agents, h.cursor)
 		case "k", "up":
 			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY || h.pane.Mode == ModeResumedPTY {
 				h.closeTTY()
@@ -155,29 +159,44 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if h.cursor > 0 {
 				h.cursor--
 			}
-			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
-			h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
+			h.listOffset = settleListOffset(h.listStateFiltered(), h.cursor, h.listOffset, h.listPaneHeight())
+			h.pane = focusForCursor(h.pane, h.visibleAgents(), h.cursor)
 		case "pgdown", "ctrl+f":
 			page := pageSize(h.listPaneHeight())
-			h.cursor = clamp(h.cursor+page, 0, max(0, len(h.state.Agents)-1))
-			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
+			h.cursor = clamp(h.cursor+page, 0, max(0, len(h.visibleAgents())-1))
+			h.listOffset = settleListOffset(h.listStateFiltered(), h.cursor, h.listOffset, h.listPaneHeight())
 		case "pgup", "ctrl+b":
 			page := pageSize(h.listPaneHeight())
-			h.cursor = clamp(h.cursor-page, 0, max(0, len(h.state.Agents)-1))
-			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
+			h.cursor = clamp(h.cursor-page, 0, max(0, len(h.visibleAgents())-1))
+			h.listOffset = settleListOffset(h.listStateFiltered(), h.cursor, h.listOffset, h.listPaneHeight())
 		case "g", "home":
 			h.cursor = 0
 			h.listOffset = 0
 		case "G", "end":
-			h.cursor = max(0, len(h.state.Agents)-1)
-			h.listOffset = settleListOffset(h.state, h.cursor, 0, h.listPaneHeight())
+			h.cursor = max(0, len(h.visibleAgents())-1)
+			h.listOffset = settleListOffset(h.listStateFiltered(), h.cursor, 0, h.listPaneHeight())
+		case "[", ",":
+			h.displayedIter = ClampIteration(h.displayedIter-1, planMax(h.state.Plan))
+			h.iterationOverride = true
+		case "]", ".":
+			h.displayedIter = ClampIteration(h.displayedIter+1, planMax(h.state.Plan))
+			h.iterationOverride = true
+		case "p":
+			if h.pane.Mode == ModeAgentDetail && h.pane.AgentID != "" {
+				if h.pinnedAgents[h.pane.AgentID] {
+					delete(h.pinnedAgents, h.pane.AgentID)
+				} else {
+					h.pinnedAgents[h.pane.AgentID] = true
+				}
+			}
 		case "enter":
 			// Pending toast jump-to-agent takes priority when no pane action applies.
 			if latest, ok := h.toasts.Latest(time.Now(), defaultToastTimeout); ok && h.pane.Mode != ModeAgentDetail {
-				if idx := agentIndex(h.state.Agents, latest.AgentID); idx >= 0 {
+				agents := h.visibleAgents()
+				if idx := agentIndex(agents, latest.AgentID); idx >= 0 {
 					h.cursor = idx
-					h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
-					h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
+					h.listOffset = settleListOffset(h.listStateFiltered(), h.cursor, h.listOffset, h.listPaneHeight())
+					h.pane = focusForCursor(h.pane, agents, h.cursor)
 				}
 				h.toasts = h.toasts.Dismiss(latest.AskID)
 				return h, nil
@@ -229,10 +248,16 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.err = msg.err
 		if msg.err == nil {
 			h.state = msg.state
-			if h.cursor >= len(h.state.Agents) {
-				h.cursor = max(0, len(h.state.Agents)-1)
+			if !h.iterationOverride {
+				h.displayedIter = ClampIteration(msg.state.Plan.CurrentIteration, planMax(msg.state.Plan))
+				if h.displayedIter == 0 {
+					h.displayedIter = 1
+				}
 			}
-			h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
+			if h.cursor >= len(h.visibleAgents()) {
+				h.cursor = max(0, len(h.visibleAgents())-1)
+			}
+			h.pane = focusForCursor(h.pane, h.visibleAgents(), h.cursor)
 		}
 	case eventMsg:
 		event := client.TaggedEvent(msg)
@@ -312,6 +337,7 @@ func (h Home) View() string {
 	if isEmptyRun(h.state) {
 		return renderEmpty(width, height) + "\n" + muted.Render("r refresh  q quit")
 	}
+	header := renderHeader(h.state, h.displayedIter, width)
 	footer := h.footerForMode()
 	if pending := h.toasts.PendingDigest(); pending > 0 {
 		footer = muted.Render(footerDigest(pending)) + "  " + footer
@@ -319,28 +345,33 @@ func (h Home) View() string {
 	overlay := renderChatOverlay(h.chat, width)
 	visibleToasts := h.toasts.Visible(time.Now(), defaultToastTimeout)
 	toastBlock := renderToasts(visibleToasts, width)
-	contentHeight := max(1, height-1)
+
+	filteredState := h.filteredState()
+	visibleAgents := h.visibleAgents()
+	contentHeight := max(1, height-2) // -1 for header, -1 for footer
 	if overlay != "" {
 		contentHeight = max(1, contentHeight-3)
 	}
+	listState := filteredState
+	listState.Agents = visibleAgents
 	var main string
 	if width >= 80 {
 		left := max(28, width*35/100)
 		right := max(20, width-left)
 		main = lipgloss.JoinHorizontal(
 			lipgloss.Top,
-			renderList(h.state, h.cursor, h.listOffset, left, contentHeight),
+			renderList(listState, h.cursor, h.listOffset, left, contentHeight),
 			h.renderRightPane(right, contentHeight),
 		)
 	} else {
 		top := max(8, contentHeight/2)
 		main = lipgloss.JoinVertical(
 			lipgloss.Left,
-			renderList(h.state, h.cursor, h.listOffset, width, top),
+			renderList(listState, h.cursor, h.listOffset, width, top),
 			h.renderRightPane(width, contentHeight-top),
 		)
 	}
-	parts := []string{main}
+	parts := []string{header, main}
 	if toastBlock != "" {
 		parts = append(parts, toastBlock)
 	}
@@ -349,6 +380,30 @@ func (h Home) View() string {
 	}
 	parts = append(parts, footer)
 	return strings.Join(parts, "\n")
+}
+
+// filteredState returns a copy of state with Tasks filtered to the
+// displayed iteration. Agents are filtered separately via visibleAgents().
+func (h Home) filteredState() client.RunState {
+	s := h.state
+	s.Tasks = FilterTasksByIteration(h.state.Tasks, h.displayedIter)
+	return s
+}
+
+// listStateFiltered returns a state copy with Tasks+Agents filtered.
+func (h Home) listStateFiltered() client.RunState {
+	s := h.filteredState()
+	s.Agents = h.visibleAgents()
+	return s
+}
+
+func (h Home) visibleAgents() []client.Agent {
+	tasks := FilterTasksByIteration(h.state.Tasks, h.displayedIter)
+	inIter := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		inIter[t.ID] = true
+	}
+	return FilterAgentsForIteration(h.state.Agents, func(id string) bool { return inIter[id] }, h.pinnedAgents)
 }
 
 func footerDigest(n int) string {
@@ -416,7 +471,7 @@ func (h Home) footerForMode() string {
 		}
 		return muted.Render("enter attach  esc back  r refresh  q quit")
 	default:
-		return muted.Render("j/k select  pgup/pgdn page  g/G top/bottom  enter attach  esc back  r refresh  q quit")
+		return muted.Render("[enter] open agent  [/] chat  [,.] iter  [p] pin  [q] quit")
 	}
 }
 
@@ -438,7 +493,7 @@ func (h Home) renderRightPane(width, height int) string {
 		}
 	}
 	sel := Selection{Kind: SelectionNone}
-	out, _ := renderActivity(h.activityBuffer, sel, h.state.Plan.CurrentIteration, h.activityOffset, width, height)
+	out, _ := renderActivity(h.activityBuffer, sel, h.displayedIter, h.activityOffset, width, height)
 	return out
 }
 
