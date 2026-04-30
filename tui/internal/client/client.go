@@ -135,6 +135,36 @@ func (c *Client) PostPlanReset() error {
 	return c.post("/api/plan/reset", nil)
 }
 
+type ResumeResponse struct {
+	OK    bool   `json:"ok"`
+	TTYID string `json:"ttyId"`
+	Error string `json:"error"`
+}
+
+func (c *Client) PostAgentResume(agentID string) (ResumeResponse, error) {
+	req, err := c.newRequest(http.MethodPost, "/api/agents/"+agentID+"/resume", []byte("{}"))
+	if err != nil {
+		return ResumeResponse{}, err
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return ResumeResponse{}, err
+	}
+	defer res.Body.Close()
+	var body ResumeResponse
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		return ResumeResponse{}, fmt.Errorf("decode resume response: %w", err)
+	}
+	if res.StatusCode >= 300 || !body.OK {
+		message := body.Error
+		if message == "" {
+			message = res.Status
+		}
+		return body, fmt.Errorf("resume rejected: %s", message)
+	}
+	return body, nil
+}
+
 func (c *Client) PostAgentInput(agentID, text string) error {
 	body, err := json.Marshal(map[string]string{"text": text, "role": "pm"})
 	if err != nil {

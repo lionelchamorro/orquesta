@@ -47,6 +47,11 @@ type ttyOpenedMsg struct {
 	err     error
 }
 
+type resumeMsg struct {
+	agentID string
+	err     error
+}
+
 func NewHome(api *client.Client, events <-chan client.TaggedEvent) Home {
 	return Home{api: api, events: events, ttyEvents: make(chan ttyMsg, 64)}
 }
@@ -70,9 +75,9 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.width = msg.Width
 		h.height = msg.Height
 	case tea.KeyMsg:
-		// In LivePTY mode, forward typed keys to the PTY (read-only in
-		// ReplayPTY). Reserved keys (esc, ctrl+c) still apply.
-		if h.pane.Mode == ModeLivePTY && h.tty != nil {
+		// In LivePTY/ResumedPTY mode, forward typed keys to the PTY
+		// (read-only in ReplayPTY). Reserved keys (esc, ctrl+c) still apply.
+		if (h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeResumedPTY) && h.tty != nil {
 			switch msg.String() {
 			case "esc":
 				h.closeTTY()
@@ -91,7 +96,8 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return h, tea.Quit
 		case "esc":
-			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY || h.pane.Mode == ModeResumedPTY {
+			switch h.pane.Mode {
+			case ModeLivePTY, ModeReplayPTY, ModeResumedPTY:
 				h.closeTTY()
 				if next, err := h.pane.Detach(); err == nil {
 					h.pane = next
@@ -101,7 +107,7 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			return h, h.fetchRunState()
 		case "j", "down":
-			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY {
+			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY || h.pane.Mode == ModeResumedPTY {
 				h.closeTTY()
 			}
 			if h.cursor < len(h.state.Agents)-1 {
@@ -110,7 +116,7 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
 			h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
 		case "k", "up":
-			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY {
+			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY || h.pane.Mode == ModeResumedPTY {
 				h.closeTTY()
 			}
 			if h.cursor > 0 {
@@ -151,6 +157,20 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return h, tea.Batch(h.startTTY(agent.ID), waitTTY(h.ttyEvents))
+		case "R":
+			if h.pane.Mode != ModeAgentDetail || h.pane.AgentID == "" {
+				return h, nil
+			}
+			agent, ok := findAgent(h.state.Agents, h.pane.AgentID)
+			if !ok {
+				return h, nil
+			}
+			la := toLocalAgent(agent, worktreeForAgent(h.state, agent))
+			if ok, reason := resumable(la, diskExists); !ok {
+				h.ttyBuffer = "[resume not available: " + reason + "]"
+				return h, nil
+			}
+			return h, h.startResume(agent.ID)
 		}
 	case runStateMsg:
 		h.err = msg.err
@@ -171,6 +191,16 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, tea.Batch(h.fetchRunState(), waitEvent(h.events))
 		}
 		return h, waitEvent(h.events)
+	case resumeMsg:
+		if msg.err != nil {
+			h.ttyBuffer = "[resume failed: " + msg.err.Error() + "]"
+			return h, nil
+		}
+		if next, err := h.pane.AttachResumed(msg.agentID); err == nil {
+			h.pane = next
+		}
+		h.ttyBuffer = ""
+		return h, tea.Batch(h.startTTY(msg.agentID), waitTTY(h.ttyEvents))
 	case ttyOpenedMsg:
 		if msg.err != nil {
 			h.ttyBuffer = appendTTY(h.ttyBuffer, "\n[failed to open terminal: "+msg.err.Error()+"]\n")
@@ -243,10 +273,20 @@ func (h Home) View() string {
 
 func (h Home) footerForMode() string {
 	switch h.pane.Mode {
-	case ModeLivePTY:
+	case ModeLivePTY, ModeResumedPTY:
 		return muted.Render("typing → PTY  esc detach  ctrl+c quit")
 	case ModeReplayPTY:
 		return muted.Render("read-only replay  esc back  q quit")
+	case ModeAgentDetail:
+		if a, ok := findAgent(h.state.Agents, h.pane.AgentID); ok {
+			la := toLocalAgent(a, worktreeForAgent(h.state, a))
+			if ok, reason := resumable(la, diskExists); ok {
+				return muted.Render("enter attach  R resume  esc back  r refresh  q quit")
+			} else if reason != "" {
+				return muted.Render("enter attach  esc back  R disabled — " + reason + "  r refresh  q quit")
+			}
+		}
+		return muted.Render("enter attach  esc back  r refresh  q quit")
 	default:
 		return muted.Render("j/k select  pgup/pgdn page  g/G top/bottom  enter attach  esc back  r refresh  q quit")
 	}
@@ -259,6 +299,8 @@ func (h Home) renderRightPane(width, height int) string {
 		return renderLivePTY(h.pane.AgentID, h.ttyBuffer, width, height)
 	case ModeReplayPTY:
 		return renderReplayPTY(h.pane.AgentID, h.ttyBuffer, width, height)
+	case ModeResumedPTY:
+		return renderResumedPTY(h.pane.AgentID, h.ttyBuffer, width, height)
 	case ModeAgentDetail:
 		if h.pane.AgentID == "" {
 			break
@@ -368,6 +410,13 @@ func (h Home) fetchRunState() tea.Cmd {
 func waitEvent(events <-chan client.TaggedEvent) tea.Cmd {
 	return func() tea.Msg {
 		return eventMsg(<-events)
+	}
+}
+
+func (h Home) startResume(agentID string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := h.api.PostAgentResume(agentID)
+		return resumeMsg{agentID: agentID, err: err}
 	}
 }
 

@@ -51,6 +51,17 @@ func renderReplayPTY(agentID, buffer string, width, height int) string {
 	return border.Width(width).Height(height).Render(head + "\n" + body)
 }
 
+// renderResumedPTY renders a freshly-resumed CLI session for the original
+// agent.
+func renderResumedPTY(agentID, buffer string, width, height int) string {
+	head := title.Render("Resumed · " + agentID)
+	body := tailLines(buffer, height-2)
+	if strings.TrimSpace(body) == "" {
+		body = muted.Render("(starting resume session…)")
+	}
+	return border.Width(width).Height(height).Render(head + "\n" + body)
+}
+
 func tailLines(buffer string, n int) string {
 	if n <= 0 {
 		return ""

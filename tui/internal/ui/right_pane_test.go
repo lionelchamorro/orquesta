@@ -97,6 +97,24 @@ func TestRightPane_ReplayPTY_Detach_ReturnsToAgentDetail(t *testing.T) {
 	}
 }
 
+func TestRightPane_AgentDetail_AttachResumed_GoesToResumedPTY(t *testing.T) {
+	p := RightPane{Mode: ModeAgentDetail, AgentID: "agent-1"}
+	next, err := p.AttachResumed("agent-1")
+	if err != nil {
+		t.Fatalf("AttachResumed from AgentDetail should be legal, got %v", err)
+	}
+	if next.Mode != ModeResumedPTY {
+		t.Fatalf("expected ModeResumedPTY, got %v", next.Mode)
+	}
+}
+
+func TestRightPane_AttachResumed_FromActivity_Rejected(t *testing.T) {
+	p := RightPane{Mode: ModeActivity}
+	if _, err := p.AttachResumed("agent-1"); err == nil {
+		t.Fatalf("AttachResumed from Activity must be illegal")
+	}
+}
+
 func TestRightPane_AttachLive_FromActivity_Rejected(t *testing.T) {
 	p := RightPane{Mode: ModeActivity}
 	if _, err := p.AttachLive("agent-1"); err == nil {
