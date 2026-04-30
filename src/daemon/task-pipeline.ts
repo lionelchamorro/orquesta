@@ -7,6 +7,7 @@ import { nextSubtaskId } from "../core/ids";
 import type { PlanStore } from "../core/plan-store";
 import type { Config, Role, Subtask, SubtaskType, Task } from "../core/types";
 import { closeTask } from "./task-closure";
+import { deriveScope, isFakeGreenSummary, requiresReviewableScope } from "./scope";
 import path from "node:path";
 
 const DIFF_BODY_MAX_CHARS = 30_000;
@@ -25,6 +26,11 @@ const scopedWorkspaceFiles = (workspacePath?: string) => {
     .slice(0, FILE_SCOPE_MAX);
 };
 
+const readDiff = (worktreePath: string, baseBranch: string) => ({
+  stat: safeGitOutput(worktreePath, ["diff", "--stat", `${baseBranch}..HEAD`]).trim(),
+  body: safeGitOutput(worktreePath, ["diff", `${baseBranch}..HEAD`]),
+});
+
 const buildScopedPrompt = (task: Task, role: Role, action: string): string => {
   const lines: string[] = [
     `Task ${task.id}: ${task.title}`,
@@ -40,27 +46,28 @@ const buildScopedPrompt = (task: Task, role: Role, action: string): string => {
     );
     lines.push("");
   }
-  if ((role === "tester" || role === "critic") && task.worktree_path && task.base_branch) {
-    const stat = safeGitOutput(task.worktree_path, ["diff", "--stat", `${task.base_branch}..HEAD`]).trim();
-    const body = safeGitOutput(task.worktree_path, ["diff", `${task.base_branch}..HEAD`]);
-    lines.push(`Diff vs ${task.base_branch} (this is the SOLE scope of your ${role === "tester" ? "testing" : "review"}):`);
-    lines.push("```");
-    lines.push(stat || "(no changes yet)");
-    lines.push("```");
-    if (body) {
-      const truncated = body.length > DIFF_BODY_MAX_CHARS ? `${body.slice(0, DIFF_BODY_MAX_CHARS)}\n... (truncated)` : body;
-      lines.push("```diff");
-      lines.push(truncated);
+  if (requiresReviewableScope(role)) {
+    const scope = deriveScope(task, readDiff, scopedWorkspaceFiles);
+    if (scope.kind === "diff") {
+      lines.push(`Diff vs ${task.base_branch} (this is the SOLE scope of your ${role === "tester" ? "testing" : "review"}):`);
       lines.push("```");
+      lines.push(scope.stat || "(no changes yet)");
+      lines.push("```");
+      if (scope.body) {
+        const truncated = scope.body.length > DIFF_BODY_MAX_CHARS ? `${scope.body.slice(0, DIFF_BODY_MAX_CHARS)}\n... (truncated)` : scope.body;
+        lines.push("```diff");
+        lines.push(truncated);
+        lines.push("```");
+      }
+      lines.push("");
+    } else if (scope.kind === "files") {
+      lines.push(`Non-git workspace scope (files currently present for this task):`);
+      lines.push("```");
+      lines.push(scope.files.join("\n"));
+      lines.push("```");
+      lines.push("");
     }
-    lines.push("");
-  } else if ((role === "tester" || role === "critic") && task.worktree_path) {
-    const files = scopedWorkspaceFiles(task.worktree_path);
-    lines.push(`Non-git workspace scope (files currently present for this task):`);
-    lines.push("```");
-    lines.push(files.length > 0 ? files.join("\n") : "(no source files found)");
-    lines.push("```");
-    lines.push("");
+    // scope.kind === "none" — caller has already aborted before reaching here.
   }
   lines.push(action);
   return lines.join("\n");
@@ -256,8 +263,24 @@ export class TaskPipeline {
         });
         return;
       }
+      const testerScope = deriveScope(current, readDiff, scopedWorkspaceFiles);
+      if (testerScope.kind === "none") {
+        closureReason = "failed_subtask";
+        this.bus.publish({
+          tags: [task.id, `iter-${task.iteration}`],
+          payload: { type: "activity", fromAgent: "system", message: "No diff and no source files in workspace — aborting tester/critic to avoid a fake-green run." },
+        });
+        throw new Error(`Task ${task.id} has no derivable scope for tester/critic`);
+      }
       const testerPrompt = buildScopedPrompt(current, "tester", "Run any existing tests that exercise the files in the diff above. Do NOT create new test files in this subtask — writing new tests is the job of a dedicated test task in this run. If no tests exist for the changed files, report that fact in `report_complete` (do not invent tests).");
       let test = await this.runSingle(current, "test", "tester", testerPrompt, [code.id]);
+      // Defense in depth: a tester that reports "nothing to test" with no
+      // derivable scope must not be allowed to mark the task done.
+      const testerSubtask = await this.store.loadSubtask(task.id, test.id);
+      if (isFakeGreenSummary(testerSubtask.summary ?? "") && testerScope.kind === "files" && testerScope.files.length === 0) {
+        closureReason = "failed_subtask";
+        throw new Error(`Tester reported '${testerSubtask.summary ?? ""}' on an empty workspace`);
+      }
       current = await this.store.loadTask(task.id);
       const criticPrompt = buildScopedPrompt(current, "critic", "Review the diff above against the task description. Flag any mismatch between the diff and the stated intent as a finding. Do NOT manufacture findings about things outside the task's scope.");
       let critic = await this.runSingle(current, "critic", "critic", criticPrompt, [test.id]);
