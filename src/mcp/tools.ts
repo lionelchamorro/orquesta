@@ -338,6 +338,10 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
     if (agent.bound_task && agent.bound_task !== taskId) throw new Error("report_complete: agent is not bound to this task");
     const task = await store.loadTask(taskId);
     const subtask = await store.loadSubtask(task.id, agent.bound_subtask);
+    if (subtask.status === "done") {
+      agentPool.kill(agentId);
+      return toolResult({ ok: true, duplicate: true });
+    }
     // Publish completion before terminating the PTY so MCP callers receive a clean response.
     const nextSubtask: Subtask = {
       ...subtask,
@@ -364,6 +368,11 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
     const taskId = agent.bound_task ?? (await store.loadTasks()).find((item) => item.subtasks.includes(agent.bound_subtask!))?.id;
     if (!taskId) return toolResult({ ok: false, error: "No task for subtask" });
     const task = await store.loadTask(taskId);
+    const criticSubtask = await store.loadSubtask(task.id, agent.bound_subtask);
+    if (criticSubtask.status === "done") {
+      agentPool.kill(agentId);
+      return toolResult({ ok: true, duplicate: true });
+    }
     const existing = await store.loadSubtasks(task.id);
     const subtaskId = nextSubtaskId(existing.map((item) => item.id));
     const fixSubtask: Subtask = {
@@ -381,7 +390,6 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
     task.updated_at = new Date().toISOString();
     await store.saveSubtask(fixSubtask);
     await store.saveTask(task);
-    const criticSubtask = await store.loadSubtask(task.id, agent.bound_subtask);
     if (criticSubtask.status === "running") {
       const summary = `Filed ${args.findings.length} finding${args.findings.length === 1 ? "" : "s"}; fix subtask ${subtaskId} created.`;
       await store.transitionSubtask(task.id, criticSubtask.id, "done", {

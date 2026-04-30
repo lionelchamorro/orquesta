@@ -1,6 +1,7 @@
 import type { AgentPool } from "../agents/pool";
 import type { Bus } from "../bus/bus";
-import { createTaskWorktree, ensureRepoReady, hasUncommittedChanges, safeGitOutput } from "../core/git";
+import { existsSync, statSync } from "node:fs";
+import { createIsolatedWorkspace, createTaskWorktree, ensureRepoReady, hasUncommittedChanges, safeGitOutput } from "../core/git";
 import { nextSubtaskId } from "../core/ids";
 import type { PlanStore } from "../core/plan-store";
 import type { Config, Role, Subtask, SubtaskType, Task } from "../core/types";
@@ -8,6 +9,20 @@ import { closeTask } from "./task-closure";
 import path from "node:path";
 
 const DIFF_BODY_MAX_CHARS = 30_000;
+const FILE_SCOPE_MAX = 200;
+
+const scopedWorkspaceFiles = (workspacePath?: string) => {
+  if (!workspacePath || !existsSync(workspacePath)) return [];
+  return Array.from(new Bun.Glob("**/*").scanSync({ cwd: workspacePath }))
+    .filter((file) =>
+      !file.startsWith(".git/")
+      && !file.startsWith(".orq/")
+      && !file.startsWith(".orquesta/")
+      && statSync(path.join(workspacePath, file), { throwIfNoEntry: false })?.isFile(),
+    )
+    .sort()
+    .slice(0, FILE_SCOPE_MAX);
+};
 
 const buildScopedPrompt = (task: Task, role: Role, action: string): string => {
   const lines: string[] = [
@@ -18,9 +33,9 @@ const buildScopedPrompt = (task: Task, role: Role, action: string): string => {
     "",
   ];
   if (task.worktree_path) {
-    lines.push(`Worktree root (where source files live): ${task.worktree_path}`);
+    lines.push(`${task.base_branch ? "Worktree" : "Workspace"} root (where source files live): ${task.worktree_path}`);
     lines.push(
-      "Your shell cwd is a subdirectory of the worktree (.orq/<sub-id>) used for MCP wiring; it is NOT the place to put source files. Always create or edit files at paths relative to the worktree root above, or use absolute paths anchored at the worktree root.",
+      "Your shell cwd is a subdirectory of that root (.orq/<sub-id>) used for MCP wiring; it is NOT the place to put source files. Always create or edit files at paths relative to the root above, or use absolute paths anchored there.",
     );
     lines.push("");
   }
@@ -37,6 +52,13 @@ const buildScopedPrompt = (task: Task, role: Role, action: string): string => {
       lines.push(truncated);
       lines.push("```");
     }
+    lines.push("");
+  } else if ((role === "tester" || role === "critic") && task.worktree_path) {
+    const files = scopedWorkspaceFiles(task.worktree_path);
+    lines.push(`Non-git workspace scope (files currently present for this task):`);
+    lines.push("```");
+    lines.push(files.length > 0 ? files.join("\n") : "(no source files found)");
+    lines.push("```");
     lines.push("");
   }
   lines.push(action);
@@ -140,14 +162,27 @@ export class TaskPipeline {
           started_at: current.started_at ?? new Date().toISOString(),
         });
       }
-      if (this.config.git?.enabled && ensureRepoReady(this.store.root, this.config.git.baseBranch)) {
-        const plan = await this.store.loadPlan();
+      const plan = await this.store.loadPlan();
+      if (this.config.git?.enabled) {
+        if (!ensureRepoReady(this.store.root, this.config.git.baseBranch)) {
+          throw new Error(
+            `daemon root is not a git repository with base branch ${this.config.git.baseBranch}; run git init and create ${this.config.git.baseBranch}, or set git.enabled=false in .orquesta/crew/config.json`,
+          );
+        }
         const workspace = createTaskWorktree(this.store.root, task.id, this.config.git.baseBranch, plan.runId);
         current = {
           ...current,
           worktree_path: workspace.worktreePath,
           branch: workspace.branch,
           base_branch: workspace.baseBranch,
+          updated_at: new Date().toISOString(),
+        };
+        await this.store.saveTask(current);
+      } else if (!current.worktree_path) {
+        const workspace = createIsolatedWorkspace(this.store.root, task.id, plan.runId);
+        current = {
+          ...current,
+          worktree_path: workspace.worktreePath,
           updated_at: new Date().toISOString(),
         };
         await this.store.saveTask(current);
@@ -158,12 +193,12 @@ export class TaskPipeline {
       const coderProducedChanges = current.worktree_path && current.base_branch
         ? safeGitOutput(current.worktree_path, ["diff", "--name-only", `${current.base_branch}..HEAD`]).trim().length > 0
           || hasUncommittedChanges(current.worktree_path)
-        : true;
+        : scopedWorkspaceFiles(current.worktree_path).length > 0;
       if (!coderProducedChanges) {
         closureReason = "no_changes";
         this.bus.publish({
           tags: [task.id, `iter-${task.iteration}`],
-          payload: { type: "activity", fromAgent: "system", message: `Coder produced no diff vs ${current.base_branch}; skipping tester/critic.` },
+          payload: { type: "activity", fromAgent: "system", message: current.base_branch ? `Coder produced no diff vs ${current.base_branch}; skipping tester/critic.` : "Coder produced no files in the isolated workspace; skipping tester/critic." },
         });
         return;
       }

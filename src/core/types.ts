@@ -119,7 +119,9 @@ export interface Agent {
   bound_subtask?: string;
   bound_task?: string;
   started_at?: string;
+  finished_at?: string;
   last_activity_at?: string;
+  last_event_at?: string;
   cli_session_id?: string;
   exit_code?: number;
   stop_reason?: string;
@@ -150,6 +152,7 @@ export type BusEvent =
   | { type: "tasks_emitted"; runId: string; iteration: number; taskIds: string[] }
   | { type: "subtask_started"; taskId: string; subtaskId: string; agentId: string }
   | { type: "subtask_output"; subtaskId: string; chunk: string }
+  | { type: "agent_output"; agentId: string; chunk: string }
   | { type: "subtask_completed"; subtaskId: string; summary: string }
   | { type: "subtask_failed"; subtaskId: string; reason: string }
   | { type: "critic_findings"; subtaskId: string; findings: CriticFinding[] }

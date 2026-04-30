@@ -17,6 +17,8 @@ export const renderEventText = (event: TaggedBusEvent) => {
       return `${prefix}${payload.message}`;
     case "subtask_output":
       return payload.chunk.trim() || "[stream chunk]";
+    case "agent_output":
+      return payload.chunk.trim() || "[stream chunk]";
     case "subtask_completed":
       return `${prefix}completed — ${payload.summary}`;
     case "subtask_failed":

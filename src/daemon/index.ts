@@ -13,6 +13,7 @@ import { Orchestrator } from "./orchestrator";
 import { PlannerService } from "./planner-service";
 import { TaskPipeline } from "./task-pipeline";
 import { getOrCreateSessionToken } from "../core/session-token";
+import { ensureRepoReady } from "../core/git";
 
 const root = process.cwd();
 const packageRoot = path.resolve(import.meta.dir, "..", "..");
@@ -27,6 +28,11 @@ const pool = new AgentPool(root, store, bus, { mcpPort: port, templatesDir, mcpT
 const autonomous = Bun.env.ORQ_AUTONOMOUS === "1" || Bun.env.ORQ_AUTONOMOUS === "true";
 const askRouter = new AskRouter(store, pool, bus, { autonomous });
 const config = await store.loadConfig();
+if (config.git?.enabled !== false && !ensureRepoReady(root, config.git?.baseBranch ?? "main")) {
+  console.error(
+    `[daemon] degraded: daemon root is not a git repository with base branch ${config.git?.baseBranch ?? "main"}; planning will be rejected until git is initialized or git.enabled=false is set`,
+  );
+}
 const recovered = await store.recoverInterruptedRun();
 const pipeline = new TaskPipeline(store, bus, pool, config);
 const iterationManager = new IterationManager(store, pool, bus, config);

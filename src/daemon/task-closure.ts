@@ -128,7 +128,8 @@ export const closeTask = async (deps: {
         // Re-load: the pool's exit handler may have written cli_session_id / metrics
         // after we killed the process. The `agent` snapshot from line 66 is stale.
         const fresh = (await store.loadAgent(agent.id)) ?? agent;
-        await store.saveAgent({ ...fresh, session_cwd: target, status: "dead", last_activity_at: new Date().toISOString() });
+        const now = new Date().toISOString();
+        await store.saveAgent({ ...fresh, session_cwd: target, status: "dead", finished_at: fresh.finished_at ?? now, last_activity_at: now });
       }
     }
   }

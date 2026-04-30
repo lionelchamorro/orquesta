@@ -83,6 +83,12 @@ export const waitForAgentCompletion = (bus: Bus, pool: AgentPool, agentId: strin
         unsubscribe();
         resolve(event.payload.summary);
       }
+      if (event.payload.type === "tasks_emitted") {
+        settled = true;
+        clearTimeout(timeout);
+        unsubscribe();
+        resolve(`Planner emitted ${event.payload.taskIds.length} task${event.payload.taskIds.length === 1 ? "" : "s"}.`);
+      }
     });
     const timeout = setTimeout(() => {
       settled = true;
@@ -130,6 +136,7 @@ export const runPlanner = async (plan: Plan, config: Config) => {
     });
     const summary = await waitForAgentCompletion(bus, pool, agent.id);
     const tasks = await ensurePlannerProducedTasks();
+    pool.kill(agent.id);
     await store.savePlan({
       ...plan,
       task_count: tasks.length,

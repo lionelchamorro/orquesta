@@ -42,6 +42,10 @@ test("adapter argv passes extra args through", () => {
 test("adapter argv appends prompt as the last positional", () => {
   expect(argvFor("claude", "m", [], "hi there")).toEqual([
     "claude",
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
     "--permission-mode",
     "bypassPermissions",
     "--dangerously-skip-permissions",

@@ -23,7 +23,7 @@ export function ActivityFeed({
 }) {
   const [filter, setFilter] = useState<"all" | "mine" | "messages">("all");
   const filtered = useMemo(() => {
-    const withoutTerminalNoise = events.filter((event) => event.payload.type !== "subtask_output");
+    const withoutTerminalNoise = events.filter((event) => event.payload.type !== "subtask_output" && event.payload.type !== "agent_output");
     const scoped = selectedTaskId && filter === "mine"
       ? withoutTerminalNoise.filter((event) => event.tags.includes(selectedTaskId))
       : withoutTerminalNoise;

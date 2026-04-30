@@ -4,7 +4,7 @@ import type { Bus } from "../bus/bus";
 import type { Journal } from "../bus/journal";
 import { HUMAN_FALLBACK_AGENT_ID, type AskRouter } from "../daemon/ask-router";
 import type { PlannerService } from "../daemon/planner-service";
-import { gitAvailable, isGitRepo, safeGitOutput } from "../core/git";
+import { ensureRepoReady, gitAvailable, isGitRepo, safeGitOutput } from "../core/git";
 import type { PlanStore } from "../core/plan-store";
 import { requestHasSessionToken, sessionCookie } from "../core/session-token";
 import type { Role } from "../core/types";
@@ -63,6 +63,20 @@ const jsonBodyError = (error: unknown) =>
     { status: error instanceof Error && error.message === "Request body too large" ? 413 : 400 },
   );
 
+const gitReadiness = async (store: PlanStore) => {
+  const config = await store.loadConfig();
+  if (config.git?.enabled === false) return { ready: true, config };
+  const baseBranch = config.git?.baseBranch ?? "main";
+  const repoReady = ensureRepoReady(store.root, baseBranch);
+  return {
+    ready: repoReady,
+    config,
+    reason: repoReady
+      ? undefined
+      : `daemon root is not a git repository with base branch ${baseBranch}; run git init and create ${baseBranch}, or set git.enabled=false in .orquesta/crew/config.json`,
+  };
+};
+
 export const createHttpHandler = (deps: {
   root: string;
   store: PlanStore;
@@ -86,12 +100,16 @@ export const createHttpHandler = (deps: {
     }
     if (url.pathname.startsWith("/mcp/")) return deps.mcpHandler(req);
     if (req.method === "GET" && url.pathname === "/api/health") {
+      const readiness = await gitReadiness(deps.store);
+      if (!readiness.ready) return json({ ok: false, status: "degraded", reason: readiness.reason }, { status: 503 });
       return json({ ok: true, status: "ready" });
     }
     if (req.method === "GET" && url.pathname === "/api/diagnostics") {
       const plan = await deps.store.loadPlan();
       const tasks = await deps.store.loadTasks();
       const agents = await deps.store.loadAgents();
+      const plannerAgentId = deps.plannerService?.getCurrentAgentId() ?? null;
+      const readiness = await gitReadiness(deps.store);
       return json({
         ok: true,
         git: {
@@ -99,6 +117,9 @@ export const createHttpHandler = (deps: {
           repo: isGitRepo(deps.store.root),
           branch: safeGitOutput(deps.store.root, ["branch", "--show-current"]).trim(),
           dirty: safeGitOutput(deps.store.root, ["status", "--porcelain"]).trim().length > 0,
+          enabled: readiness.config.git?.enabled ?? true,
+          ready: readiness.ready,
+          reason: readiness.reason,
         },
         cli: {
           bun: Bun.version,
@@ -113,7 +134,30 @@ export const createHttpHandler = (deps: {
           tasks: tasks.length,
           completed: tasks.filter((task) => task.status === "done").length,
           liveAgents: agents.filter((agent) => agent.status !== "dead").length,
+          plannerAgentId,
         },
+      });
+    }
+    if (req.method === "GET" && url.pathname === "/api/planner/diagnostics") {
+      const plan = await deps.store.loadPlan();
+      const tasks = await deps.store.loadTasks();
+      const plannerAgentId = deps.plannerService?.getCurrentAgentId() ?? null;
+      const plannerAgent = plannerAgentId ? await deps.store.loadAgent(plannerAgentId) : null;
+      const output = plannerAgentId ? deps.pool.getOutputBuffer(plannerAgentId) : new Uint8Array();
+      const outputTail = new TextDecoder("utf-8", { fatal: false }).decode(output.slice(-8_000));
+      return json({
+        ok: true,
+        plan: {
+          runId: plan.runId,
+          status: plan.status,
+          updated_at: plan.updated_at,
+          task_count: plan.task_count,
+        },
+        task_count: tasks.length,
+        plannerAgentId,
+        plannerAgent,
+        outputTail,
+        recentEvents: deps.journal?.query({ tagsIncludes: plannerAgentId ?? "planner", limit: 25 }) ?? [],
       });
     }
     if (req.method === "GET" && url.pathname === "/api/export") {
@@ -227,6 +271,10 @@ export const createHttpHandler = (deps: {
 
     if (req.method === "POST" && url.pathname === "/api/plan") {
       if (!deps.plannerService) return json({ error: "planner service unavailable" }, { status: 503 });
+      const readiness = await gitReadiness(deps.store);
+      if (!readiness.ready && url.searchParams.get("force") !== "true") {
+        return json({ ok: false, error: readiness.reason }, { status: 412 });
+      }
       const body = await readJsonBody<{ prompt?: unknown }>(req).catch((error) => error);
       if (body instanceof Error) return jsonBodyError(body);
       const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
@@ -247,8 +295,15 @@ export const createHttpHandler = (deps: {
 
     if (req.method === "POST" && url.pathname === "/api/approve") {
       const plan = await deps.store.loadPlan();
+      const tasks = await deps.store.loadTasks();
+      if (!["awaiting_approval", "approved"].includes(plan.status)) {
+        return json({ ok: false, error: `plan is ${plan.status}; expected awaiting_approval` }, { status: 409 });
+      }
+      if (tasks.length === 0) {
+        return json({ ok: false, error: "cannot approve a plan with no tasks" }, { status: 409 });
+      }
       deps.plannerService?.killCurrent();
-      const next = { ...plan, status: "approved" as const, updated_at: new Date().toISOString() };
+      const next = { ...plan, task_count: tasks.length, status: "approved" as const, updated_at: new Date().toISOString() };
       await deps.store.savePlan(next);
       deps.bus.publish({ tags: [plan.runId], payload: { type: "plan_approved", runId: plan.runId, at: next.updated_at } });
       return json({ ok: true, plan: next });

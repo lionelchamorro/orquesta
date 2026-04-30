@@ -1,5 +1,6 @@
 export const argv = (model: string, extra: string[] = [], prompt?: string) => [
   "claude",
+  ...(prompt ? ["--print", "--output-format", "stream-json", "--verbose"] : []),
   "--permission-mode",
   "bypassPermissions",
   "--dangerously-skip-permissions",

@@ -29,6 +29,8 @@ const sanitizeRefSegment = (value: string) => value.replace(/[^A-Za-z0-9._-]/g, 
 export const worktreeBranchName = (taskId: string, runId = "run-1") => `orq/${sanitizeRefSegment(runId)}/${sanitizeRefSegment(taskId)}`;
 export const worktreePathForTask = (root: string, taskId: string, runId = "run-1") =>
   path.join(root, ".orquesta", "crew", "worktrees", sanitizeRefSegment(runId), sanitizeRefSegment(taskId));
+export const isolatedWorkspacePathForTask = (root: string, taskId: string, runId = "run-1") =>
+  path.join(root, ".orquesta", "crew", "workspaces", sanitizeRefSegment(runId), sanitizeRefSegment(taskId));
 export const archivePathForTask = (root: string, taskId: string, runId = "run-1") =>
   path.join(root, ".orquesta", "crew", "archive", sanitizeRefSegment(runId), sanitizeRefSegment(taskId));
 
@@ -78,6 +80,13 @@ export const createTaskWorktree = (root: string, taskId: string, baseBranch: str
   Bun.write(excludePath, entries);
   writeFileSync(ownedMarkerPath(worktreePath), `runId=${runId}\ntaskId=${taskId}\nbranch=${branch}\n`);
   return { worktreePath, branch, baseBranch };
+};
+
+export const createIsolatedWorkspace = (root: string, taskId: string, runId = "run-1") => {
+  const workspacePath = isolatedWorkspacePathForTask(root, taskId, runId);
+  rmSync(workspacePath, { recursive: true, force: true });
+  mkdirSync(workspacePath, { recursive: true });
+  return { worktreePath: workspacePath };
 };
 
 export const hasUncommittedChanges = (cwd: string, options: { includeUntracked?: boolean } = { includeUntracked: true }) =>

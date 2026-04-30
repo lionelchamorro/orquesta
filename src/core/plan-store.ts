@@ -20,10 +20,12 @@ const readJson = async <T>(filePath: string, fallback: T): Promise<T> => {
 };
 
 const ensureDir = (dirPath: string) => mkdirSync(dirPath, { recursive: true });
+let atomicWriteCounter = 0;
 
 const writeJsonAtomic = async (filePath: string, value: unknown) => {
   ensureDir(path.dirname(filePath));
-  const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  atomicWriteCounter = (atomicWriteCounter + 1) % Number.MAX_SAFE_INTEGER;
+  const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${atomicWriteCounter}.tmp`);
   const data = `${JSON.stringify(value, null, 2)}\n`;
   const handle = await open(tempPath, "w");
   try {
@@ -303,7 +305,14 @@ export class PlanStore {
     const recovered = { tasks: [] as string[], subtasks: [] as string[], agents: [] as string[] };
     for (const agent of await this.loadAgents()) {
       if (agent.status !== "dead") {
-        await this.saveAgent({ ...agent, status: "dead", last_activity_at: now, stop_reason: agent.stop_reason ?? "daemon_restart" });
+        await this.saveAgent({
+          ...agent,
+          status: "dead",
+          finished_at: agent.finished_at ?? now,
+          last_activity_at: now,
+          last_event_at: agent.last_event_at ?? now,
+          stop_reason: agent.stop_reason ?? "daemon_restart",
+        });
         recovered.agents.push(agent.id);
       }
     }

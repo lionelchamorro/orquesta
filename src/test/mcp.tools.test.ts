@@ -205,6 +205,63 @@ test("report_complete for bound subtask does not emit agent_completed", async ()
   rmSync(root, { recursive: true, force: true });
 });
 
+test("report_complete for bound subtask is idempotent", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-bound-idempotent-"));
+  mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
+  await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "approved", created_at: "a", updated_at: "a", task_count: 1, completed_count: 0, current_iteration: 1, max_iterations: 2,
+  }));
+  const store = new PlanStore(root);
+  const bus = new Bus();
+  const killed: string[] = [];
+  const pool = { kill(agentId: string) { killed.push(agentId); }, write() {} } as never;
+  const askRouter = new AskRouter(store, pool, bus);
+  await store.saveTask({
+    id: "task-1",
+    title: "Task",
+    status: "running",
+    depends_on: [],
+    iteration: 1,
+    created_at: "a",
+    updated_at: "a",
+    attempt_count: 0,
+    subtasks: ["sub-1"],
+  });
+  await store.saveSubtask({
+    id: "sub-1",
+    taskId: "task-1",
+    type: "code",
+    role: "coder",
+    status: "running",
+    prompt: "x",
+    depends_on: [],
+    created_at: "a",
+  });
+  await store.saveAgent({
+    id: "agent-2",
+    role: "coder",
+    cli: "claude",
+    model: "m",
+    status: "live",
+    session_cwd: ".",
+    bound_task: "task-1",
+    bound_subtask: "sub-1",
+  });
+  const seen: string[] = [];
+  bus.subscribe("sub-1", (event) => {
+    if (event.payload.type === "subtask_completed") seen.push(event.payload.summary);
+  });
+  const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
+  await tools.report_complete("agent-2", { summary: "done" });
+  await tools.report_complete("agent-2", { summary: "done again" });
+
+  expect(seen).toEqual(["done"]);
+  expect((await store.loadSubtask("task-1", "sub-1")).summary).toBe("done");
+  expect(killed).toEqual(["agent-2", "agent-2"]);
+  askRouter.close();
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("report_progress failed for unbound agent emits agent_failed and kills agent", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-failed-agent-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
