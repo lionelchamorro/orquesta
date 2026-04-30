@@ -4,6 +4,7 @@ import type { Bus } from "../bus/bus";
 import type { PlanStore } from "../core/plan-store";
 import { argvFor, argvForResume, parseLineFor, supportsResume } from "./adapters";
 import type { StreamLogEvent } from "./adapters";
+import { detectRateLimit, type RateLimitInfo } from "./rate-limit";
 import { seedSession } from "./seed";
 import { AgentTerminal } from "./terminal";
 
@@ -16,9 +17,7 @@ export class AgentPool {
   private lineBuffers = new Map<string, string>();
   private eventLineBuffers = new Map<string, string>();
   private agentMetrics = new Map<string, Partial<StreamLogEvent>>();
-  private ttyListeners = new Map<string, Set<TtyListener>>();
-  private lastEventWrites = new Map<string, number>();
-  private exitingAgents = new Set<string>();
+  private rateLimits = new Map<string, RateLimitInfo>();
   private readonly maxBufferSize = 200_000;
 
   constructor(
@@ -59,14 +58,12 @@ export class AgentPool {
       argv,
       cwd,
       (chunk) => {
-        this.appendOutputBuffer(id, chunk);
-        const listeners = this.ttyListeners.get(id);
-        if (listeners) {
-          for (const listener of listeners) {
-            try { listener(chunk); } catch {}
-          }
-        }
-        const text = decoder.decode(chunk, { stream: true });
+        const text = new TextDecoder().decode(chunk);
+        const current = this.outputBuffers.get(id) ?? "";
+        const next = `${current}${text}`.slice(-this.maxBufferSize);
+        this.outputBuffers.set(id, next);
+        const rateLimit = detectRateLimit(text) ?? detectRateLimit(next);
+        if (rateLimit) this.rateLimits.set(id, rateLimit);
         const lineBuf = (this.lineBuffers.get(id) ?? "") + text;
         const lines = lineBuf.split("\n");
         const remainder = lines.pop() ?? "";
@@ -127,6 +124,7 @@ export class AgentPool {
         ...(metrics.num_turns !== undefined ? { num_turns: metrics.num_turns } : {}),
         ...(metrics.final_text ? { final_text: metrics.final_text } : {}),
         ...(metrics.is_error !== undefined ? { is_error: metrics.is_error } : {}),
+        ...(this.rateLimits.get(id)?.reset_at ? { quota_reset_at: this.rateLimits.get(id)!.reset_at } : {}),
       });
       this.terminals.delete(id);
       this.lastEventWrites.delete(id);
@@ -218,6 +216,10 @@ export class AgentPool {
       set.delete(listener);
       if (set.size === 0) this.ttyListeners.delete(agentId);
     };
+  }
+
+  getRateLimit(agentId: string) {
+    return this.rateLimits.get(agentId) ?? detectRateLimit(this.getOutputBuffer(agentId));
   }
 
   list() {

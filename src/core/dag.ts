@@ -1,6 +1,6 @@
 import type { Subtask, Task, TaskStatus } from "./types";
 
-const TERMINAL_STATUSES: TaskStatus[] = ["done", "failed", "blocked", "cancelled"];
+const TERMINAL_STATUSES: TaskStatus[] = ["done", "failed", "failed_quota", "blocked", "cancelled"];
 
 export const isTerminal = (status: TaskStatus) => TERMINAL_STATUSES.includes(status);
 
@@ -18,7 +18,7 @@ export const blockedByFailedDeps = (tasks: Task[]) => {
   const isUnreachableDep = (depId: string): boolean => {
     const dep = byId.get(depId);
     if (!dep) return false;
-    if (dep.status === "failed" || dep.status === "blocked" || dep.status === "cancelled") return true;
+    if (dep.status === "failed" || dep.status === "failed_quota" || dep.status === "blocked" || dep.status === "cancelled") return true;
     return false;
   };
   return tasks.filter(
@@ -61,6 +61,7 @@ export const detectCycle = (tasks: Task[]) => {
 
 export const rollupStatus = (task: Task, subtasks: Subtask[]): TaskStatus => {
   if (subtasks.length === 0) return task.status;
+  if (subtasks.some((subtask) => subtask.status === "failed_quota")) return "failed_quota";
   if (subtasks.some((subtask) => subtask.status === "failed")) return "failed";
   const last = subtasks[subtasks.length - 1];
   if (subtasks.every((subtask) => subtask.status === "done") && last.type === "critic" && !last.findings?.length) {

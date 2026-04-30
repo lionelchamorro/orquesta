@@ -1,4 +1,5 @@
 import type { AgentPool } from "../agents/pool";
+import { detectRateLimit, quotaMessage, type RateLimitInfo } from "../agents/rate-limit";
 import type { Bus } from "../bus/bus";
 import { existsSync, statSync } from "node:fs";
 import { createIsolatedWorkspace, createTaskWorktree, ensureRepoReady, hasUncommittedChanges, safeGitOutput } from "../core/git";
@@ -67,22 +68,29 @@ const buildScopedPrompt = (task: Task, role: Role, action: string): string => {
 
 const SUBTASK_TIMEOUT_MS = Number(Bun.env.ORQ_SUBTASK_TIMEOUT_MS ?? 300_000);
 
+class QuotaFailure extends Error {
+  constructor(readonly info: RateLimitInfo) {
+    super(quotaMessage(info));
+  }
+}
+
 const waitForSubtask = (bus: Bus, pool: AgentPool, agentId: string, subtaskId: string) =>
-  new Promise<"completed" | "failed">((resolve) => {
+  new Promise<{ outcome: "completed" | "failed" | "failed_quota"; rateLimit?: RateLimitInfo }>((resolve) => {
     let settled = false;
-    const finish = (outcome: "completed" | "failed") => {
+    const finish = (outcome: "completed" | "failed" | "failed_quota", rateLimit?: RateLimitInfo) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
       unsubscribe();
-      resolve(outcome);
+      resolve({ outcome, rateLimit });
     };
     const unsubscribe = bus.subscribe(subtaskId, (event) => {
       if (event.payload.type === "subtask_completed" && event.payload.subtaskId === subtaskId) {
         finish("completed");
       }
       if (event.payload.type === "subtask_failed" && event.payload.subtaskId === subtaskId) {
-        finish("failed");
+        const rateLimit = detectRateLimit(event.payload.reason);
+        finish(rateLimit ? "failed_quota" : "failed", rateLimit ?? undefined);
       }
     });
     const timeout = setTimeout(() => {
@@ -92,6 +100,11 @@ const waitForSubtask = (bus: Bus, pool: AgentPool, agentId: string, subtaskId: s
     }, SUBTASK_TIMEOUT_MS);
     void pool.waitForExit(agentId).then(() => {
       if (settled) return;
+      const rateLimit = pool.getRateLimit(agentId);
+      if (rateLimit) {
+        finish("failed_quota", rateLimit);
+        return;
+      }
       console.warn(`[task-pipeline] agent ${agentId} exited before reporting ${subtaskId}, marking failed`);
       finish("failed");
     });
@@ -143,10 +156,50 @@ export class TaskPipeline {
       started_at: new Date().toISOString(),
       agentId: agent.id,
     });
-    const outcome = await waitForSubtask(this.bus, this.pool, agent.id, subtask.id);
+    await this.store.saveTask({ ...task, status: "running", started_at: task.started_at ?? new Date().toISOString() });
+    const { outcome, rateLimit: eventRateLimit } = await waitForSubtask(this.bus, this.pool, agent.id, subtask.id);
+    const rateLimit = eventRateLimit ?? this.pool.getRateLimit(agent.id) ?? (outcome === "failed_quota" ? detectRateLimit(`${agent.final_text ?? ""}\n${agent.stop_reason ?? ""}`) : null);
+    if (outcome === "failed_quota" || rateLimit) {
+      const info = rateLimit ?? { message: "API rate limit exceeded" };
+      const message = quotaMessage(info);
+      const now = new Date().toISOString();
+      const currentPlan = await this.store.loadPlan();
+      await this.store.saveSubtask({
+        ...(await this.store.loadSubtask(task.id, subtask.id)),
+        status: "failed_quota",
+        completed_at: now,
+        quota_reset_at: info.reset_at,
+        summary: message,
+      });
+      await this.store.saveTask({
+        ...(await this.store.loadTask(task.id)),
+        status: "failed_quota",
+        updated_at: now,
+        quota_reset_at: info.reset_at,
+        summary: message,
+      });
+      await this.store.savePlan({
+        ...currentPlan,
+        status: "failed_quota",
+        updated_at: now,
+        quota_reset_at: info.reset_at,
+      });
+      this.bus.publish({
+        tags: [task.id, `iter-${task.iteration}`],
+        payload: { type: "activity", fromAgent: "system", message },
+      });
+      throw new QuotaFailure(info);
+    }
+    const attempted = await this.store.loadTask(task.id);
+    await this.store.saveTask({
+      ...attempted,
+      attempt_count: attempted.attempt_count + 1,
+      updated_at: new Date().toISOString(),
+    });
     const result = await this.store.loadSubtask(task.id, subtask.id);
     if (outcome === "failed" || result.status === "failed") {
-      await this.store.transitionTask(task.id, "failed");
+      const failed = await this.store.loadTask(task.id);
+      await this.store.saveTask({ ...failed, status: "failed", updated_at: new Date().toISOString() });
       throw new Error(`Subtask ${subtask.id} failed`);
     }
     return result;
@@ -155,6 +208,7 @@ export class TaskPipeline {
   async run(task: Task) {
     let current = await this.store.loadTask(task.id);
     let closureReason: NonNullable<Task["closure_reason"]> = "critic_ok";
+    let failedQuota = false;
     try {
       current = await this.store.incrementTaskAttempt(current.id);
       if (current.status !== "running") {
@@ -250,6 +304,10 @@ export class TaskPipeline {
         }
       }
     } catch (error) {
+      if (error instanceof QuotaFailure) {
+        failedQuota = true;
+        return;
+      }
       if (closureReason !== "max_attempts") {
         closureReason = "failed_subtask";
       }
@@ -258,6 +316,7 @@ export class TaskPipeline {
         payload: { type: "activity", fromAgent: "system", message: error instanceof Error ? error.message : "Task pipeline failed" },
       });
     } finally {
+      if (failedQuota) return;
       const closed = await closeTask({
         root: this.store.root,
         store: this.store,
