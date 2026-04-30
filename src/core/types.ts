@@ -1,7 +1,7 @@
-export type PlanStatus = "drafting" | "awaiting_approval" | "approved" | "running" | "done" | "failed";
+export type PlanStatus = "drafting" | "awaiting_approval" | "approved" | "running" | "done" | "failed" | "failed_quota";
 export type CliName = "claude" | "codex" | "gemini";
 export type Role = "planner" | "coder" | "tester" | "critic" | "architect" | "pm" | "qa";
-export type TaskStatus = "pending" | "ready" | "running" | "blocked" | "done" | "failed" | "cancelled";
+export type TaskStatus = "pending" | "ready" | "running" | "blocked" | "done" | "failed" | "failed_quota" | "cancelled";
 export type SubtaskType = "code" | "test" | "critic" | "fix" | "custom";
 export type IterationTrigger = "initial" | "architect_replan" | "qa_regression";
 export type AgentStatus = "idle" | "working" | "live" | "dead";
@@ -17,6 +17,7 @@ export interface Plan {
   completed_count: number;
   current_iteration: number;
   max_iterations: number;
+  quota_reset_at?: string;
 }
 
 export interface TeamMember {
@@ -67,6 +68,7 @@ export interface Task {
   attempt_count: number;
   started_at?: string;
   completed_at?: string;
+  quota_reset_at?: string;
   summary?: string;
   evidence?: TaskEvidence;
   subtasks: string[];
@@ -91,6 +93,7 @@ export interface Subtask {
   created_at: string;
   started_at?: string;
   completed_at?: string;
+  quota_reset_at?: string;
   summary?: string;
   output?: string;
   artifacts?: string[];
@@ -127,6 +130,7 @@ export interface Agent {
   num_turns?: number;
   final_text?: string;
   is_error?: boolean;
+  quota_reset_at?: string;
 }
 
 export type BusEvent =
