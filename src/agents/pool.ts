@@ -4,6 +4,7 @@ import type { Bus } from "../bus/bus";
 import type { PlanStore } from "../core/plan-store";
 import { argvFor, parseLineFor } from "./adapters";
 import type { StreamLogEvent } from "./adapters";
+import { detectRateLimit, type RateLimitInfo } from "./rate-limit";
 import { seedSession } from "./seed";
 import { AgentTerminal } from "./terminal";
 
@@ -13,6 +14,7 @@ export class AgentPool {
   private outputBuffers = new Map<string, string>();
   private lineBuffers = new Map<string, string>();
   private agentMetrics = new Map<string, Partial<StreamLogEvent>>();
+  private rateLimits = new Map<string, RateLimitInfo>();
   private readonly maxBufferSize = 200_000;
 
   constructor(
@@ -52,6 +54,8 @@ export class AgentPool {
         const current = this.outputBuffers.get(id) ?? "";
         const next = `${current}${text}`.slice(-this.maxBufferSize);
         this.outputBuffers.set(id, next);
+        const rateLimit = detectRateLimit(text) ?? detectRateLimit(next);
+        if (rateLimit) this.rateLimits.set(id, rateLimit);
         const lineBuf = (this.lineBuffers.get(id) ?? "") + text;
         const lines = lineBuf.split("\n");
         const remainder = lines.pop() ?? "";
@@ -102,6 +106,7 @@ export class AgentPool {
         ...(metrics.num_turns !== undefined ? { num_turns: metrics.num_turns } : {}),
         ...(metrics.final_text ? { final_text: metrics.final_text } : {}),
         ...(metrics.is_error !== undefined ? { is_error: metrics.is_error } : {}),
+        ...(this.rateLimits.get(id)?.reset_at ? { quota_reset_at: this.rateLimits.get(id)!.reset_at } : {}),
       });
       this.terminals.delete(id);
     });
@@ -133,6 +138,10 @@ export class AgentPool {
 
   getOutputBuffer(agentId: string) {
     return this.outputBuffers.get(agentId) ?? "";
+  }
+
+  getRateLimit(agentId: string) {
+    return this.rateLimits.get(agentId) ?? detectRateLimit(this.getOutputBuffer(agentId));
   }
 
   list() {

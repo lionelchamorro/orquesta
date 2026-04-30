@@ -21,6 +21,7 @@ const planDefaults = (plan: Partial<Plan>): Plan => ({
   completed_count: plan.completed_count ?? 0,
   current_iteration: plan.current_iteration ?? 1,
   max_iterations: plan.max_iterations ?? 1,
+  quota_reset_at: plan.quota_reset_at,
 });
 
 const configDefaults = (config: Record<string, unknown>): Config => {
@@ -87,6 +88,7 @@ const taskDefaults = (task: Partial<Task>): Task => ({
   attempt_count: task.attempt_count ?? 0,
   started_at: task.started_at,
   completed_at: task.completed_at,
+  quota_reset_at: task.quota_reset_at,
   summary: task.summary,
   evidence: task.evidence,
   subtasks: task.subtasks ?? [],
@@ -104,6 +106,7 @@ const subtaskDefaults = (subtask: Partial<Subtask>): Subtask => ({
   created_at: subtask.created_at ?? new Date().toISOString(),
   started_at: subtask.started_at,
   completed_at: subtask.completed_at,
+  quota_reset_at: subtask.quota_reset_at,
   summary: subtask.summary,
   output: subtask.output,
   artifacts: subtask.artifacts,
