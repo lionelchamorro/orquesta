@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-const PlanStatusSchema = z.enum(["drafting", "awaiting_approval", "approved", "running", "done", "failed"]);
+const PlanStatusSchema = z.enum(["drafting", "awaiting_approval", "approved", "running", "done", "failed", "failed_quota"]);
 const CliNameSchema = z.enum(["claude", "codex", "gemini"]);
 const RoleSchema = z.enum(["planner", "coder", "tester", "critic", "architect", "pm", "qa"]);
-const TaskStatusSchema = z.enum(["pending", "ready", "running", "blocked", "done", "failed", "cancelled"]);
+const TaskStatusSchema = z.enum(["pending", "ready", "running", "blocked", "done", "failed", "failed_quota", "cancelled"]);
 const SubtaskTypeSchema = z.enum(["code", "test", "critic", "fix", "custom"]);
 const IterationTriggerSchema = z.enum(["initial", "architect_replan", "qa_regression"]);
 const AgentStatusSchema = z.enum(["idle", "working", "live", "dead"]);
@@ -26,6 +26,7 @@ export const PlanSchema = z.object({
   completed_count: z.number().int().nonnegative(),
   current_iteration: z.number().int().positive(),
   max_iterations: z.number().int().positive(),
+  quota_reset_at: z.string().optional(),
 });
 
 export const ConfigSchema = z.object({
@@ -94,6 +95,7 @@ export const TaskSchema = z.object({
   summary: z.string().optional(),
   evidence: TaskEvidenceSchema,
   subtasks: z.array(z.string()),
+  quota_reset_at: z.string().optional(),
 });
 
 export const SubtaskSchema = z.object({
@@ -112,6 +114,7 @@ export const SubtaskSchema = z.object({
   output: z.string().optional(),
   artifacts: z.array(z.string()).optional(),
   findings: z.array(CriticFindingSchema).optional(),
+  quota_reset_at: z.string().optional(),
 });
 
 export const IterationSchema = z.object({

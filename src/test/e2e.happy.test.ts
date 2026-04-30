@@ -99,6 +99,9 @@ test("e2e happy path runs pipeline, merges and archives task", async () => {
     waitForExit(agentId: string) {
       return exitPromises.get(agentId) ?? Promise.resolve(0);
     },
+    getRateLimit() {
+      return null;
+    },
   } as never;
 
   const pipeline = new TaskPipeline(store, bus, pool, {

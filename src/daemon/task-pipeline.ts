@@ -178,12 +178,14 @@ export class TaskPipeline {
         quota_reset_at: info.reset_at,
         summary: message,
       });
+      const taskNow = await this.store.loadTask(task.id);
       await this.store.saveTask({
-        ...(await this.store.loadTask(task.id)),
+        ...taskNow,
         status: "failed_quota",
         updated_at: now,
         quota_reset_at: info.reset_at,
         summary: message,
+        attempt_count: Math.max(0, taskNow.attempt_count - 1),
       });
       await this.store.savePlan({
         ...currentPlan,
