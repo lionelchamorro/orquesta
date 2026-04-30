@@ -6,3 +6,6 @@ demo/*
 docs/*
 tasks/*
 !docs/agents/*.md
+!docs/adr/
+!tasks/prd/
+!tasks/issues/
