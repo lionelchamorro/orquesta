@@ -23,19 +23,20 @@ type RightPane struct {
 	AgentID string
 }
 
-// FocusAgent moves to AgentDetail when in Activity or AgentDetail. Illegal
-// from any PTY mode in this slice.
+// FocusAgent moves to AgentDetail when in Activity or AgentDetail. From a
+// PTY mode it switches the pane back to AgentDetail for the new agent —
+// the caller is responsible for closing the prior PTY connection.
 func (p RightPane) FocusAgent(agentID string) (RightPane, error) {
 	switch p.Mode {
-	case ModeActivity, ModeAgentDetail:
+	case ModeActivity, ModeAgentDetail, ModeLivePTY, ModeReplayPTY, ModeResumedPTY:
 		return RightPane{Mode: ModeAgentDetail, AgentID: agentID}, nil
 	default:
 		return p, fmt.Errorf("FocusAgent illegal from mode %v", p.Mode)
 	}
 }
 
-// BlurAgent returns to Activity. Only legal from AgentDetail or Activity in
-// this slice.
+// BlurAgent returns to Activity. Only legal from AgentDetail or Activity.
+// From a PTY mode the caller must Detach() first.
 func (p RightPane) BlurAgent() (RightPane, error) {
 	switch p.Mode {
 	case ModeActivity:
@@ -47,20 +48,38 @@ func (p RightPane) BlurAgent() (RightPane, error) {
 	}
 }
 
-// AttachLive is a stub: it must be reachable later, but is not in this
-// slice. Returns an error.
+// AttachLive transitions to LivePTY for the agent currently focused.
 func (p RightPane) AttachLive(agentID string) (RightPane, error) {
-	return p, fmt.Errorf("AttachLive not reachable in this slice")
+	if p.Mode != ModeAgentDetail {
+		return p, fmt.Errorf("AttachLive requires AgentDetail mode (got %v)", p.Mode)
+	}
+	return RightPane{Mode: ModeLivePTY, AgentID: agentID}, nil
 }
 
-// Replay is a stub for #017.
+// Replay transitions to ReplayPTY (dead-agent scrollback) from AgentDetail.
 func (p RightPane) Replay(agentID string) (RightPane, error) {
-	return p, fmt.Errorf("Replay not reachable in this slice")
+	if p.Mode != ModeAgentDetail {
+		return p, fmt.Errorf("Replay requires AgentDetail mode (got %v)", p.Mode)
+	}
+	return RightPane{Mode: ModeReplayPTY, AgentID: agentID}, nil
+}
+
+// Detach returns from any PTY mode to AgentDetail for the same agent.
+func (p RightPane) Detach() (RightPane, error) {
+	switch p.Mode {
+	case ModeLivePTY, ModeReplayPTY, ModeResumedPTY:
+		return RightPane{Mode: ModeAgentDetail, AgentID: p.AgentID}, nil
+	default:
+		return p, fmt.Errorf("Detach illegal from mode %v", p.Mode)
+	}
 }
 
 // AttachResumed is a stub for #018.
 func (p RightPane) AttachResumed(agentID string) (RightPane, error) {
-	return p, fmt.Errorf("AttachResumed not reachable in this slice")
+	if p.Mode != ModeAgentDetail {
+		return p, fmt.Errorf("AttachResumed requires AgentDetail mode (got %v)", p.Mode)
+	}
+	return RightPane{Mode: ModeResumedPTY, AgentID: agentID}, nil
 }
 
 // agent is the local view of an Agent record used by purity-preserving

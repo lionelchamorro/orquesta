@@ -47,10 +47,60 @@ func TestRightPane_BlurFromLivePTY_IsRejected(t *testing.T) {
 	}
 }
 
-func TestRightPane_AttachLive_NotReachableInThisSlice(t *testing.T) {
+func TestRightPane_AgentDetail_AttachLive_GoesToLivePTY(t *testing.T) {
 	p := RightPane{Mode: ModeAgentDetail, AgentID: "agent-1"}
+	next, err := p.AttachLive("agent-1")
+	if err != nil {
+		t.Fatalf("AttachLive from AgentDetail should be legal, got %v", err)
+	}
+	if next.Mode != ModeLivePTY {
+		t.Fatalf("expected ModeLivePTY, got %v", next.Mode)
+	}
+	if next.AgentID != "agent-1" {
+		t.Fatalf("expected AgentID=agent-1, got %q", next.AgentID)
+	}
+}
+
+func TestRightPane_AgentDetail_Replay_GoesToReplayPTY(t *testing.T) {
+	p := RightPane{Mode: ModeAgentDetail, AgentID: "agent-1"}
+	next, err := p.Replay("agent-1")
+	if err != nil {
+		t.Fatalf("Replay from AgentDetail should be legal, got %v", err)
+	}
+	if next.Mode != ModeReplayPTY {
+		t.Fatalf("expected ModeReplayPTY, got %v", next.Mode)
+	}
+}
+
+func TestRightPane_LivePTY_Detach_ReturnsToAgentDetail(t *testing.T) {
+	p := RightPane{Mode: ModeLivePTY, AgentID: "agent-1"}
+	next, err := p.Detach()
+	if err != nil {
+		t.Fatalf("Detach from LivePTY should be legal, got %v", err)
+	}
+	if next.Mode != ModeAgentDetail {
+		t.Fatalf("expected ModeAgentDetail, got %v", next.Mode)
+	}
+	if next.AgentID != "agent-1" {
+		t.Fatalf("expected AgentID kept on detach, got %q", next.AgentID)
+	}
+}
+
+func TestRightPane_ReplayPTY_Detach_ReturnsToAgentDetail(t *testing.T) {
+	p := RightPane{Mode: ModeReplayPTY, AgentID: "agent-1"}
+	next, err := p.Detach()
+	if err != nil {
+		t.Fatalf("Detach from ReplayPTY should be legal, got %v", err)
+	}
+	if next.Mode != ModeAgentDetail {
+		t.Fatalf("expected ModeAgentDetail, got %v", next.Mode)
+	}
+}
+
+func TestRightPane_AttachLive_FromActivity_Rejected(t *testing.T) {
+	p := RightPane{Mode: ModeActivity}
 	if _, err := p.AttachLive("agent-1"); err == nil {
-		t.Fatalf("AttachLive should be a stub returning error in this slice")
+		t.Fatalf("AttachLive from Activity must be illegal — must focus first")
 	}
 }
 

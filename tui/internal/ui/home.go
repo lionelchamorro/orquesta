@@ -19,7 +19,8 @@ type Home struct {
 	pane           RightPane
 	activityBuffer []client.TaggedEvent
 	activityOffset int
-	selectedAgent  string
+	tty            *client.TTY
+	ttyAgentID     string
 	ttyBuffer      string
 	ttyEvents      chan ttyMsg
 	err            error
@@ -40,6 +41,12 @@ type ttyMsg struct {
 	err     error
 }
 
+type ttyOpenedMsg struct {
+	agentID string
+	tty     *client.TTY
+	err     error
+}
+
 func NewHome(api *client.Client, events <-chan client.TaggedEvent) Home {
 	return Home{api: api, events: events, ttyEvents: make(chan ttyMsg, 64)}
 }
@@ -48,24 +55,64 @@ func (h Home) Init() tea.Cmd {
 	return tea.Batch(h.fetchRunState(), waitEvent(h.events))
 }
 
+func (h *Home) closeTTY() {
+	if h.tty != nil {
+		_ = h.tty.Close()
+		h.tty = nil
+	}
+	h.ttyAgentID = ""
+	h.ttyBuffer = ""
+}
+
 func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		h.width = msg.Width
 		h.height = msg.Height
 	case tea.KeyMsg:
+		// In LivePTY mode, forward typed keys to the PTY (read-only in
+		// ReplayPTY). Reserved keys (esc, ctrl+c) still apply.
+		if h.pane.Mode == ModeLivePTY && h.tty != nil {
+			switch msg.String() {
+			case "esc":
+				h.closeTTY()
+				if next, err := h.pane.Detach(); err == nil {
+					h.pane = next
+				}
+				return h, nil
+			case "ctrl+c", "q":
+				return h, tea.Quit
+			default:
+				_, _ = h.tty.Write([]byte(msg.String()))
+				return h, nil
+			}
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return h, tea.Quit
+		case "esc":
+			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY || h.pane.Mode == ModeResumedPTY {
+				h.closeTTY()
+				if next, err := h.pane.Detach(); err == nil {
+					h.pane = next
+				}
+			}
+			return h, nil
 		case "r":
 			return h, h.fetchRunState()
 		case "j", "down":
+			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY {
+				h.closeTTY()
+			}
 			if h.cursor < len(h.state.Agents)-1 {
 				h.cursor++
 			}
 			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
 			h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
 		case "k", "up":
+			if h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeReplayPTY {
+				h.closeTTY()
+			}
 			if h.cursor > 0 {
 				h.cursor--
 			}
@@ -86,11 +133,24 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.cursor = max(0, len(h.state.Agents)-1)
 			h.listOffset = settleListOffset(h.state, h.cursor, 0, h.listPaneHeight())
 		case "enter":
-			if len(h.state.Agents) > 0 {
-				h.selectedAgent = h.state.Agents[h.cursor].ID
-				h.ttyBuffer = ""
-				return h, tea.Batch(h.startTTY(h.selectedAgent), waitTTY(h.ttyEvents))
+			if h.pane.Mode != ModeAgentDetail || h.pane.AgentID == "" {
+				return h, nil
 			}
+			agent, ok := findAgent(h.state.Agents, h.pane.AgentID)
+			if !ok {
+				return h, nil
+			}
+			h.ttyBuffer = ""
+			if agent.Status == "dead" {
+				if next, err := h.pane.Replay(agent.ID); err == nil {
+					h.pane = next
+				}
+			} else {
+				if next, err := h.pane.AttachLive(agent.ID); err == nil {
+					h.pane = next
+				}
+			}
+			return h, tea.Batch(h.startTTY(agent.ID), waitTTY(h.ttyEvents))
 		}
 	case runStateMsg:
 		h.err = msg.err
@@ -111,9 +171,30 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, tea.Batch(h.fetchRunState(), waitEvent(h.events))
 		}
 		return h, waitEvent(h.events)
-	case ttyMsg:
-		if msg.agentID != h.selectedAgent {
+	case ttyOpenedMsg:
+		if msg.err != nil {
+			h.ttyBuffer = appendTTY(h.ttyBuffer, "\n[failed to open terminal: "+msg.err.Error()+"]\n")
 			return h, nil
+		}
+		h.tty = msg.tty
+		h.ttyAgentID = msg.agentID
+		go func(tty *client.TTY, agentID string, ch chan<- ttyMsg) {
+			buf := make([]byte, 4096)
+			for {
+				n, err := tty.Read(buf)
+				if n > 0 {
+					ch <- ttyMsg{agentID: agentID, chunk: string(buf[:n])}
+				}
+				if err != nil {
+					ch <- ttyMsg{agentID: agentID, err: err}
+					return
+				}
+			}
+		}(msg.tty, msg.agentID, h.ttyEvents)
+		return h, waitTTY(h.ttyEvents)
+	case ttyMsg:
+		if msg.agentID != h.ttyAgentID {
+			return h, waitTTY(h.ttyEvents)
 		}
 		if msg.err != nil {
 			h.ttyBuffer = appendTTY(h.ttyBuffer, "\n[terminal closed]\n")
@@ -140,7 +221,7 @@ func (h Home) View() string {
 	if isEmptyRun(h.state) {
 		return renderEmpty(width, height) + "\n" + muted.Render("r refresh  q quit")
 	}
-	footer := muted.Render("j/k select agent  pgup/pgdn page  g/G top/bottom  enter attach  r refresh  q quit")
+	footer := h.footerForMode()
 	contentHeight := max(1, height-1)
 	if width >= 80 {
 		left := max(28, width*35/100)
@@ -160,23 +241,44 @@ func (h Home) View() string {
 	)
 }
 
-// renderRightPane dispatches based on the current pane mode. AgentDetail
-// shows the info card; Activity renders the cursor-filtered event feed;
-// the legacy TTY preview is kept until #017 replaces it.
-func (h Home) renderRightPane(width, height int) string {
-	if h.selectedAgent != "" {
-		return renderPreview(h.selectedAgent, h.ttyBuffer, width, height)
+func (h Home) footerForMode() string {
+	switch h.pane.Mode {
+	case ModeLivePTY:
+		return muted.Render("typing → PTY  esc detach  ctrl+c quit")
+	case ModeReplayPTY:
+		return muted.Render("read-only replay  esc back  q quit")
+	default:
+		return muted.Render("j/k select  pgup/pgdn page  g/G top/bottom  enter attach  esc back  r refresh  q quit")
 	}
-	if h.pane.Mode == ModeAgentDetail && h.pane.AgentID != "" {
-		for _, a := range h.state.Agents {
-			if a.ID == h.pane.AgentID {
-				return renderAgentDetail(a, worktreeForAgent(h.state, a), width, height)
-			}
+}
+
+// renderRightPane dispatches based on the current pane mode.
+func (h Home) renderRightPane(width, height int) string {
+	switch h.pane.Mode {
+	case ModeLivePTY:
+		return renderLivePTY(h.pane.AgentID, h.ttyBuffer, width, height)
+	case ModeReplayPTY:
+		return renderReplayPTY(h.pane.AgentID, h.ttyBuffer, width, height)
+	case ModeAgentDetail:
+		if h.pane.AgentID == "" {
+			break
+		}
+		if a, ok := findAgent(h.state.Agents, h.pane.AgentID); ok {
+			return renderAgentDetail(a, worktreeForAgent(h.state, a), width, height)
 		}
 	}
 	sel := Selection{Kind: SelectionNone}
 	out, _ := renderActivity(h.activityBuffer, sel, h.state.Plan.CurrentIteration, h.activityOffset, width, height)
 	return out
+}
+
+func findAgent(agents []client.Agent, id string) (client.Agent, bool) {
+	for _, a := range agents {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return client.Agent{}, false
 }
 
 // focusForCursor moves the right pane between Activity and AgentDetail
@@ -272,24 +374,7 @@ func waitEvent(events <-chan client.TaggedEvent) tea.Cmd {
 func (h Home) startTTY(agentID string) tea.Cmd {
 	return func() tea.Msg {
 		tty, err := h.api.OpenTTY(agentID)
-		if err != nil {
-			return ttyMsg{agentID: agentID, err: err}
-		}
-		go func() {
-			defer tty.Close()
-			buf := make([]byte, 4096)
-			for {
-				n, err := tty.Read(buf)
-				if n > 0 {
-					h.ttyEvents <- ttyMsg{agentID: agentID, chunk: string(buf[:n])}
-				}
-				if err != nil {
-					h.ttyEvents <- ttyMsg{agentID: agentID, err: err}
-					return
-				}
-			}
-		}()
-		return nil
+		return ttyOpenedMsg{agentID: agentID, tty: tty, err: err}
 	}
 }
 
