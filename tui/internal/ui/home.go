@@ -23,6 +23,7 @@ type Home struct {
 	ttyAgentID     string
 	ttyBuffer      string
 	ttyEvents      chan ttyMsg
+	chat           ChatOverlay
 	err            error
 }
 
@@ -52,6 +53,11 @@ type resumeMsg struct {
 	err     error
 }
 
+type chatSendMsg struct {
+	agentID string
+	err     error
+}
+
 func NewHome(api *client.Client, events <-chan client.TaggedEvent) Home {
 	return Home{api: api, events: events, ttyEvents: make(chan ttyMsg, 64)}
 }
@@ -75,6 +81,29 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.width = msg.Width
 		h.height = msg.Height
 	case tea.KeyMsg:
+		// Chat overlay swallows all keys when open.
+		if h.chat.Open {
+			switch msg.String() {
+			case "esc":
+				h.chat = h.chat.Reset()
+				return h, nil
+			case "enter":
+				if strings.TrimSpace(h.chat.Text) == "" {
+					return h, nil
+				}
+				return h, h.sendChat(h.chat.AgentID, h.chat.Text)
+			case "backspace":
+				h.chat = h.chat.Backspace()
+				return h, nil
+			case "ctrl+c":
+				return h, tea.Quit
+			default:
+				if r := []rune(msg.String()); len(r) == 1 {
+					h.chat = h.chat.AppendRune(r[0])
+				}
+				return h, nil
+			}
+		}
 		// In LivePTY/ResumedPTY mode, forward typed keys to the PTY
 		// (read-only in ReplayPTY). Reserved keys (esc, ctrl+c) still apply.
 		if (h.pane.Mode == ModeLivePTY || h.pane.Mode == ModeResumedPTY) && h.tty != nil {
@@ -157,6 +186,16 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return h, tea.Batch(h.startTTY(agent.ID), waitTTY(h.ttyEvents))
+		case "/":
+			if h.pane.Mode != ModeAgentDetail || h.pane.AgentID == "" {
+				return h, nil
+			}
+			agent, ok := findAgent(h.state.Agents, h.pane.AgentID)
+			if !ok {
+				return h, nil
+			}
+			h.chat = ChatOverlay{Open: true, AgentID: agent.ID, Role: agent.Role}
+			return h, nil
 		case "R":
 			if h.pane.Mode != ModeAgentDetail || h.pane.AgentID == "" {
 				return h, nil
@@ -191,6 +230,13 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, tea.Batch(h.fetchRunState(), waitEvent(h.events))
 		}
 		return h, waitEvent(h.events)
+	case chatSendMsg:
+		if msg.err != nil {
+			h.chat.Error = msg.err.Error()
+			return h, nil
+		}
+		h.chat = h.chat.Reset()
+		return h, nil
 	case resumeMsg:
 		if msg.err != nil {
 			h.ttyBuffer = "[resume failed: " + msg.err.Error() + "]"
@@ -252,23 +298,32 @@ func (h Home) View() string {
 		return renderEmpty(width, height) + "\n" + muted.Render("r refresh  q quit")
 	}
 	footer := h.footerForMode()
+	overlay := renderChatOverlay(h.chat, width)
 	contentHeight := max(1, height-1)
+	if overlay != "" {
+		contentHeight = max(1, contentHeight-3)
+	}
+	var main string
 	if width >= 80 {
 		left := max(28, width*35/100)
 		right := max(20, width-left)
-		return lipgloss.JoinHorizontal(
+		main = lipgloss.JoinHorizontal(
 			lipgloss.Top,
 			renderList(h.state, h.cursor, h.listOffset, left, contentHeight),
 			h.renderRightPane(right, contentHeight),
-		) + "\n" + footer
+		)
+	} else {
+		top := max(8, contentHeight/2)
+		main = lipgloss.JoinVertical(
+			lipgloss.Left,
+			renderList(h.state, h.cursor, h.listOffset, width, top),
+			h.renderRightPane(width, contentHeight-top),
+		)
 	}
-	top := max(8, contentHeight/2)
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		renderList(h.state, h.cursor, h.listOffset, width, top),
-		h.renderRightPane(width, contentHeight-top),
-		footer,
-	)
+	if overlay != "" {
+		return main + "\n" + overlay + "\n" + footer
+	}
+	return main + "\n" + footer
 }
 
 func (h Home) footerForMode() string {
@@ -410,6 +465,13 @@ func (h Home) fetchRunState() tea.Cmd {
 func waitEvent(events <-chan client.TaggedEvent) tea.Cmd {
 	return func() tea.Msg {
 		return eventMsg(<-events)
+	}
+}
+
+func (h Home) sendChat(agentID, text string) tea.Cmd {
+	return func() tea.Msg {
+		err := h.api.PostAgentInput(agentID, text)
+		return chatSendMsg{agentID: agentID, err: err}
 	}
 }
 
