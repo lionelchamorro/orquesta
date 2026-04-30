@@ -18,6 +18,13 @@ export class AgentPool {
   private eventLineBuffers = new Map<string, string>();
   private agentMetrics = new Map<string, Partial<StreamLogEvent>>();
   private rateLimits = new Map<string, RateLimitInfo>();
+  // Tracks agents currently in the exit handler so chunk-driven last_event_at
+  // updates do not race with the final saveAgent.
+  private exitingAgents = new Set<string>();
+  // Throttle for chunk-driven last_event_at writes — at most one disk write
+  // per second per agent (see issue 007).
+  private lastEventWrites = new Map<string, number>();
+  private ttyListeners = new Map<string, Set<TtyListener>>();
   private readonly maxBufferSize = 200_000;
 
   constructor(
@@ -59,11 +66,11 @@ export class AgentPool {
       cwd,
       (chunk) => {
         const text = new TextDecoder().decode(chunk);
-        const current = this.outputBuffers.get(id) ?? "";
-        const next = `${current}${text}`.slice(-this.maxBufferSize);
-        this.outputBuffers.set(id, next);
-        const rateLimit = detectRateLimit(text) ?? detectRateLimit(next);
+        this.appendOutputBuffer(id, chunk);
+        const tailText = new TextDecoder("utf-8", { fatal: false }).decode(this.outputBuffers.get(id) ?? new Uint8Array());
+        const rateLimit = detectRateLimit(text) ?? detectRateLimit(tailText);
         if (rateLimit) this.rateLimits.set(id, rateLimit);
+        this.broadcastTty(id, chunk);
         const lineBuf = (this.lineBuffers.get(id) ?? "") + text;
         const lines = lineBuf.split("\n");
         const remainder = lines.pop() ?? "";
@@ -135,6 +142,14 @@ export class AgentPool {
 
   write(agentId: string, data: string | Uint8Array) {
     this.terminals.get(agentId)?.write(data);
+  }
+
+  private broadcastTty(agentId: string, chunk: Uint8Array) {
+    const listeners = this.ttyListeners.get(agentId);
+    if (!listeners) return;
+    for (const listener of listeners) {
+      try { listener(chunk); } catch {}
+    }
   }
 
   private appendOutputBuffer(agentId: string, chunk: Uint8Array) {
@@ -219,7 +234,11 @@ export class AgentPool {
   }
 
   getRateLimit(agentId: string) {
-    return this.rateLimits.get(agentId) ?? detectRateLimit(this.getOutputBuffer(agentId));
+    const cached = this.rateLimits.get(agentId);
+    if (cached) return cached;
+    const buffer = this.getOutputBuffer(agentId);
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
+    return detectRateLimit(text);
   }
 
   list() {
