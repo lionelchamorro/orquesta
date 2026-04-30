@@ -9,19 +9,23 @@ import (
 )
 
 type Home struct {
-	api           *client.Client
-	events        <-chan client.TaggedEvent
-	state         client.RunState
-	width         int
-	height        int
-	cursor        int
-	listOffset    int
-	pane          RightPane
-	selectedAgent string
-	ttyBuffer     string
-	ttyEvents     chan ttyMsg
-	err           error
+	api            *client.Client
+	events         <-chan client.TaggedEvent
+	state          client.RunState
+	width          int
+	height         int
+	cursor         int
+	listOffset     int
+	pane           RightPane
+	activityBuffer []client.TaggedEvent
+	activityOffset int
+	selectedAgent  string
+	ttyBuffer      string
+	ttyEvents      chan ttyMsg
+	err            error
 }
+
+const maxActivityBuffer = 1000
 
 type runStateMsg struct {
 	state client.RunState
@@ -99,6 +103,10 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case eventMsg:
 		event := client.TaggedEvent(msg)
+		h.activityBuffer = append(h.activityBuffer, event)
+		if len(h.activityBuffer) > maxActivityBuffer {
+			h.activityBuffer = h.activityBuffer[len(h.activityBuffer)-maxActivityBuffer:]
+		}
 		if isStructural(event.Type()) {
 			return h, tea.Batch(h.fetchRunState(), waitEvent(h.events))
 		}
@@ -153,8 +161,8 @@ func (h Home) View() string {
 }
 
 // renderRightPane dispatches based on the current pane mode. AgentDetail
-// shows the info card; everything else falls back to the legacy TTY preview
-// (which #017 will replace).
+// shows the info card; Activity renders the cursor-filtered event feed;
+// the legacy TTY preview is kept until #017 replaces it.
 func (h Home) renderRightPane(width, height int) string {
 	if h.selectedAgent != "" {
 		return renderPreview(h.selectedAgent, h.ttyBuffer, width, height)
@@ -166,7 +174,9 @@ func (h Home) renderRightPane(width, height int) string {
 			}
 		}
 	}
-	return renderPreview("", "", width, height)
+	sel := Selection{Kind: SelectionNone}
+	out, _ := renderActivity(h.activityBuffer, sel, h.state.Plan.CurrentIteration, h.activityOffset, width, height)
+	return out
 }
 
 // focusForCursor moves the right pane between Activity and AgentDetail
