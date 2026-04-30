@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import { AgentPool } from "../agents/pool";
 import { Bus } from "../bus/bus";
@@ -12,6 +12,14 @@ import { AskRouter } from "../daemon/ask-router";
 import { createMcpHandler } from "../mcp/server";
 
 const root = process.cwd();
+
+function resolveDaemonEntry(): string {
+  const fromSource = path.resolve(import.meta.dir, "..", "daemon", "index.ts");
+  if (existsSync(fromSource)) return fromSource;
+  const binDir = path.dirname(realpathSync(process.execPath));
+  return path.join(binDir, "..", "src", "daemon", "index.ts");
+}
+
 const templatesDir = path.resolve(import.meta.dir, "..", "..", "templates");
 const store = new PlanStore(root);
 const PLANNER_TIMEOUT_MS = Number(Bun.env.ORQ_PLANNER_TIMEOUT_MS ?? 300_000);
@@ -200,7 +208,8 @@ export const main = async () => {
   }
 
   if (command === "start") {
-    const proc = Bun.spawn(["bun", "run", "src/daemon/index.ts"], { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
+    const daemonEntry = resolveDaemonEntry();
+    const proc = Bun.spawn(["bun", "run", daemonEntry], { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
     await proc.exited;
     return;
   }

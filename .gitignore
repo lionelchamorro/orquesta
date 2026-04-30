@@ -5,3 +5,4 @@ dist/
 demo/*
 docs/*
 tasks/*
+!docs/agents/*.md

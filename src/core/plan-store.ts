@@ -66,9 +66,12 @@ const configDefaults = (config: Record<string, unknown>): Config => {
     { role: "pm", cli: "claude", model: models.reviewer ?? "claude-opus-4-7" },
     { role: "qa", cli: "claude", model: models.reviewer ?? "claude-opus-4-7" },
   ];
-  const team = Array.isArray(config.team)
-    ? (config.team as Config["team"])
-    : defaultTeam;
+  const userTeam = Array.isArray(config.team) ? (config.team as Config["team"]) : [];
+  const userByRole = new Map(userTeam.map((member) => [member.role, member]));
+  const mergedDefaults = defaultTeam.map((member) => userByRole.get(member.role) ?? member);
+  const mergedRoles = new Set(mergedDefaults.map((member) => member.role));
+  const extras = userTeam.filter((member) => !mergedRoles.has(member.role));
+  const team = [...mergedDefaults, ...extras];
   return {
     dependencies: (config.dependencies as Config["dependencies"]) ?? "strict",
     concurrency: (config.concurrency as Config["concurrency"]) ?? { workers: 2, max: 4 },
@@ -316,22 +319,79 @@ export class PlanStore {
         recovered.agents.push(agent.id);
       }
     }
+    const LEGACY_RESTART_MARKER = "Marked failed during daemon restart recovery.";
     for (const task of await this.loadTasks()) {
+      let cancelledHere = false;
       for (const subtask of await this.loadSubtasks(task.id)) {
         if (subtask.status === "running") {
-          await this.transitionSubtask(task.id, subtask.id, "failed", {
-            summary: subtask.summary ?? "Marked failed during daemon restart recovery.",
+          await this.transitionSubtask(task.id, subtask.id, "cancelled", {
+            summary: "Cancelled during daemon restart; will be re-queued.",
           });
           recovered.subtasks.push(subtask.id);
+          cancelledHere = true;
+        } else if (subtask.status === "failed" && subtask.summary === LEGACY_RESTART_MARKER) {
+          await this.saveSubtask({
+            ...subtask,
+            status: "cancelled",
+            summary: "Cancelled during daemon restart; will be re-queued.",
+          });
+          recovered.subtasks.push(subtask.id);
+          cancelledHere = true;
         }
       }
-      if (task.status === "running" || task.status === "ready") {
-        await this.transitionTask(task.id, "pending", {
-          summary: task.summary ?? "Reset to pending during daemon restart recovery.",
+      const wasInterrupted = task.status === "running" || task.status === "ready";
+      const failedDueToInterruption =
+        cancelledHere && task.status === "failed" && task.closure_reason === "failed_subtask";
+      if (wasInterrupted || failedDueToInterruption) {
+        await this.saveTask({
+          ...task,
+          status: "pending",
+          closure_reason: undefined,
+          completed_at: undefined,
+          summary: "Reset to pending during daemon restart recovery.",
+          updated_at: now,
         });
         recovered.tasks.push(task.id);
       }
     }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const tasks = await this.loadTasks();
+      const byId = new Map(tasks.map((t) => [t.id, t]));
+      const blockingStatuses = new Set(["failed", "blocked", "cancelled"]);
+      for (const task of tasks) {
+        if (task.status !== "blocked" || task.closure_reason !== "blocked_by_dep") continue;
+        const stillBlocked = task.depends_on.some((depId) => {
+          const dep = byId.get(depId);
+          return dep && blockingStatuses.has(dep.status);
+        });
+        if (!stillBlocked) {
+          await this.saveTask({
+            ...task,
+            status: "pending",
+            closure_reason: undefined,
+            completed_at: undefined,
+            summary: "Reset to pending during daemon restart recovery (upstream resolved).",
+            updated_at: now,
+          });
+          recovered.tasks.push(task.id);
+          changed = true;
+        }
+      }
+    }
+    if (recovered.tasks.length > 0) {
+      const plan = await this.loadPlan();
+      const updates: Partial<Plan> = {};
+      if (plan.status === "failed") updates.status = "running";
+      if (plan.current_iteration >= plan.max_iterations) {
+        updates.max_iterations = plan.current_iteration + 1;
+      }
+      if (Object.keys(updates).length > 0) {
+        await this.savePlan({ ...plan, ...updates, updated_at: now });
+      }
+    }
+    await this.recalculatePlanCounters();
     return recovered;
   }
 

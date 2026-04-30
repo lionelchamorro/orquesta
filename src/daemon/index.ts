@@ -28,6 +28,17 @@ const pool = new AgentPool(root, store, bus, { mcpPort: port, templatesDir, mcpT
 const autonomous = Bun.env.ORQ_AUTONOMOUS === "1" || Bun.env.ORQ_AUTONOMOUS === "true";
 const askRouter = new AskRouter(store, pool, bus, { autonomous });
 const config = await store.loadConfig();
+const userTeam = await Bun.file(store.crewPath("config.json")).json().then(
+  (raw) => (Array.isArray(raw?.team) ? new Set(raw.team.map((m: { role: string }) => m.role)) : new Set<string>()),
+  () => new Set<string>(),
+);
+const filledRoles = config.team.filter((member) => !userTeam.has(member.role)).map((member) => member.role);
+console.log(
+  `[daemon] team: ${config.team.map((member) => `${member.role}=${member.cli}/${member.model}`).join(" ")}`,
+);
+if (filledRoles.length > 0) {
+  console.log(`[daemon] roles using defaults (not in config.json): ${filledRoles.join(", ")}`);
+}
 if (config.git?.enabled !== false && !ensureRepoReady(root, config.git?.baseBranch ?? "main")) {
   console.error(
     `[daemon] degraded: daemon root is not a git repository with base branch ${config.git?.baseBranch ?? "main"}; planning will be rejected until git is initialized or git.enabled=false is set`,
