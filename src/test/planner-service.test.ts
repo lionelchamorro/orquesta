@@ -5,6 +5,7 @@ import path from "node:path";
 import { PlanStore } from "../core/plan-store";
 import { PlannerService } from "../daemon/planner-service";
 import type { Agent } from "../core/types";
+import { Bus } from "../bus/bus";
 
 type SpawnCall = { role: string; cli: string; model: string; prompt: string; port?: number };
 
@@ -59,17 +60,18 @@ const makeStore = async () => {
 test("startPlanner scaffolds plan and spawns planner agent", async () => {
   const { root, store } = await makeStore();
   const { pool, spawns } = makeFakePool(store);
-  const service = new PlannerService(store, pool, { mcpPort: 1234 });
+  const service = new PlannerService(store, pool, { mcpPort: 1234, draftTimeoutMs: 0 });
 
   const result = await service.startPlanner("build a hello CLI");
 
-  expect(result.runId).toBe("run-1");
+  expect(result.runId.startsWith("run-")).toBeTrue();
   expect(spawns.length).toBe(1);
   expect(spawns[0].role).toBe("planner");
   expect(spawns[0].port).toBe(1234);
   expect(spawns[0].prompt).toContain("build a hello CLI");
 
   const plan = await store.loadPlan();
+  expect(plan.runId).toBe(result.runId);
   expect(plan.status).toBe("drafting");
   expect(plan.prompt).toBe("build a hello CLI");
   expect(service.getCurrentAgentId()).toBe(result.agentId);
@@ -79,7 +81,7 @@ test("startPlanner scaffolds plan and spawns planner agent", async () => {
 test("startPlanner is idempotent while planner is alive", async () => {
   const { root, store } = await makeStore();
   const { pool, spawns } = makeFakePool(store);
-  const service = new PlannerService(store, pool, { mcpPort: 1234 });
+  const service = new PlannerService(store, pool, { mcpPort: 1234, draftTimeoutMs: 0 });
 
   const first = await service.startPlanner("one");
   const second = await service.startPlanner("two");
@@ -92,7 +94,7 @@ test("startPlanner is idempotent while planner is alive", async () => {
 test("reset kills active planner and clears tasks", async () => {
   const { root, store } = await makeStore();
   const { pool, killed } = makeFakePool(store);
-  const service = new PlannerService(store, pool, { mcpPort: 1234 });
+  const service = new PlannerService(store, pool, { mcpPort: 1234, draftTimeoutMs: 0 });
 
   const { agentId } = await service.startPlanner("seed");
   await store.saveTask({
@@ -120,7 +122,7 @@ test("reset kills active planner and clears tasks", async () => {
 test("planner exit with emitted tasks moves plan to awaiting_approval", async () => {
   const { root, store } = await makeStore();
   const { pool, triggerExit } = makeFakePool(store);
-  const service = new PlannerService(store, pool, { mcpPort: 1234 });
+  const service = new PlannerService(store, pool, { mcpPort: 1234, draftTimeoutMs: 0 });
 
   const { agentId } = await service.startPlanner("seed");
   await store.saveTask({
@@ -142,5 +144,48 @@ test("planner exit with emitted tasks moves plan to awaiting_approval", async ()
   expect(plan.status).toBe("awaiting_approval");
   expect(plan.task_count).toBe(1);
   expect(service.getCurrentAgentId()).toBeNull();
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("tasks_emitted from current planner moves plan to awaiting_approval before exit", async () => {
+  const { root, store } = await makeStore();
+  const { pool } = makeFakePool(store);
+  const bus = new Bus();
+  const service = new PlannerService(store, pool, { mcpPort: 1234, bus, draftTimeoutMs: 0 });
+
+  const { agentId, runId } = await service.startPlanner("seed");
+  await store.saveTask({
+    id: "task-1",
+    title: "A",
+    status: "pending",
+    depends_on: [],
+    iteration: 1,
+    created_at: "a",
+    updated_at: "a",
+    attempt_count: 0,
+    subtasks: [],
+  });
+
+  bus.publish({ tags: [runId, "iter-1", agentId], payload: { type: "tasks_emitted", runId, iteration: 1, taskIds: ["task-1"] } });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const plan = await store.loadPlan();
+  expect(plan.status).toBe("awaiting_approval");
+  expect(plan.task_count).toBe(1);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("planner timeout fails draft with no emitted tasks", async () => {
+  const { root, store } = await makeStore();
+  const { pool, killed } = makeFakePool(store);
+  const bus = new Bus();
+  const service = new PlannerService(store, pool, { mcpPort: 1234, bus, draftTimeoutMs: 5 });
+
+  const { agentId } = await service.startPlanner("seed");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const plan = await store.loadPlan();
+  expect(plan.status).toBe("failed");
+  expect(killed).toContain(agentId);
   rmSync(root, { recursive: true, force: true });
 });

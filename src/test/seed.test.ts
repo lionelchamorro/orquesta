@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { seedSession } from "../agents/seed";
@@ -11,7 +11,13 @@ test("seedSession writes CLAUDE and mcp config", async () => {
   await Bun.write(path.join(root, "templates", "mcp.json.tmpl"), "{\"url\":\"http://localhost:{{PORT}}/mcp/{{SESSION_ID}}\"}");
   const { dir: cwd, roleTemplate } = await seedSession(root, "agent-1", "coder", "do work");
   expect(await Bun.file(path.join(cwd, "CLAUDE.md")).text()).toContain("do work");
+  expect(await Bun.file(path.join(cwd, "AGENTS.md")).text()).toContain("do work");
+  expect(await Bun.file(path.join(cwd, "GEMINI.md")).text()).toContain("do work");
   expect(await Bun.file(path.join(cwd, ".mcp.json")).text()).toContain("agent-1");
+  expect(await Bun.file(path.join(cwd, ".codex", "config.toml")).text()).toContain("mcp_servers.orquesta");
+  expect(await Bun.file(path.join(cwd, ".gemini", "settings.json")).json()).toMatchObject({
+    mcpServers: { orquesta: { httpUrl: "http://localhost:8000/mcp/agent-1" } },
+  });
   expect(roleTemplate).toBe("coder role");
   rmSync(root, { recursive: true, force: true });
 });
@@ -24,4 +30,33 @@ test("seedSession uses explicit port override", async () => {
   const { dir: cwd } = await seedSession(root, "agent-2", "coder", "do work", { port: 9123 });
   expect(await Bun.file(path.join(cwd, ".mcp.json")).text()).toContain("9123");
   rmSync(root, { recursive: true, force: true });
+});
+
+test("seedSession returns codex env and tokenized MCP config", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "orq-seed-codex-"));
+  const codexSource = mkdtempSync(path.join(os.tmpdir(), "orq-codex-home-"));
+  const previousCodexHome = Bun.env.CODEX_HOME;
+  Bun.env.CODEX_HOME = codexSource;
+  mkdirSync(path.join(root, "templates", "roles"), { recursive: true });
+  await Bun.write(path.join(codexSource, "auth.json"), "{\"token\":\"test\"}");
+  await Bun.write(path.join(root, "templates", "roles", "coder.md"), "coder role");
+  await Bun.write(path.join(root, "templates", "mcp.json.tmpl"), "{\"url\":\"http://localhost:{{PORT}}/mcp/{{SESSION_ID}}?token={{SESSION_TOKEN}}\"}");
+  try {
+    const { dir: cwd, env } = await seedSession(root, "agent-3", "coder", "do work", {
+      cli: "codex",
+      port: 9123,
+      sessionToken: "secret token",
+    });
+    const codexConfig = await Bun.file(path.join(cwd, ".codex", "config.toml")).text();
+    const geminiConfig = await Bun.file(path.join(cwd, ".gemini", "settings.json")).json();
+    expect(env.CODEX_HOME).toBe(path.join(cwd, ".codex"));
+    expect(codexConfig).toContain("http://localhost:9123/mcp/agent-3?token=secret%20token");
+    expect(geminiConfig.mcpServers.orquesta.httpUrl).toBe("http://localhost:9123/mcp/agent-3?token=secret%20token");
+    expect(existsSync(path.join(cwd, ".codex", "auth.json"))).toBe(true);
+  } finally {
+    if (previousCodexHome === undefined) delete Bun.env.CODEX_HOME;
+    else Bun.env.CODEX_HOME = previousCodexHome;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(codexSource, { recursive: true, force: true });
+  }
 });

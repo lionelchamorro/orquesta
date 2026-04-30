@@ -3,5 +3,5 @@ dist/
 .orquesta/*
 .claude/scheduled_tasks.lock
 demo/*
-docs/*
-tasks/*
+docs/superpowers/*
+docs/plans/*

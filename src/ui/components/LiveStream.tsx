@@ -1,5 +1,6 @@
-import WebTTY from "../../../demo/WebTTY";
+import WebTTY from "./WebTTY";
 import type { Agent } from "../../core/types";
+import { DAEMON_WS } from "../config";
 
 export function LiveStream({ agent }: { agent?: Agent }) {
   const isDead = agent?.status === "dead";
@@ -14,7 +15,7 @@ export function LiveStream({ agent }: { agent?: Agent }) {
         {isDead && <span className="badge idle">exited</span>}
       </div>
       <div className="terminal-host">
-        {agent ? <WebTTY wsUrl={`/tty/${agent.id}`} readOnly={isDead} /> : <div className="muted">Select an agent</div>}
+        {agent ? <WebTTY wsUrl={`${DAEMON_WS}/tty/${agent.id}`} readOnly={isDead} /> : <div className="muted">Select an agent</div>}
       </div>
     </div>
   );

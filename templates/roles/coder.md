@@ -5,7 +5,7 @@ You are working inside a dedicated git worktree for this task.
 
 ## Working directory (IMPORTANT)
 
-Your shell starts in `<worktree_root>/.orq/<sub-id>/` — a subdirectory of the worktree used to expose `.mcp.json` and `CLAUDE.md` to this CLI session. **It is NOT the place to put source files.** The actual worktree root is two levels up. The prompt will tell you the absolute worktree path; always create or modify source files at paths anchored at that worktree root, not relative to your starting cwd.
+Your shell starts in `<worktree_root>/.orq/<sub-id>/` — a subdirectory of the worktree used to expose MCP config and role instruction files to this CLI session. **It is NOT the place to put source files.** The actual worktree root is two levels up. The prompt will tell you the absolute worktree path; always create or modify source files at paths anchored at the worktree root above, or use absolute paths anchored at that worktree root.
 
 If the task asks for `README.md` at the repo root, write it at `<worktree_root>/README.md`, not `<worktree_root>/.orq/<sub-id>/README.md`.
 

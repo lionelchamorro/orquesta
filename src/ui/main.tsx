@@ -1,7 +1,4 @@
 import { createRoot } from "react-dom/client";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Agent, Iteration, Plan, Subtask, Task } from "../core/types";
-import { useBus } from "./hooks/useBus";
 import { Shell } from "./components/Shell";
 import { IterationNav } from "./components/IterationNav";
 import { TasksPanel } from "./components/TasksPanel";
@@ -12,196 +9,39 @@ import { ChatComposer } from "./components/ChatComposer";
 import { PlanPrompt } from "./components/PlanPrompt";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { Toast } from "./components/Toast";
-
-type Mode = "empty" | "planner" | "run";
-
-export const taskDisplayId = (taskId: string): string =>
-  taskId.replace(/^task-/i, "T").toUpperCase();
-
-const resolveMode = (plan: Plan | null, plannerAgentId: string | null, tasks: Task[]): Mode => {
-  if (!plan) return "empty";
-  if (plannerAgentId) return "planner";
-  if (plan.status === "drafting" || plan.status === "awaiting_approval") return "planner";
-  if (plan.status === "done" || tasks.length === 0) return "empty";
-  return "run";
-};
+import { useRunState } from "./hooks/useRunState";
+import { taskDisplayId } from "./utils/format";
 
 function App() {
-  const [plan, setPlan] = useState<Plan | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [iterations, setIterations] = useState<Iteration[]>([]);
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [subtasks, setSubtasks] = useState<Subtask[]>([]);
-  const [plannerAgentId, setPlannerAgentId] = useState<string | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string>();
-  const [selectedAgentId, setSelectedAgentId] = useState<string>();
-  const [drawerAgentId, setDrawerAgentId] = useState<string>();
-  const [selectedIterationNumber, setSelectedIterationNumber] = useState<number>(1);
-  const [pinnedAgentIds, setPinnedAgentIds] = useState<Set<string>>(() => {
-    try {
-      const raw = localStorage.getItem("orq.pinnedAgents");
-      if (!raw) return new Set();
-      const parsed = JSON.parse(raw);
-      return new Set(Array.isArray(parsed) ? parsed : []);
-    } catch {
-      return new Set();
-    }
-  });
-  const togglePin = useCallback((agentId: string) => {
-    setPinnedAgentIds((current) => {
-      const next = new Set(current);
-      if (next.has(agentId)) next.delete(agentId);
-      else next.add(agentId);
-      try { localStorage.setItem("orq.pinnedAgents", JSON.stringify([...next])); } catch {}
-      return next;
-    });
-  }, []);
-  const events = useBus();
-
-  const refresh = useCallback(async () => {
-    const response = await fetch("/api/runs/current");
-    const data = await response.json();
-    setPlan(data.plan);
-    setTasks(data.tasks);
-    setIterations(data.iterations);
-    setAgents(data.agents);
-    setSubtasks(data.subtasks ?? []);
-    setPlannerAgentId(data.plannerAgentId ?? null);
-    if (typeof data.plan?.current_iteration === "number") {
-      setSelectedIterationNumber(data.plan.current_iteration);
-    }
-    if (!selectedTaskId && data.tasks[0]) setSelectedTaskId(data.tasks[0].id);
-    if (!selectedAgentId && data.agents[0]) setSelectedAgentId(data.agents[0].id);
-  }, [selectedTaskId, selectedAgentId]);
-
-  useEffect(() => {
-    void refresh();
-  }, []);
-
-  useEffect(() => {
-    const last = events[events.length - 1];
-    if (!last) return;
-    const payload = last.payload;
-    if (payload.type === "plan_approved") {
-      setPlan((current) => current ? { ...current, status: "approved", updated_at: payload.at } : current);
-      setPlannerAgentId(null);
-      return;
-    }
-    if (payload.type === "tasks_emitted") {
-      void refresh();
-      return;
-    }
-    if (payload.type === "iteration_started") {
-      setIterations((current) => {
-        const next: Iteration = {
-          id: payload.iterationId,
-          number: payload.number,
-          runId: plan?.runId ?? "run-1",
-          trigger: payload.trigger,
-          started_at: new Date().toISOString(),
-          task_ids: [],
-        };
-        return [...current.filter((item) => item.id !== payload.iterationId), next];
-      });
-      setPlan((current) => current ? { ...current, current_iteration: payload.number } : current);
-      return;
-    }
-    if (payload.type === "task_ready") {
-      setTasks((current) => current.map((task) => task.id === payload.taskId ? { ...task, status: "ready" } : task));
-      return;
-    }
-    if (payload.type === "task_completed") {
-      setTasks((current) => current.map((task) => task.id === payload.taskId ? { ...task, status: "done" } : task));
-      return;
-    }
-    if (payload.type === "task_cancelled") {
-      setTasks((current) => current.map((task) => task.id === payload.taskId ? { ...task, status: "cancelled" } : task));
-      return;
-    }
-    if (payload.type === "subtask_started") {
-      setTasks((current) => current.map((task) => task.id === payload.taskId ? { ...task, status: "running" } : task));
-      setAgents((current) => current.some((agent) => agent.id === payload.agentId) ? current : [
-        ...current,
-        {
-          id: payload.agentId,
-          role: "coder",
-          cli: "claude",
-          model: "unknown",
-          status: "live",
-          session_cwd: "",
-          bound_subtask: payload.subtaskId,
-        },
-      ]);
-      return;
-    }
-    if (payload.type === "agent_completed" || payload.type === "agent_failed") {
-      setAgents((current) => current.map((agent) => agent.id === payload.agentId ? { ...agent, status: "dead" } : agent));
-      setPinnedAgentIds((current) => {
-        if (current.has(payload.agentId)) return current;
-        const next = new Set(current);
-        next.add(payload.agentId);
-        try { localStorage.setItem("orq.pinnedAgents", JSON.stringify([...next])); } catch {}
-        return next;
-      });
-      if (payload.agentId === plannerAgentId) {
-        setPlannerAgentId(null);
-        void refresh();
-      }
-      return;
-    }
-    if (payload.type === "run_completed") {
-      setPlan((current) => current ? { ...current, status: "done" } : current);
-    }
-  }, [events]);
-
-  const selectedIteration = useMemo(
-    () => iterations.find((iteration) => iteration.number === selectedIterationNumber) ?? null,
-    [iterations, selectedIterationNumber],
-  );
-
-  const iterationTasks = tasks.filter((task) => task.iteration === selectedIterationNumber);
-  const taskIdBySubtaskId = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (const subtask of subtasks) map[subtask.id] = subtask.taskId;
-    return map;
-  }, [subtasks]);
-  const selectedTask = useMemo(
-    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
-    [tasks, selectedTaskId],
-  );
-  const agentTaskId = (agent: Agent): string | null =>
-    agent.bound_task ?? (agent.bound_subtask ? taskIdBySubtaskId[agent.bound_subtask] ?? null : null);
-  const selectTask = useCallback((taskId: string) => {
-    setSelectedTaskId(taskId);
-    const belongs = (agent: Agent) => agentTaskId(agent) === taskId;
-    const live = agents.find((agent) => belongs(agent) && agent.status !== "dead");
-    const fallback = agents.find(belongs);
-    const next = live ?? fallback;
-    if (next) setSelectedAgentId(next.id);
-  }, [agents, taskIdBySubtaskId]);
-  const plannerAgent = useMemo(
-    () => agents.find((agent) => agent.id === plannerAgentId) ?? (plannerAgentId ? {
-      id: plannerAgentId,
-      role: "planner" as const,
-      cli: "claude" as const,
-      model: "unknown",
-      status: "live" as const,
-      session_cwd: "",
-    } : undefined),
-    [agents, plannerAgentId],
-  );
-
-  const approve = useCallback(async () => {
-    await fetch("/api/approve", { method: "POST" });
-    await refresh();
-  }, [refresh]);
-
-  const resetPlan = useCallback(async () => {
-    await fetch("/api/plan/reset", { method: "POST" });
-    await refresh();
-  }, [refresh]);
-
-  const mode = resolveMode(plan, plannerAgentId, tasks);
+  const {
+    plan,
+    agents,
+    events,
+    subtasks,
+    plannerAgentId,
+    setPlannerAgentId,
+    selectedTaskId,
+    setSelectedAgentId,
+    drawerAgentId,
+    setDrawerAgentId,
+    selectedIterationNumber,
+    setSelectedIterationNumber,
+    pinnedAgentIds,
+    togglePin,
+    refresh,
+    selectedIteration,
+    iterationTasks,
+    selectedTask,
+    agentTaskId,
+    selectTask,
+    plannerAgent,
+    approve,
+    resetPlan,
+    mode,
+    selectedTerminalAgent,
+    effectiveSelectedAgentId,
+    chatTargetAgentId,
+  } = useRunState();
 
   return (
     <div className="app-shell">
@@ -210,7 +50,7 @@ function App() {
         <PlanPrompt onStarted={(agentId) => { setPlannerAgentId(agentId); void refresh(); }} />
       )}
       {mode === "planner" && (
-        <>
+        <div className="planner-mode">
           {(plan?.status === "awaiting_approval" || iterationTasks.length > 0) && plan?.status !== "approved" && plan?.status !== "running" && (
             <div className="planner-approve">
               <div>
@@ -242,7 +82,7 @@ function App() {
                 onSelect={selectTask}
               />
             </div>
-            <div className="column">
+            <div className="column live">
               <LiveStream agent={plannerAgent} />
             </div>
             <div className="column right">
@@ -258,7 +98,7 @@ function App() {
               />
             </div>
           </div>
-        </>
+        </div>
       )}
       {mode === "run" && (
         <>
@@ -291,7 +131,7 @@ function App() {
                 <AgentsPanel
                   agents={agents}
                   agentTaskId={agentTaskId}
-                  selectedAgentId={selectedAgentId}
+                  selectedAgentId={effectiveSelectedAgentId}
                   selectedTaskId={selectedTaskId}
                   selectedTaskLabel={selectedTask ? taskDisplayId(selectedTask.id) : undefined}
                   pinnedAgentIds={pinnedAgentIds}
@@ -299,12 +139,14 @@ function App() {
                   onSelect={setSelectedAgentId}
                   onOpenTerminal={setDrawerAgentId}
                 />
-                <ChatComposer targetAgentId={selectedAgentId} label="as PM" />
+                <ChatComposer targetAgentId={chatTargetAgentId} label="as PM" />
               </div>
             </div>
-            <div className="live-row">
-              <LiveStream agent={agents.find((agent) => agent.id === selectedAgentId)} />
-            </div>
+            {selectedTerminalAgent && (
+              <div className="live-row">
+                <LiveStream agent={selectedTerminalAgent} />
+              </div>
+            )}
           </div>
         </>
       )}

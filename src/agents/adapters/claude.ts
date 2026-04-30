@@ -1,16 +1,13 @@
-export const argv = (model: string, extra: string[] = [], initialPrompt?: string) => [
+export const argv = (model: string, extra: string[] = [], prompt?: string) => [
   "claude",
-  "-p",
-  "--output-format",
-  "stream-json",
-  "--verbose",
+  ...(prompt ? ["--print", "--output-format", "stream-json", "--verbose"] : []),
   "--permission-mode",
   "bypassPermissions",
   "--dangerously-skip-permissions",
   "--model",
   model,
   ...extra,
-  ...(initialPrompt ? [initialPrompt] : []),
+  ...(prompt ? [prompt] : []),
 ];
 
 export interface StreamLogEvent {

@@ -28,6 +28,6 @@ test("orchestrator does not stop from idle ticks alone", async () => {
     config as never,
   );
   await orchestrator.tick();
-  expect((orchestrator as never).stopped).toBeFalse();
+  expect((orchestrator as unknown as { stopped: boolean }).stopped).toBeFalse();
   rmSync(root, { recursive: true, force: true });
 });

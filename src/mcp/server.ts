@@ -3,6 +3,7 @@ import type { AskRouter } from "../daemon/ask-router";
 import type { AgentPool } from "../agents/pool";
 import type { Bus } from "../bus/bus";
 import type { PlanStore } from "../core/plan-store";
+import { requestHasSessionToken } from "../core/session-token";
 
 type JsonRpcBody = {
   jsonrpc: string;
@@ -16,11 +17,15 @@ export const createMcpHandler = (deps: {
   bus: Bus;
   askRouter: AskRouter;
   agentPool: AgentPool;
+  sessionToken?: string;
 }) => {
   const handlers = createToolHandlers(deps);
 
   return async (req: Request) => {
     if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+    if (!requestHasSessionToken(req, deps.sessionToken)) {
+      return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "Unauthorized" } }, { status: 401 });
+    }
     const url = new URL(req.url);
     const agentId = url.pathname.split("/").at(-1);
     if (!agentId) return new Response("not found", { status: 404 });
@@ -34,6 +39,10 @@ export const createMcpHandler = (deps: {
       body = (await req.json()) as JsonRpcBody;
     } catch {
       return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+    }
+
+    if (body.id === undefined) {
+      return new Response(null, { status: 202 });
     }
 
     const id = body.id ?? null;

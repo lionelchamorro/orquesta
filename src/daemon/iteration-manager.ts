@@ -50,9 +50,19 @@ export class IterationManager {
     });
   }
 
-  private async spawnValidationRole(role: Role, summary: string, originalGoal: string, iterationNumber: number, maxIterations: number) {
+  private async spawnValidationRole(
+    role: Role,
+    summary: string,
+    originalGoal: string,
+    iterationNumber: number,
+    maxIterations: number,
+    alreadyProposed: Task[],
+  ) {
     const member = this.config.team.find((item) => item.role === role);
     if (!member) return null;
+    const proposedSection = alreadyProposed.length === 0
+      ? "(none yet — you are the first validator to run)"
+      : alreadyProposed.map((task) => `- ${task.id}: ${task.title}`).join("\n");
     const prompt = [
       `You are validating run progress at iteration boundary ${iterationNumber} of ${maxIterations} (max).`,
       "",
@@ -62,13 +72,17 @@ export class IterationManager {
       "Current state — what each task delivered so far:",
       summary,
       "",
-      "Your job:",
-      "1. Compare the deliverables above to the original user goal.",
-      "2. Identify gaps, missing edge cases, robustness concerns, missing tests, missing documentation, or anything that does not yet match the original intent.",
-      "3. If you find any, call `emit_tasks` with refinement tasks. Each task must have a clear `title`, a precise `description`, and `depends_on` (use [] if independent of other refinements).",
-      "4. After emitting tasks (or determining genuinely none are needed), call `report_complete` with a short summary of your assessment.",
+      "Refinement tasks ALREADY proposed by other validators in this iteration boundary (do NOT duplicate them — only add what is genuinely missing from a different lens):",
+      proposedSection,
       "",
-      `Iterations remaining after this boundary: ${Math.max(0, maxIterations - iterationNumber)}. The user has explicitly requested all iterations be used to refine the deliverable; lean toward emitting refinement tasks if you can identify ANY gap. Only complete without emitting if the deliverable already perfectly matches the original goal in code, tests, and documentation.`,
+      "Your job:",
+      "1. Compare the deliverables above to the original user goal, through your role's specific lens.",
+      "2. Identify gaps that are NOT already covered by the refinement tasks listed above.",
+      "3. If you find new gaps, call `emit_tasks` with refinement tasks. Each task must have a clear `title`, a precise `description`, and `depends_on` (use [] if independent).",
+      "4. If everything you would have flagged is already covered above, simply call `report_complete` saying so — do not re-propose.",
+      "5. After emitting (or deciding not to), call `report_complete` with a short summary of your assessment.",
+      "",
+      `Iterations remaining after this boundary: ${Math.max(0, maxIterations - iterationNumber)}. Lean toward emitting refinement tasks if you find genuine gaps not already covered. Avoid manufacturing duplicates of the proposed list.`,
     ].join("\n");
     return this.pool.spawn(role, member.cli, member.model, prompt, { command: member.command });
   }
@@ -101,16 +115,18 @@ export class IterationManager {
       await this.store.savePlan({ ...plan, current_iteration: nextNumber, updated_at: new Date().toISOString() });
       this.bus.publish({ tags: [plan.runId, iteration.id], payload: { type: "iteration_started", iterationId: iteration.id, number: nextNumber, trigger: iteration.trigger } });
       const summary = iteration.summary ?? "No summary";
-      const agents = await Promise.all([
-        this.spawnValidationRole("architect", summary, plan.prompt, nextNumber, plan.max_iterations),
-        this.spawnValidationRole("pm", summary, plan.prompt, nextNumber, plan.max_iterations),
-        this.spawnValidationRole("qa", summary, plan.prompt, nextNumber, plan.max_iterations),
-      ]);
+      const validatorRoles: Role[] = ["architect", "pm", "qa"];
       try {
-        await Promise.all(agents.filter(Boolean).map((agent) => this.waitForRoleCompletion(agent!.id)));
+        for (const role of validatorRoles) {
+          const proposedSoFar = (await this.store.loadTasks()).filter((task) => task.iteration === nextNumber);
+          const agent = await this.spawnValidationRole(role, summary, plan.prompt, nextNumber, plan.max_iterations, proposedSoFar);
+          if (!agent) continue;
+          await this.waitForRoleCompletion(agent.id);
+        }
       } catch (error) {
-        for (const agent of agents.filter(Boolean)) {
-          this.pool.kill(agent!.id);
+        const liveAgents = await this.store.loadAgents();
+        for (const agent of liveAgents.filter((a) => a.status !== "dead")) {
+          this.pool.kill(agent.id);
         }
         throw error;
       }

@@ -1,9 +1,8 @@
-export const argv = (model: string, extra: string[] = [], initialPrompt?: string) => [
+export const argv = (model: string, extra: string[] = [], prompt?: string) => [
   "codex",
   "--model",
   model,
-  "--approval-mode",
-  "auto",
+  "--dangerously-bypass-approvals-and-sandbox",
   ...extra,
-  ...(initialPrompt ? [initialPrompt] : []),
+  ...(prompt ? [prompt] : []),
 ];

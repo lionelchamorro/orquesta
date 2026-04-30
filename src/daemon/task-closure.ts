@@ -12,6 +12,7 @@ import {
   mergeBranch,
   removeWorktree,
   isGitRepo,
+  safeGitOutput,
 } from "../core/git";
 import type { Config, Task } from "../core/types";
 
@@ -28,6 +29,7 @@ Closure reason: ${task.closure_reason ?? "unknown"}
 Branch: ${task.branch ?? "-"}
 Worktree: ${task.worktree_path ?? "-"}
 Merge commit: ${task.merge_commit ?? "-"}
+Merge error: ${task.merge_error ?? "-"}
 
 ## Subtasks
 
@@ -65,7 +67,8 @@ export const closeTask = async (deps: {
     agent.bound_task === taskId
     || (!agent.bound_task && agent.bound_subtask && task.subtasks.includes(agent.bound_subtask)),
   );
-  const archiveRoot = archivePathForTask(root, taskId);
+  const plan = await store.loadPlan();
+  const archiveRoot = archivePathForTask(root, taskId, plan.runId);
 
   for (const agent of agents) {
     if (agent.status !== "dead") {
@@ -89,17 +92,28 @@ export const closeTask = async (deps: {
 
   if (shouldMerge) {
     try {
+      const pendingDiff = task.worktree_path && task.base_branch
+        ? safeGitOutput(task.worktree_path, ["diff", "--stat", `${task.base_branch}..HEAD`]).trim()
+        : "";
       if (config.git?.autoCommit !== false && task.worktree_path) {
         autoCommitAll(task.worktree_path, `${task.id}: ${task.title} (auto)`);
       }
-      mergeCommit = mergeBranch(root, task.branch!, task.base_branch!, `${task.id}: ${task.title}`);
+      const postCommitDiff = task.worktree_path && task.base_branch
+        ? safeGitOutput(task.worktree_path, ["diff", "--stat", `${task.base_branch}..HEAD`]).trim()
+        : "";
+      if (!pendingDiff && !postCommitDiff) {
+        effectiveClosure = "no_changes";
+      } else {
+        mergeCommit = mergeBranch(root, task.branch!, task.base_branch!, `${task.id}: ${task.title}`);
+      }
       try {
-        diff = diffStat(root, `${mergeCommit}~1`, mergeCommit);
+        diff = mergeCommit ? diffStat(root, `${mergeCommit}~1`, mergeCommit) : "";
       } catch {
         diff = "";
       }
-    } catch {
+    } catch (error) {
       effectiveClosure = "merge_conflict";
+      task.merge_error = error instanceof Error ? error.message : "Unknown merge failure";
     }
   }
 
@@ -111,7 +125,11 @@ export const closeTask = async (deps: {
         const target = path.join(archiveRoot, `${agent.role}-${agent.id}`);
         archiveSessionDir(agent.session_cwd, target);
         archivePath = archiveRoot;
-        await store.saveAgent({ ...agent, session_cwd: target, status: "dead", last_activity_at: new Date().toISOString() });
+        // Re-load: the pool's exit handler may have written cli_session_id / metrics
+        // after we killed the process. The `agent` snapshot from line 66 is stale.
+        const fresh = (await store.loadAgent(agent.id)) ?? agent;
+        const now = new Date().toISOString();
+        await store.saveAgent({ ...fresh, session_cwd: target, status: "dead", finished_at: fresh.finished_at ?? now, last_activity_at: now });
       }
     }
   }
@@ -128,6 +146,7 @@ export const closeTask = async (deps: {
     status: effectiveClosure === "merge_conflict" || effectiveClosure === "failed_subtask" ? "failed" : "done",
     closure_reason: effectiveClosure,
     merge_commit: mergeCommit,
+    merge_error: task.merge_error,
     merged_at: mergeCommit ? new Date().toISOString() : task.merged_at,
     archive_path: archivePath ?? task.archive_path,
     worktree_path: !preserveDebugState && task.worktree_path && !existsSync(task.worktree_path) ? undefined : task.worktree_path,

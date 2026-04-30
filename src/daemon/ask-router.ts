@@ -3,37 +3,137 @@ import type { Bus } from "../bus/bus";
 import type { PlanStore } from "../core/plan-store";
 
 const ASK_TIMEOUT_MS = Number(Bun.env.ASK_USER_TIMEOUT_MS ?? 300_000);
+const ASK_HARD_TIMEOUT_MS = Number(Bun.env.ASK_USER_HARD_TIMEOUT_MS ?? 3_600_000);
 export const HUMAN_FALLBACK_AGENT_ID = "human-fallback";
 
 export class AskRouter {
-  private pending = new Map<string, { resolve: (answer: string) => void; timer: Timer; fromAgent: string; question: string; options?: string[] }>();
+  private pending = new Map<string, {
+    resolve: (answer: string) => void;
+    fallbackTimer: Timer;
+    hardTimer: Timer;
+    fromAgent: string;
+    question: string;
+    options?: string[];
+  }>();
 
   constructor(
     private readonly store: PlanStore,
     private readonly pool: AgentPool,
     private readonly bus: Bus,
+    private readonly options: { autonomous?: boolean } = {},
   ) {}
+
+  private autonomousAnswer(question: string, options?: string[]) {
+    const choice = options?.[0];
+    if (choice) return `[ORQ-AUTO] No PM available; selected "${choice}". Document this assumption in your report_complete summary.`;
+    return `[ORQ-AUTO] No PM available. Proceed with your best judgment given the question: "${question}". Document the assumption you made and the rationale in your report_complete summary.`;
+  }
 
   async ask(fromAgent: string, question: string, options?: string[]) {
     const askId = crypto.randomUUID();
     const agents = await this.store.loadAgents();
     const pm = agents.find((agent) => agent.role === "pm" && agent.status !== "dead");
     const initialFallback = !pm;
+    const now = new Date().toISOString();
+    if (initialFallback && this.options.autonomous) {
+      const answer = this.autonomousAnswer(question, options);
+      await this.store.savePendingAsk({
+        id: askId,
+        fromAgent,
+        question,
+        options,
+        status: "answered",
+        answer,
+        answered_by: HUMAN_FALLBACK_AGENT_ID,
+        created_at: now,
+        updated_at: now,
+      });
+      this.bus.publish({
+        tags: [fromAgent, askId, HUMAN_FALLBACK_AGENT_ID],
+        payload: { type: "ask_user_answered", askId, answer, fromAgent: HUMAN_FALLBACK_AGENT_ID },
+      });
+      return answer;
+    }
+    await this.store.savePendingAsk({
+      id: askId,
+      fromAgent,
+      question,
+      options,
+      status: initialFallback ? "fallback" : "pending",
+      created_at: now,
+      updated_at: now,
+    });
 
     return await new Promise<string>((resolve) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(askId);
-        if (!initialFallback) {
-          this.bus.publish({ tags: [fromAgent, askId], payload: { type: "ask_user", askId, fromAgent, question, options, fallback: true } });
+      const fallbackTimer = setTimeout(() => {
+        if (initialFallback) return;
+        if (this.options.autonomous) {
+          const answer = this.autonomousAnswer(question, options);
+          const pending = this.pending.get(askId);
+          if (!pending) return;
+          clearTimeout(pending.fallbackTimer);
+          clearTimeout(pending.hardTimer);
+          this.pending.delete(askId);
+          void this.store.savePendingAsk({
+            id: askId,
+            fromAgent,
+            question,
+            options,
+            status: "answered",
+            answer,
+            answered_by: HUMAN_FALLBACK_AGENT_ID,
+            created_at: now,
+            updated_at: new Date().toISOString(),
+          });
+          this.bus.publish({
+            tags: [fromAgent, askId, HUMAN_FALLBACK_AGENT_ID],
+            payload: { type: "ask_user_answered", askId, answer, fromAgent: HUMAN_FALLBACK_AGENT_ID },
+          });
+          pending.resolve(answer);
+          return;
         }
-        resolve("Pending human answer");
+        void this.markFallback(askId);
+        this.bus.publish({ tags: [fromAgent, askId], payload: { type: "ask_user", askId, fromAgent, question, options, fallback: true } });
       }, ASK_TIMEOUT_MS);
-      this.pending.set(askId, { resolve, timer, fromAgent, question, options });
+      const hardTimer = setTimeout(() => {
+        this.pending.delete(askId);
+        void this.store.savePendingAsk({
+          id: askId,
+          fromAgent,
+          question,
+          options,
+          status: "timed_out",
+          created_at: now,
+          updated_at: new Date().toISOString(),
+        });
+        this.bus.publish({ tags: [fromAgent, askId], payload: { type: "ask_timed_out", askId, fromAgent } });
+        resolve(
+          `[ORQ] No human/PM response received within ${Math.round(ASK_HARD_TIMEOUT_MS / 60_000)}min. Proceed using your best judgment, document the assumption you made and the rationale in your report_complete summary.`,
+        );
+      }, ASK_HARD_TIMEOUT_MS);
+      this.pending.set(askId, { resolve, fallbackTimer, hardTimer, fromAgent, question, options });
       this.bus.publish({ tags: [fromAgent, askId], payload: { type: "ask_user", askId, fromAgent, question, options, fallback: initialFallback } });
       if (pm) {
         this.pool.write(pm.id, `[ORQ] question from ${fromAgent}: ${question} [askId=${askId}]\n`);
       }
     });
+  }
+
+  async recoverPendingAsks() {
+    for (const ask of await this.store.loadPendingAsks()) {
+      if (ask.status !== "pending" && ask.status !== "fallback") continue;
+      this.bus.publish({
+        tags: [ask.fromAgent, ask.id],
+        payload: { type: "ask_user", askId: ask.id, fromAgent: ask.fromAgent, question: ask.question, options: ask.options, fallback: true },
+      });
+      await this.store.savePendingAsk({ ...ask, status: "fallback", updated_at: new Date().toISOString() });
+    }
+  }
+
+  private async markFallback(askId: string) {
+    const ask = await this.store.loadPendingAsk(askId);
+    if (!ask || ask.status === "answered" || ask.status === "timed_out") return;
+    await this.store.savePendingAsk({ ...ask, status: "fallback", updated_at: new Date().toISOString() });
   }
 
   async answer(askId: string, answer: string, fromAgent: string) {
@@ -45,16 +145,31 @@ export class AskRouter {
       }
     }
     const pending = this.pending.get(askId);
-    if (!pending) throw new Error("Unknown or already answered ask");
-    clearTimeout(pending.timer);
-    this.pending.delete(askId);
-    pending.resolve(answer);
-    this.bus.publish({ tags: [fromAgent, askId], payload: { type: "ask_user_answered", askId, answer, fromAgent } });
+    const ask = await this.store.loadPendingAsk(askId);
+    if (!pending && (!ask || ask.status === "answered" || ask.status === "timed_out")) throw new Error("Unknown or already answered ask");
+    if (pending) {
+      clearTimeout(pending.fallbackTimer);
+      clearTimeout(pending.hardTimer);
+      this.pending.delete(askId);
+      pending.resolve(answer);
+    }
+    if (ask) {
+      await this.store.savePendingAsk({
+        ...ask,
+        status: "answered",
+        answer,
+        answered_by: fromAgent,
+        updated_at: new Date().toISOString(),
+      });
+    }
+    const tags = ask ? [fromAgent, ask.fromAgent, askId] : [fromAgent, askId];
+    this.bus.publish({ tags, payload: { type: "ask_user_answered", askId, answer, fromAgent } });
   }
 
   close() {
     for (const [askId, pending] of this.pending) {
-      clearTimeout(pending.timer);
+      clearTimeout(pending.fallbackTimer);
+      clearTimeout(pending.hardTimer);
       pending.resolve(`ask ${askId} closed`);
     }
     this.pending.clear();

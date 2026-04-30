@@ -23,7 +23,7 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #root { margin: 0; min-height: 100%; }
+html, body, #root { margin: 0; height: 100%; min-height: 100%; }
 body {
   font-family: "Inter", "IBM Plex Sans", -apple-system, sans-serif;
   font-size: 13px;
@@ -35,11 +35,13 @@ body {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   padding: 10px;
   display: grid;
   grid-template-rows: auto auto 1fr;
   gap: 8px;
+  overflow: hidden;
 }
 
 /* ==== TOPBAR ==== */
@@ -116,12 +118,14 @@ body {
 
 /* ==== LAYOUT ==== */
 .run-body {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(260px, 1fr) minmax(220px, 38vh);
   gap: 8px;
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
-.run-body > .layout { flex: 1; min-height: 0; }
+.run-body > .layout { min-height: 0; }
 .layout {
   display: grid;
   grid-template-columns: 220px 1fr 280px;
@@ -130,15 +134,16 @@ body {
 }
 
 .column { display: grid; gap: 8px; min-height: 0; min-width: 0; overflow: hidden; grid-auto-rows: min-content; }
-.column.tasks, .column.activity { grid-template-rows: 1fr; }
+.column.tasks, .column.activity, .column.live { grid-template-rows: 1fr; }
 .column.right { grid-template-rows: auto 1fr auto; }
 
 .live-row {
-  min-height: 260px;
+  min-height: 0;
   display: flex;
   min-width: 0;
+  overflow: hidden;
 }
-.live-row > .panel { flex: 1; min-width: 0; }
+.live-row > .panel { flex: 1; min-width: 0; min-height: 0; }
 
 /* ==== SECTION HEADER ==== */
 .section-head {
@@ -433,13 +438,15 @@ body {
   flex: 1;
   min-height: 160px;
   padding: 8px;
+  box-sizing: border-box;
   font-family: "JetBrains Mono", monospace;
   font-size: 11.5px;
   color: var(--muted-2);
   overflow: hidden;
-  display: flex;
+  position: relative;
 }
-.terminal-host > div { flex: 1; min-width: 0; min-height: 0; }
+.terminal-host > div { width: 100%; height: 100%; }
+.terminal-host .xterm { height: 100%; }
 .terminal-host .list { padding: 12px; color: var(--muted); }
 .terminal-host .muted { color: var(--muted); }
 
@@ -534,11 +541,20 @@ body {
 .plan-prompt-error { color: var(--danger); font-size: 12px; }
 
 /* ==== PLANNER MODE ==== */
+.planner-mode {
+  grid-row: 2 / 4;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
 .planner-layout {
   display: grid;
   grid-template-columns: 260px 1fr 300px;
   gap: 8px;
+  flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 .planner-approve {
   display: flex;

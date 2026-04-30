@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Agent, Role, Subtask, Task } from "../../core/types";
+import { buildRoleByTaskId } from "../utils/agentRole";
+import { flatTasks, layoutTasks } from "../utils/layout";
 
 const statusEndIcon = (status: Task["status"]) => {
   if (status === "done") return "✓";
@@ -19,38 +21,6 @@ const roleGlyph: Record<Role, string> = {
   pm: "☰",
   qa: "⟲",
 };
-
-type LayoutNode = { task: Task; depth: number };
-
-const layoutTasks = (tasks: Task[]): LayoutNode[] => {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const depthCache = new Map<string, number>();
-  const resolveDepth = (task: Task, stack: Set<string>): number => {
-    if (depthCache.has(task.id)) return depthCache.get(task.id)!;
-    if (stack.has(task.id)) return 0;
-    stack.add(task.id);
-    const parents = task.depends_on
-      .map((id) => byId.get(id))
-      .filter((parent): parent is Task => Boolean(parent));
-    const depth = parents.length === 0
-      ? 0
-      : 1 + Math.max(...parents.map((parent) => resolveDepth(parent, stack)));
-    stack.delete(task.id);
-    depthCache.set(task.id, depth);
-    return depth;
-  };
-  const nodes = tasks.map((task) => ({ task, depth: resolveDepth(task, new Set()) }));
-  return nodes.sort((a, b) => {
-    if (a.depth !== b.depth) return a.depth - b.depth;
-    return a.task.id.localeCompare(b.task.id, undefined, { numeric: true });
-  });
-};
-
-const flatTasks = (tasks: Task[]): LayoutNode[] =>
-  tasks
-    .slice()
-    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
-    .map((task) => ({ task, depth: 0 }));
 
 export function TasksPanel({
   tasks,
@@ -73,28 +43,7 @@ export function TasksPanel({
     [tasks, viewMode],
   );
 
-  const roleByTaskId = useMemo(() => {
-    const agentByKey = new Map<string, Agent>();
-    for (const agent of agents) {
-      if (!agent.bound_subtask) continue;
-      const taskId = agent.bound_task;
-      if (!taskId) continue;
-      agentByKey.set(`${taskId}:${agent.bound_subtask}`, agent);
-    }
-    const byTask = new Map<string, Role>();
-    for (const task of tasks) {
-      const live = task.subtasks
-        .map((id) => subtasks.find((sub) => sub.id === id && sub.taskId === task.id))
-        .filter((sub): sub is Subtask => Boolean(sub));
-      const running = live.find((sub) => {
-        const agent = agentByKey.get(`${task.id}:${sub.id}`);
-        return agent && agent.status !== "dead";
-      });
-      const latest = running ?? live[live.length - 1];
-      if (latest) byTask.set(task.id, latest.role);
-    }
-    return byTask;
-  }, [tasks, subtasks, agents]);
+  const roleByTaskId = useMemo(() => buildRoleByTaskId(tasks, subtasks, agents), [tasks, subtasks, agents]);
 
   return (
     <div className="panel tasks-panel">
