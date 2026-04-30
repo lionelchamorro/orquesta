@@ -285,9 +285,9 @@ export class TaskPipeline {
             agentId: agent.id,
           });
           const outcome = await waitForSubtask(this.bus, this.pool, agent.id, fix.id);
-          if (outcome === "failed") {
+          if (outcome.outcome === "failed" || outcome.outcome === "failed_quota") {
             closureReason = "failed_subtask";
-            throw new Error(`Fix subtask ${fix.id} failed`);
+            throw new Error(`Fix subtask ${fix.id} failed${outcome.outcome === "failed_quota" ? " (quota exceeded)" : ""}`);
           }
           lastFixId = fix.id;
         }

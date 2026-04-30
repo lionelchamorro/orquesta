@@ -151,12 +151,13 @@ const subtaskDefaults = (subtask: Partial<Subtask>): Subtask => ({
 });
 
 const taskTransitions: Record<TaskStatus, TaskStatus[]> = {
-  pending: ["ready", "running", "blocked", "cancelled", "failed"],
-  ready: ["pending", "running", "blocked", "cancelled", "failed"],
-  running: ["pending", "done", "failed", "cancelled", "blocked"],
+  pending: ["ready", "running", "blocked", "cancelled", "failed", "failed_quota"],
+  ready: ["pending", "running", "blocked", "cancelled", "failed", "failed_quota"],
+  running: ["pending", "done", "failed", "failed_quota", "cancelled", "blocked"],
   blocked: [],
   done: [],
   failed: [],
+  failed_quota: ["pending", "ready"],
   cancelled: [],
 };
 
