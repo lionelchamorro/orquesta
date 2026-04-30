@@ -1,7 +1,10 @@
 package ui
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -24,6 +27,7 @@ type Home struct {
 	ttyBuffer      string
 	ttyEvents      chan ttyMsg
 	chat           ChatOverlay
+	toasts         ToastQueue
 	err            error
 }
 
@@ -168,6 +172,16 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.cursor = max(0, len(h.state.Agents)-1)
 			h.listOffset = settleListOffset(h.state, h.cursor, 0, h.listPaneHeight())
 		case "enter":
+			// Pending toast jump-to-agent takes priority when no pane action applies.
+			if latest, ok := h.toasts.Latest(time.Now(), defaultToastTimeout); ok && h.pane.Mode != ModeAgentDetail {
+				if idx := agentIndex(h.state.Agents, latest.AgentID); idx >= 0 {
+					h.cursor = idx
+					h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
+					h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
+				}
+				h.toasts = h.toasts.Dismiss(latest.AskID)
+				return h, nil
+			}
 			if h.pane.Mode != ModeAgentDetail || h.pane.AgentID == "" {
 				return h, nil
 			}
@@ -226,6 +240,7 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(h.activityBuffer) > maxActivityBuffer {
 			h.activityBuffer = h.activityBuffer[len(h.activityBuffer)-maxActivityBuffer:]
 		}
+		h.toasts = applyAskEvent(h.toasts, event, time.Now())
 		if isStructural(event.Type()) {
 			return h, tea.Batch(h.fetchRunState(), waitEvent(h.events))
 		}
@@ -298,7 +313,12 @@ func (h Home) View() string {
 		return renderEmpty(width, height) + "\n" + muted.Render("r refresh  q quit")
 	}
 	footer := h.footerForMode()
+	if pending := h.toasts.PendingDigest(); pending > 0 {
+		footer = muted.Render(footerDigest(pending)) + "  " + footer
+	}
 	overlay := renderChatOverlay(h.chat, width)
+	visibleToasts := h.toasts.Visible(time.Now(), defaultToastTimeout)
+	toastBlock := renderToasts(visibleToasts, width)
 	contentHeight := max(1, height-1)
 	if overlay != "" {
 		contentHeight = max(1, contentHeight-3)
@@ -320,10 +340,63 @@ func (h Home) View() string {
 			h.renderRightPane(width, contentHeight-top),
 		)
 	}
-	if overlay != "" {
-		return main + "\n" + overlay + "\n" + footer
+	parts := []string{main}
+	if toastBlock != "" {
+		parts = append(parts, toastBlock)
 	}
-	return main + "\n" + footer
+	if overlay != "" {
+		parts = append(parts, overlay)
+	}
+	parts = append(parts, footer)
+	return strings.Join(parts, "\n")
+}
+
+func footerDigest(n int) string {
+	if n == 1 {
+		return "1 ask pending"
+	}
+	return fmt.Sprintf("%d asks pending", n)
+}
+
+func agentIndex(agents []client.Agent, id string) int {
+	for i, a := range agents {
+		if a.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// applyAskEvent updates the toast queue based on a streamed event. New asks
+// are added with the receipt time; answered/timed-out asks are resolved.
+func applyAskEvent(q ToastQueue, e client.TaggedEvent, now time.Time) ToastQueue {
+	switch e.Type() {
+	case "ask_user":
+		var payload struct {
+			AskID    string `json:"askId"`
+			From     string `json:"fromAgent"`
+			Question string `json:"question"`
+		}
+		if err := json.Unmarshal(e.Payload, &payload); err != nil {
+			return q
+		}
+		role := ""
+		for _, tag := range e.Tags {
+			if strings.HasPrefix(tag, "role:") {
+				role = strings.TrimPrefix(tag, "role:")
+			}
+		}
+		return q.Add(AskToast{AskID: payload.AskID, AgentID: payload.From, Role: role, Question: payload.Question, CreatedAt: now})
+	case "ask_user_answered", "ask_timed_out":
+		var payload struct {
+			AskID string `json:"askId"`
+		}
+		if err := json.Unmarshal(e.Payload, &payload); err != nil {
+			return q
+		}
+		return q.Resolve(payload.AskID)
+	}
+	return q
 }
 
 func (h Home) footerForMode() string {
