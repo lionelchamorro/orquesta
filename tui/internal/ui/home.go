@@ -15,6 +15,7 @@ type Home struct {
 	width         int
 	height        int
 	cursor        int
+	listOffset    int
 	selectedAgent string
 	ttyBuffer     string
 	ttyEvents     chan ttyMsg
@@ -57,10 +58,26 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if h.cursor < len(h.state.Agents)-1 {
 				h.cursor++
 			}
+			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
 		case "k", "up":
 			if h.cursor > 0 {
 				h.cursor--
 			}
+			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
+		case "pgdown", "ctrl+f":
+			page := pageSize(h.listPaneHeight())
+			h.cursor = clamp(h.cursor+page, 0, max(0, len(h.state.Agents)-1))
+			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
+		case "pgup", "ctrl+b":
+			page := pageSize(h.listPaneHeight())
+			h.cursor = clamp(h.cursor-page, 0, max(0, len(h.state.Agents)-1))
+			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
+		case "g", "home":
+			h.cursor = 0
+			h.listOffset = 0
+		case "G", "end":
+			h.cursor = max(0, len(h.state.Agents)-1)
+			h.listOffset = settleListOffset(h.state, h.cursor, 0, h.listPaneHeight())
 		case "enter":
 			if len(h.state.Agents) > 0 {
 				h.selectedAgent = h.state.Agents[h.cursor].ID
@@ -108,24 +125,49 @@ func (h Home) View() string {
 	if h.err != nil {
 		return bad.Render(h.err.Error())
 	}
-	footer := muted.Render("j/k select agent  enter attach tty  r refresh  q quit")
+	footer := muted.Render("j/k select agent  pgup/pgdn page  g/G top/bottom  enter attach  r refresh  q quit")
 	contentHeight := max(1, height-1)
 	if width >= 80 {
 		left := max(28, width*35/100)
 		right := max(20, width-left)
 		return lipgloss.JoinHorizontal(
 			lipgloss.Top,
-			renderList(h.state, h.cursor, left, contentHeight),
+			renderList(h.state, h.cursor, h.listOffset, left, contentHeight),
 			renderPreview(h.selectedAgent, h.ttyBuffer, right, contentHeight),
 		) + "\n" + footer
 	}
 	top := max(8, contentHeight/2)
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		renderList(h.state, h.cursor, width, top),
+		renderList(h.state, h.cursor, h.listOffset, width, top),
 		renderPreview(h.selectedAgent, h.ttyBuffer, width, contentHeight-top),
 		footer,
 	)
+}
+
+// listPaneHeight returns the visible height of the list pane for the current
+// terminal size, mirroring the layout logic in View.
+func (h Home) listPaneHeight() int {
+	height := h.height
+	if height == 0 {
+		height = 30
+	}
+	width := h.width
+	if width == 0 {
+		width = 100
+	}
+	contentHeight := max(1, height-1)
+	if width >= 80 {
+		return contentHeight
+	}
+	return max(8, contentHeight/2)
+}
+
+func pageSize(height int) int {
+	if height <= 1 {
+		return 1
+	}
+	return height - 1
 }
 
 func (h Home) fetchRunState() tea.Cmd {
