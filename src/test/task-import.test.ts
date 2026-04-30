@@ -10,6 +10,18 @@ import { importTasks } from "../daemon/task-import";
 const tmpRoot = (label: string) => {
   const root = mkdtempSync(path.join(os.tmpdir(), `orq-import-${label}-`));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
+  // Disable git for tmp roots so the import endpoint readiness gate passes.
+  Bun.write(
+    path.join(root, ".orquesta", "crew", "config.json"),
+    JSON.stringify({
+      dependencies: "strict",
+      concurrency: { workers: 1, max: 1 },
+      review: { enabled: false, maxIterations: 1 },
+      work: { maxAttemptsPerTask: 1, maxWaves: 1, maxIterations: 1 },
+      git: { enabled: false, baseBranch: "main", autoCommit: false, removeWorktreeOnArchive: false },
+      team: [{ role: "planner", cli: "claude", model: "claude-opus-4-7" }],
+    }),
+  );
   return root;
 };
 

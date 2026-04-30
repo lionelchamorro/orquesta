@@ -290,6 +290,10 @@ export const createHttpHandler = (deps: {
     }
 
     if (req.method === "POST" && url.pathname === "/api/tasks/import") {
+      const readiness = await gitReadiness(deps.store);
+      if (!readiness.ready && url.searchParams.get("force") !== "true") {
+        return json({ ok: false, error: { code: "git_not_ready", message: readiness.reason ?? "git not ready" } }, { status: 412 });
+      }
       const body = await readJsonBody<unknown>(req).catch((error) => error);
       if (body instanceof Error) return jsonBodyError(body);
       const result = await importTasks(deps.store, body);
