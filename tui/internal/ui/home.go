@@ -16,6 +16,7 @@ type Home struct {
 	height        int
 	cursor        int
 	listOffset    int
+	pane          RightPane
 	selectedAgent string
 	ttyBuffer     string
 	ttyEvents     chan ttyMsg
@@ -59,11 +60,13 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.cursor++
 			}
 			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
+			h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
 		case "k", "up":
 			if h.cursor > 0 {
 				h.cursor--
 			}
 			h.listOffset = settleListOffset(h.state, h.cursor, h.listOffset, h.listPaneHeight())
+			h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
 		case "pgdown", "ctrl+f":
 			page := pageSize(h.listPaneHeight())
 			h.cursor = clamp(h.cursor+page, 0, max(0, len(h.state.Agents)-1))
@@ -92,6 +95,7 @@ func (h Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if h.cursor >= len(h.state.Agents) {
 				h.cursor = max(0, len(h.state.Agents)-1)
 			}
+			h.pane = focusForCursor(h.pane, h.state.Agents, h.cursor)
 		}
 	case eventMsg:
 		event := client.TaggedEvent(msg)
@@ -133,16 +137,66 @@ func (h Home) View() string {
 		return lipgloss.JoinHorizontal(
 			lipgloss.Top,
 			renderList(h.state, h.cursor, h.listOffset, left, contentHeight),
-			renderPreview(h.selectedAgent, h.ttyBuffer, right, contentHeight),
+			h.renderRightPane(right, contentHeight),
 		) + "\n" + footer
 	}
 	top := max(8, contentHeight/2)
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		renderList(h.state, h.cursor, h.listOffset, width, top),
-		renderPreview(h.selectedAgent, h.ttyBuffer, width, contentHeight-top),
+		h.renderRightPane(width, contentHeight-top),
 		footer,
 	)
+}
+
+// renderRightPane dispatches based on the current pane mode. AgentDetail
+// shows the info card; everything else falls back to the legacy TTY preview
+// (which #017 will replace).
+func (h Home) renderRightPane(width, height int) string {
+	if h.selectedAgent != "" {
+		return renderPreview(h.selectedAgent, h.ttyBuffer, width, height)
+	}
+	if h.pane.Mode == ModeAgentDetail && h.pane.AgentID != "" {
+		for _, a := range h.state.Agents {
+			if a.ID == h.pane.AgentID {
+				return renderAgentDetail(a, worktreeForAgent(h.state, a), width, height)
+			}
+		}
+	}
+	return renderPreview("", "", width, height)
+}
+
+// focusForCursor moves the right pane between Activity and AgentDetail
+// based on the cursor position; PTY modes are left untouched.
+func focusForCursor(p RightPane, agents []client.Agent, cursor int) RightPane {
+	if p.Mode != ModeActivity && p.Mode != ModeAgentDetail {
+		return p
+	}
+	if cursor < 0 || cursor >= len(agents) {
+		next, err := p.BlurAgent()
+		if err != nil {
+			return p
+		}
+		return next
+	}
+	next, err := p.FocusAgent(agents[cursor].ID)
+	if err != nil {
+		return p
+	}
+	return next
+}
+
+// worktreeForAgent finds the worktree path for the agent's bound task.
+func worktreeForAgent(state client.RunState, a client.Agent) string {
+	if a.BoundTask == "" {
+		return ""
+	}
+	for _, t := range state.Tasks {
+		if t.ID == a.BoundTask {
+			return t.WorktreePath
+		}
+	}
+	return ""
 }
 
 // listPaneHeight returns the visible height of the list pane for the current

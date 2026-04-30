@@ -25,13 +25,6 @@ type Plan struct {
 	MaxIterations    int    `json:"max_iterations"`
 }
 
-type Task struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Iteration int      `json:"iteration"`
-	Subtasks  []string `json:"subtasks"`
-}
 
 type Subtask struct {
 	ID      string `json:"id"`
@@ -42,13 +35,33 @@ type Subtask struct {
 }
 
 type Agent struct {
-	ID           string `json:"id"`
-	Role         string `json:"role"`
-	CLI          string `json:"cli"`
-	Model        string `json:"model"`
-	Status       string `json:"status"`
-	BoundTask    string `json:"bound_task"`
-	BoundSubtask string `json:"bound_subtask"`
+	ID            string   `json:"id"`
+	Role          string   `json:"role"`
+	CLI           string   `json:"cli"`
+	Model         string   `json:"model"`
+	Status        string   `json:"status"`
+	BoundTask     string   `json:"bound_task"`
+	BoundSubtask  string   `json:"bound_subtask"`
+	SessionCWD    string   `json:"session_cwd"`
+	StartedAt     string   `json:"started_at"`
+	FinishedAt    string   `json:"finished_at"`
+	LastActivity  string   `json:"last_activity_at"`
+	LastEventAt   string   `json:"last_event_at"`
+	CLISessionID  string   `json:"cli_session_id"`
+	ExitCode      *int     `json:"exit_code,omitempty"`
+	StopReason    string   `json:"stop_reason"`
+	TotalCostUSD  *float64 `json:"total_cost_usd,omitempty"`
+	DurationMS    *int64   `json:"duration_ms,omitempty"`
+	NumTurns      *int     `json:"num_turns,omitempty"`
+}
+
+type Task struct {
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Status       string   `json:"status"`
+	Iteration    int      `json:"iteration"`
+	Subtasks     []string `json:"subtasks"`
+	WorktreePath string   `json:"worktree_path"`
 }
 
 type Iteration struct {
