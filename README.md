@@ -188,13 +188,13 @@ ORQ_DAEMON_URL=http://remote.host:8000 orq-tui
 
 ## Configuration
 
-Per-run config lives at `.orquesta/crew/config.json`. The defaults (see `src/cli/orq.ts`'s `defaultConfig`) use `claude-opus-4-7` for every role, `concurrency.workers = 2`, `maxAttemptsPerTask = 3`, `maxWaves = 50`, `maxIterations = 2`. Override per-role CLI/model:
+Per-run config lives at `.orquesta/crew/config.json`. The defaults (see `src/cli/orq.ts`'s `defaultConfig`) use `claude-opus-4-7` for every role except `coder`, which defaults to `codex` / `gpt-5.5`; `concurrency.workers = 2`, `maxAttemptsPerTask = 3`, `maxWaves = 50`, `maxIterations = 2`. Override per-role CLI/model:
 
 ```json
 {
   "team": [
     { "role": "planner",   "cli": "claude", "model": "claude-opus-4-7" },
-    { "role": "coder",     "cli": "codex",  "model": "gpt-5" },
+    { "role": "coder",     "cli": "codex",  "model": "gpt-5.5" },
     { "role": "critic",    "cli": "gemini", "model": "gemini-2.5-pro" }
   ]
 }

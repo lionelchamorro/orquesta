@@ -32,7 +32,7 @@ const defaultConfig = (): Config => ({
   work: { maxAttemptsPerTask: 3, maxWaves: 50, maxIterations: 2 },
   team: [
     { role: "planner", cli: "claude", model: "claude-opus-4-7" },
-    { role: "coder", cli: "claude", model: "claude-opus-4-7" },
+    { role: "coder", cli: "codex", model: "gpt-5.5" },
     { role: "tester", cli: "claude", model: "claude-opus-4-7" },
     { role: "critic", cli: "claude", model: "claude-opus-4-7" },
     { role: "architect", cli: "claude", model: "claude-opus-4-7" },

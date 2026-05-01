@@ -2,6 +2,6 @@ node_modules/
 dist/
 .orquesta/*
 .claude/scheduled_tasks.lock
-demo/*
+demo*/*
 docs/superpowers/*
 docs/plans/*

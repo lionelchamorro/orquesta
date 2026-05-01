@@ -60,7 +60,7 @@ const configDefaults = (config: Record<string, unknown>): Config => {
   const models = (config.models_legacy ?? config.models ?? {}) as Record<string, string>;
   const defaultTeam: TeamMember[] = [
     { role: "planner", cli: "claude", model: models.planner ?? "claude-opus-4-7" },
-    { role: "coder", cli: "claude", model: models.worker ?? "claude-opus-4-7" },
+    { role: "coder", cli: "codex", model: models.worker ?? "gpt-5.5" },
     { role: "tester", cli: "claude", model: models.worker ?? "claude-opus-4-7" },
     { role: "critic", cli: "claude", model: models.reviewer ?? "claude-opus-4-7" },
     { role: "architect", cli: "claude", model: models.reviewer ?? "claude-opus-4-7" },
