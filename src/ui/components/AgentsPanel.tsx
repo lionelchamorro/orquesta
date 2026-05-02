@@ -2,7 +2,6 @@ import type { Agent } from "../../core/types";
 import { taskDisplayId } from "../utils/format";
 
 const roleGlyph: Record<Agent["role"], string> = {
-  planner: "✦",
   coder: "⌘",
   tester: "✓",
   critic: "⚑",

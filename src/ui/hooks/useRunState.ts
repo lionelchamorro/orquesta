@@ -13,8 +13,8 @@ const resolveMode = (plan: Plan | null, tasks: Task[]): Mode => {
 
 const selectedRunAgent = (agents: Agent[], selectedAgentId?: string): Agent | undefined => {
   const selected = selectedAgentId ? agents.find((agent) => agent.id === selectedAgentId) : undefined;
-  if (selected && selected.role !== "planner") return selected;
-  return agents.find((agent) => agent.role !== "planner" && agent.status !== "dead");
+  if (selected) return selected;
+  return agents.find((agent) => agent.status !== "dead");
 };
 
 export const useRunState = () => {
@@ -67,8 +67,8 @@ export const useRunState = () => {
     const last = events[events.length - 1];
     if (!last) return;
     const payload = last.payload;
-    if (payload.type === "plan_approved") {
-      setPlan((current) => current ? { ...current, status: "approved", updated_at: payload.at } : current);
+    if (payload.type === "run_started") {
+      setPlan((current) => current ? { ...current, status: "running", updated_at: payload.at } : current);
       void refresh();
       return;
     }
@@ -83,6 +83,7 @@ export const useRunState = () => {
           number: payload.number,
           runId: plan?.runId ?? "run-1",
           trigger: payload.trigger,
+          phase: "executing",
           started_at: new Date().toISOString(),
           task_ids: [],
         };

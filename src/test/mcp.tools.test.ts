@@ -8,10 +8,10 @@ import { PlanStore } from "../core/plan-store";
 import { AskRouter } from "../daemon/ask-router";
 import { createToolHandlers, toolDefinitions } from "../mcp/tools";
 
-const savePlannerAgent = (store: PlanStore, id = "agent-1") =>
+const saveValidatorAgent = (store: PlanStore, id = "agent-1") =>
   store.saveAgent({
     id,
-    role: "planner",
+    role: "pm",
     cli: "claude",
     model: "m",
     status: "live",
@@ -22,38 +22,16 @@ test("emit_tasks creates tasks", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
   await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
-    runId: "run-1", prd: "(prompt)", prompt: "x", status: "approved", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "running", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
   }));
   const store = new PlanStore(root);
   const bus = new Bus();
   const pool = new AgentPool(root, store, bus);
   const askRouter = new AskRouter(store, pool, bus);
-  await savePlannerAgent(store);
+  await saveValidatorAgent(store);
   const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
   await tools.emit_tasks("agent-1", { tasks: [{ title: "A", depends_on: [] }] });
   expect((await store.loadTasks()).length).toBe(1);
-  askRouter.close();
-  rmSync(root, { recursive: true, force: true });
-});
-
-test("emit_tasks replaces previous iteration tasks by default", async () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-replace-"));
-  mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
-  await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
-    runId: "run-1", prd: "(prompt)", prompt: "x", status: "drafting", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
-  }));
-  const store = new PlanStore(root);
-  const bus = new Bus();
-  const pool = new AgentPool(root, store, bus);
-  const askRouter = new AskRouter(store, pool, bus);
-  await savePlannerAgent(store);
-  const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
-  await tools.emit_tasks("agent-1", { tasks: [{ title: "A", depends_on: [] }, { title: "B", depends_on: [] }] });
-  expect((await store.loadTasks()).length).toBe(2);
-  await tools.emit_tasks("agent-1", { tasks: [{ title: "C", depends_on: [] }] });
-  const tasks = await store.loadTasks();
-  expect(tasks.length).toBe(1);
-  expect(tasks[0].title).toBe("C");
   askRouter.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -62,13 +40,13 @@ test("emit_tasks with replace:false appends", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-append-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
   await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
-    runId: "run-1", prd: "(prompt)", prompt: "x", status: "drafting", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "running", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
   }));
   const store = new PlanStore(root);
   const bus = new Bus();
   const pool = new AgentPool(root, store, bus);
   const askRouter = new AskRouter(store, pool, bus);
-  await savePlannerAgent(store);
+  await saveValidatorAgent(store);
   const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
   await tools.emit_tasks("agent-1", { tasks: [{ title: "A", depends_on: [] }] });
   await tools.emit_tasks("agent-1", { replace: false, tasks: [{ title: "B", depends_on: [] }] });
@@ -106,7 +84,7 @@ test("emit_tasks rejects unauthorized roles and validator replacement", async ()
   const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
 
   await expect(tools.emit_tasks("agent-coder", { tasks: [{ title: "A" }] })).rejects.toThrow("not allowed");
-  await expect(tools.emit_tasks("agent-qa", { replace: true, tasks: [{ title: "A" }] })).rejects.toThrow("replace is only allowed");
+  await expect(tools.emit_tasks("agent-qa", { replace: true, tasks: [{ title: "A" }] })).rejects.toThrow("replace is no longer supported");
   askRouter.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -127,7 +105,7 @@ test("report_complete for unbound agent emits agent_completed", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-agent-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
   await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
-    runId: "run-1", prd: "(prompt)", prompt: "x", status: "approved", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "running", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
   }));
   const store = new PlanStore(root);
   const bus = new Bus();
@@ -136,7 +114,7 @@ test("report_complete for unbound agent emits agent_completed", async () => {
   const askRouter = new AskRouter(store, pool, bus);
   await store.saveAgent({
     id: "agent-1",
-    role: "planner",
+    role: "pm",
     cli: "claude",
     model: "m",
     status: "live",
@@ -147,8 +125,8 @@ test("report_complete for unbound agent emits agent_completed", async () => {
     if (event.payload.type === "agent_completed") seen.push(event.payload.summary);
   });
   const tools = createToolHandlers({ store, bus, askRouter, agentPool: pool });
-  await tools.report_complete("agent-1", { summary: "planned" });
-  expect(seen).toEqual(["planned"]);
+  await tools.report_complete("agent-1", { summary: "validated" });
+  expect(seen).toEqual(["validated"]);
   expect(killed).toEqual(["agent-1"]);
   askRouter.close();
   rmSync(root, { recursive: true, force: true });
@@ -158,7 +136,7 @@ test("report_complete for bound subtask does not emit agent_completed", async ()
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-bound-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
   await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
-    runId: "run-1", prd: "(prompt)", prompt: "x", status: "approved", created_at: "a", updated_at: "a", task_count: 1, completed_count: 0, current_iteration: 1, max_iterations: 2,
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "running", created_at: "a", updated_at: "a", task_count: 1, completed_count: 0, current_iteration: 1, max_iterations: 2,
   }));
   const store = new PlanStore(root);
   const bus = new Bus();
@@ -209,7 +187,7 @@ test("report_complete for bound subtask is idempotent", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-bound-idempotent-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
   await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
-    runId: "run-1", prd: "(prompt)", prompt: "x", status: "approved", created_at: "a", updated_at: "a", task_count: 1, completed_count: 0, current_iteration: 1, max_iterations: 2,
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "running", created_at: "a", updated_at: "a", task_count: 1, completed_count: 0, current_iteration: 1, max_iterations: 2,
   }));
   const store = new PlanStore(root);
   const bus = new Bus();
@@ -266,7 +244,7 @@ test("report_progress failed for unbound agent emits agent_failed and kills agen
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-tools-failed-agent-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
   await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
-    runId: "run-1", prd: "(prompt)", prompt: "x", status: "approved", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "running", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 2,
   }));
   const store = new PlanStore(root);
   const bus = new Bus();

@@ -18,6 +18,7 @@ Conversely, do NOT manufacture findings about things outside the task's scope. I
 
 If you find issues call `request_review_subtask`.
 If there are no issues call `report_complete`.
+If blocked, call `ask_user` with `target_role: "pm"` for intent/scope ambiguity or `target_role: "architect"` for design ambiguity.
 
 ## Progress reporting
 

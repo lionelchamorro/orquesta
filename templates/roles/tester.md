@@ -10,7 +10,7 @@ You are working inside the task's git worktree, alongside the coder's just-produ
 - If the changed files have no associated tests, report that fact in `report_complete` (e.g. `"no tests cover the changed files in this task; tests are owned by a sibling task"`). Do NOT invent tests to fill the gap.
 - If existing tests fail, report the failure verbatim — do not "fix" the code or the tests.
 
-Call `report_complete` with the test command output when done. If blocked call `ask_user`.
+Call `report_complete` with the test command output when done. If blocked call `ask_user`; use `target_role: "pm"` for product/scope questions and `target_role: "architect"` for technical test strategy questions.
 
 ## Progress reporting
 

@@ -40,12 +40,13 @@ const parseReportComplete = (value: unknown) => {
 const parseAskUser = (value: unknown) => {
   const record = parseRecord(value, "ask_user");
   if (typeof record.question !== "string") throw new Error("Invalid ask_user arguments");
-  return { question: record.question, options: stringList(record.options) };
+  const target_role: "pm" | "architect" = record.target_role === "architect" ? "architect" : "pm";
+  return { question: record.question, options: stringList(record.options), target_role };
 };
 
-const parseAnswerPeer = (value: unknown) => {
-  const record = parseRecord(value, "answer_peer");
-  if (typeof record.askId !== "string" || typeof record.answer !== "string") throw new Error("Invalid answer_peer arguments");
+const parseAnswerAsk = (value: unknown) => {
+  const record = parseRecord(value, "answer_ask");
+  if (typeof record.askId !== "string" || typeof record.answer !== "string") throw new Error("Invalid answer_ask arguments");
   return { askId: record.askId, answer: record.answer };
 };
 
@@ -153,14 +154,15 @@ export const toolDefinitions = [
       properties: {
         question: { type: "string", description: "The question to ask the PM agent." },
         options: { type: "array", items: { type: "string" }, description: "Optional suggested answers." },
+        target_role: { type: "string", enum: ["pm", "architect"], description: "Consultant role to route to." },
       },
       required: ["question"],
       additionalProperties: false,
     },
   },
   {
-    name: "answer_peer",
-    description: "Answer a routed PM question.",
+    name: "answer_ask",
+    description: "Answer a routed consultant question.",
     inputSchema: {
       type: "object",
       properties: {
@@ -274,16 +276,20 @@ export const toolDefinitions = [
 export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDeps) => ({
   async ask_user(agentId: string, arguments_: unknown) {
     const args = parseAskUser(arguments_);
-    const answer = await askRouter.ask(agentId, args.question, args.options);
+    const answer = await askRouter.ask(agentId, args.question, args.options, args.target_role);
     return toolResult({ answer });
   },
 
-  async answer_peer(agentId: string, arguments_: unknown) {
-    const args = parseAnswerPeer(arguments_);
+  async answer_ask(agentId: string, arguments_: unknown) {
+    const args = parseAnswerAsk(arguments_);
     const agent = await requireAgent(store, agentId);
-    requireRole(agent.role, ["pm"], "answer_peer");
+    requireRole(agent.role, ["pm", "architect"], "answer_ask");
     await askRouter.answer(args.askId, args.answer, agentId);
     return toolResult({ ok: true });
+  },
+
+  async answer_peer(agentId: string, arguments_: unknown) {
+    return this.answer_ask(agentId, arguments_);
   },
 
   async report_progress(agentId: string, arguments_: unknown) {
@@ -413,14 +419,14 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
   async emit_tasks(agentId: string, arguments_: unknown) {
     const args = parseEmitTasks(arguments_);
     const agent = await requireAgent(store, agentId);
-    requireRole(agent.role, ["planner", "architect", "pm", "qa"], "emit_tasks");
+    requireRole(agent.role, ["architect", "pm", "qa"], "emit_tasks");
     const plan = await store.loadPlan();
-    if (!["drafting", "awaiting_approval", "approved", "running"].includes(plan.status)) {
+    if (plan.status !== "running") {
       throw new Error(`emit_tasks: cannot emit tasks while plan is ${plan.status}`);
     }
-    const replace = args.replace ?? (agent.role === "planner" && plan.status === "drafting");
-    if (replace && !(agent.role === "planner" && plan.status === "drafting")) {
-      throw new Error("emit_tasks: replace is only allowed for planner while drafting");
+    const replace = args.replace ?? false;
+    if (replace) {
+      throw new Error("emit_tasks: replace is no longer supported");
     }
     let existing = await store.loadTasks();
     const created: string[] = [];
@@ -440,7 +446,7 @@ export const createToolHandlers = ({ store, bus, askRouter, agentPool }: ToolDep
     }
 
     // First pass: assign canonical IDs and build the localId → canonicalId map.
-    // Supports planner referring to tasks via:
+    // Supports validators referring to tasks via:
     //   - an explicit `id` field (e.g. "t2")
     //   - the positional label "t{n}" where n is the 1-based index in the batch
     //   - the canonical "task-{n}" itself

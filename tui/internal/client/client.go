@@ -71,12 +71,11 @@ type Iteration struct {
 }
 
 type RunState struct {
-	Plan           Plan        `json:"plan"`
-	Tasks          []Task      `json:"tasks"`
-	Subtasks       []Subtask   `json:"subtasks"`
-	Agents         []Agent     `json:"agents"`
-	Iterations     []Iteration `json:"iterations"`
-	PlannerAgentID string      `json:"plannerAgentId"`
+	Plan       Plan        `json:"plan"`
+	Tasks      []Task      `json:"tasks"`
+	Subtasks   []Subtask   `json:"subtasks"`
+	Agents     []Agent     `json:"agents"`
+	Iterations []Iteration `json:"iterations"`
 }
 
 func New(baseURL, root string) *Client {
@@ -125,14 +124,6 @@ func (c *Client) GetRunsCurrent() (RunState, error) {
 	}
 	var state RunState
 	return state, json.NewDecoder(res.Body).Decode(&state)
-}
-
-func (c *Client) PostApprove() error {
-	return c.post("/api/approve", nil)
-}
-
-func (c *Client) PostPlanReset() error {
-	return c.post("/api/plan/reset", nil)
 }
 
 type ResumeResponse struct {

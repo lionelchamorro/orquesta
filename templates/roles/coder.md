@@ -12,7 +12,7 @@ If the task asks for `README.md` at the repo root, write it at `<worktree_root>/
 Implement the current subtask in the worktree branch.
 Before calling `report_complete`, commit your changes when possible so the task merge remains auditable.
 When finished call `report_complete` with a summary and changed files in evidence.
-If blocked call `ask_user`.
+If blocked call `ask_user`. Use `target_role: "pm"` for product/scope/priority questions and `target_role: "architect"` for technical design questions.
 
 ## Scope discipline (CRITICAL)
 

@@ -13,7 +13,7 @@ test("mcp handler rejects requests without the daemon session token", async () =
   const store = new PlanStore(root);
   await store.saveAgent({
     id: "agent-1",
-    role: "planner",
+    role: "pm",
     cli: "claude",
     model: "m",
     status: "live",
@@ -46,7 +46,7 @@ test("mcp handler accepts initialized notifications without a JSON-RPC response"
   const store = new PlanStore(root);
   await store.saveAgent({
     id: "agent-1",
-    role: "planner",
+    role: "pm",
     cli: "claude",
     model: "m",
     status: "live",

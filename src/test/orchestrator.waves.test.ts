@@ -11,14 +11,14 @@ test("orchestrator does not stop from idle ticks alone", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-waves-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
   await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
-    runId: "run-1", prd: "(prompt)", prompt: "x", status: "approved", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 1,
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "running", created_at: "a", updated_at: "a", task_count: 0, completed_count: 0, current_iteration: 1, max_iterations: 1,
   }));
   const store = new PlanStore(root);
   const config = {
     dependencies: "strict" as const,
     concurrency: { workers: 1, max: 1 },
     review: { enabled: true, maxIterations: 1 },
-    work: { maxAttemptsPerTask: 1, maxWaves: 1, maxIterations: 1 },
+    work: { maxAttemptsPerTask: 1, maxWaves: 1, maxIterations: 1, maxQuotaWaitMs: 7200000 },
     team: [{ role: "coder", cli: "claude" as const, model: "m" }],
   };
   const orchestrator = new Orchestrator(

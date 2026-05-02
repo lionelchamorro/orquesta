@@ -1,6 +1,6 @@
-export type PlanStatus = "drafting" | "awaiting_approval" | "approved" | "running" | "done" | "failed" | "failed_quota";
+export type PlanStatus = "running" | "done" | "failed" | "failed_quota";
 export type CliName = "claude" | "codex" | "gemini";
-export type Role = "planner" | "coder" | "tester" | "critic" | "architect" | "pm" | "qa";
+export type Role = "coder" | "tester" | "critic" | "architect" | "pm" | "qa";
 export type TaskStatus = "pending" | "ready" | "running" | "blocked" | "done" | "failed" | "failed_quota" | "cancelled";
 export type SubtaskType = "code" | "test" | "critic" | "fix" | "custom";
 export type IterationTrigger = "initial" | "architect_replan" | "qa_regression";
@@ -25,13 +25,14 @@ export interface TeamMember {
   cli: CliName;
   model: string;
   command?: string[];
+  fallbacks?: Array<{ cli: CliName; model: string; command?: string[] }>;
 }
 
 export interface Config {
   dependencies: "strict" | "loose";
   concurrency: { workers: number; max: number };
   review: { enabled: boolean; maxIterations: number };
-  work: { maxAttemptsPerTask: number; maxWaves: number; maxIterations: number };
+  work: { maxAttemptsPerTask: number; maxWaves: number; maxIterations: number; maxQuotaWaitMs: number };
   git?: {
     enabled: boolean;
     baseBranch: string;
@@ -39,7 +40,7 @@ export interface Config {
     removeWorktreeOnArchive: boolean;
   };
   team: TeamMember[];
-  models_legacy?: { planner: string; worker: string; reviewer: string };
+  models_legacy?: { worker: string; reviewer: string };
 }
 
 export interface TaskEvidence {
@@ -63,7 +64,7 @@ export interface Task {
   merge_error?: string;
   merged_at?: string;
   archive_path?: string;
-  closure_reason?: "critic_ok" | "max_attempts" | "merge_conflict" | "failed_subtask" | "blocked_by_dep" | "no_changes";
+  closure_reason?: "critic_ok" | "max_attempts" | "merge_conflict" | "failed_subtask" | "blocked_by_dep" | "no_changes" | "quota_wait_exceeded";
   created_at: string;
   updated_at: string;
   attempt_count: number;
@@ -99,6 +100,15 @@ export interface Subtask {
   output?: string;
   artifacts?: string[];
   findings?: CriticFinding[];
+  fallback_attempts?: FallbackAttempt[];
+}
+
+export interface FallbackAttempt {
+  cli: CliName;
+  model: string;
+  error_at: string;
+  error_type: "rate_limit";
+  reset_at?: string;
 }
 
 export interface Iteration {
@@ -106,6 +116,7 @@ export interface Iteration {
   number: number;
   runId: string;
   trigger: IterationTrigger;
+  phase: "executing" | "validating";
   started_at: string;
   ended_at?: string;
   task_ids: string[];
@@ -121,6 +132,7 @@ export interface Agent {
   session_cwd: string;
   bound_subtask?: string;
   bound_task?: string;
+  bound_iteration?: string;
   started_at?: string;
   finished_at?: string;
   last_activity_at?: string;
@@ -141,6 +153,7 @@ export interface PendingAsk {
   fromAgent: string;
   question: string;
   options?: string[];
+  target_role?: "pm" | "architect";
   status: "pending" | "fallback" | "answered" | "timed_out";
   created_at: string;
   updated_at: string;
@@ -149,7 +162,7 @@ export interface PendingAsk {
 }
 
 export type BusEvent =
-  | { type: "plan_approved"; runId: string; at: string }
+  | { type: "run_started"; runId: string; at: string }
   | { type: "iteration_started"; iterationId: string; number: number; trigger: IterationTrigger }
   | { type: "task_ready"; taskId: string }
   | { type: "task_started"; taskId: string }

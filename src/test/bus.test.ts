@@ -36,7 +36,7 @@ test("bus drops subtask_output with empty subtaskId", () => {
   const bus = new Bus();
   const seen: string[] = [];
   bus.subscribe(() => true, (event) => seen.push(event.payload.type));
-  bus.publish({ tags: ["agent-1", "planner"], payload: { type: "subtask_output", subtaskId: "", chunk: "hello" } });
+  bus.publish({ tags: ["agent-1", "pm"], payload: { type: "subtask_output", subtaskId: "", chunk: "hello" } });
   bus.publish({ tags: ["agent-1", "coder"], payload: { type: "subtask_output", subtaskId: "sub-1", chunk: "hello" } });
   expect(seen).toEqual(["subtask_output"]);
 });

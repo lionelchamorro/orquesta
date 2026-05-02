@@ -1,76 +1,30 @@
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { AgentPool } from "../agents/pool";
-import { Bus } from "../bus/bus";
 import { Journal } from "../bus/journal";
 import { gitAvailable, isGitRepo, safeGitOutput } from "../core/git";
-import { newRunId } from "../core/ids";
 import { PlanStore } from "../core/plan-store";
-import { getOrCreateSessionToken } from "../core/session-token";
-import type { Config, Plan } from "../core/types";
-import { AskRouter } from "../daemon/ask-router";
-import { importTasks, readRunSource } from "../daemon/task-import";
-import { createMcpHandler } from "../mcp/server";
+import { installBuildDagSkill, uninstallBuildDagSkill, type SkillTarget } from "./skill-install";
+import { checkCrewCompatibility, migrateCrew } from "../daemon/compatibility";
+import { ingestRun, readRunSource } from "../daemon/run-ingest";
 
 const root = process.cwd();
 
-function resolveDaemonEntry(): string {
+function resolveDaemonEntry(): string | null {
   const fromSource = path.resolve(import.meta.dir, "..", "daemon", "index.ts");
   if (existsSync(fromSource)) return fromSource;
   const binDir = path.dirname(realpathSync(process.execPath));
-  return path.join(binDir, "..", "src", "daemon", "index.ts");
+  const fromCompiledBin = path.join(binDir, "..", "src", "daemon", "index.ts");
+  return existsSync(fromCompiledBin) ? fromCompiledBin : null;
 }
 
 const templatesDir = path.resolve(import.meta.dir, "..", "..", "templates");
 const store = new PlanStore(root);
-const PLANNER_TIMEOUT_MS = Number(Bun.env.ORQ_PLANNER_TIMEOUT_MS ?? 300_000);
 
-const defaultConfig = (): Config => ({
-  dependencies: "strict",
-  concurrency: { workers: 2, max: 4 },
-  review: { enabled: true, maxIterations: 2 },
-  work: { maxAttemptsPerTask: 3, maxWaves: 50, maxIterations: 2 },
-  team: [
-    { role: "planner", cli: "claude", model: "claude-opus-4-7" },
-    { role: "coder", cli: "codex", model: "gpt-5.5" },
-    { role: "tester", cli: "claude", model: "claude-opus-4-7" },
-    { role: "critic", cli: "claude", model: "claude-opus-4-7" },
-    { role: "architect", cli: "claude", model: "claude-opus-4-7" },
-    { role: "pm", cli: "claude", model: "claude-opus-4-7" },
-    { role: "qa", cli: "claude", model: "claude-opus-4-7" },
-  ],
-});
-
-const plannerMember = (config: Config) => config.team.find((member) => member.role === "planner") ?? config.team[0];
-
-const clearPreviousTasks = () => {
-  for (const relative of ["tasks", "subtasks", "iterations", "agents", "sessions", "worktrees", "asks"]) {
-    rmSync(store.crewPath(relative), { recursive: true, force: true });
-    mkdirSync(store.crewPath(relative), { recursive: true });
-  }
-  rmSync(store.crewPath("journal.sqlite"), { force: true });
-  rmSync(store.crewPath("journal.sqlite-shm"), { force: true });
-  rmSync(store.crewPath("journal.sqlite-wal"), { force: true });
-};
-
-const ensurePlanScaffold = async (prompt: string) => {
-  const now = new Date().toISOString();
-  const plan: Plan = {
-    runId: newRunId(),
-    prd: "(prompt)",
-    prompt,
-    status: "drafting",
-    created_at: now,
-    updated_at: now,
-    task_count: 0,
-    completed_count: 0,
-    current_iteration: 1,
-    max_iterations: 2,
-  };
-  clearPreviousTasks();
-  await store.savePlan(plan);
-  await store.saveConfig(await store.loadConfig().catch(() => defaultConfig()));
-  return plan;
+const parseSkillTarget = (args: string[]): SkillTarget => {
+  const index = args.indexOf("--target");
+  const raw = index >= 0 ? args[index + 1] : "all";
+  if (raw === "claude" || raw === "codex" || raw === "gemini" || raw === "all") return raw;
+  throw new Error(`Invalid skill target: ${raw}`);
 };
 
 const printStatus = async () => {
@@ -82,148 +36,20 @@ const printStatus = async () => {
   }
 };
 
-export const waitForAgentCompletion = (bus: Bus, pool: AgentPool, agentId: string) =>
-  new Promise<string>((resolve, reject) => {
-    let settled = false;
-    const unsubscribe = bus.subscribe(agentId, (event) => {
-      if (event.payload.type === "agent_completed" && event.payload.agentId === agentId) {
-        settled = true;
-        clearTimeout(timeout);
-        unsubscribe();
-        resolve(event.payload.summary);
-      }
-      if (event.payload.type === "tasks_emitted") {
-        settled = true;
-        clearTimeout(timeout);
-        unsubscribe();
-        resolve(`Planner emitted ${event.payload.taskIds.length} task${event.payload.taskIds.length === 1 ? "" : "s"}.`);
-      }
-    });
-    const timeout = setTimeout(() => {
-      settled = true;
-      unsubscribe();
-      reject(new Error(`Timed out waiting for agent ${agentId}`));
-    }, PLANNER_TIMEOUT_MS);
-    void pool.waitForExit(agentId).then(() => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      unsubscribe();
-      reject(new Error(`Agent ${agentId} exited before completion`));
-    });
-  });
-
-const isMissedPlannerCompletion = (error: unknown, agentId: string) =>
-  error instanceof Error && error.message === `Agent ${agentId} exited before completion`;
-
-export const waitForPlannerCompletionOrTasks = async (
-  bus: Bus,
-  pool: AgentPool,
-  agentId: string,
-  loadTasks: () => Promise<unknown[]>,
-) => {
-  try {
-    return await waitForAgentCompletion(bus, pool, agentId);
-  } catch (error) {
-    const tasks = await loadTasks();
-    if (tasks.length === 0 || !isMissedPlannerCompletion(error, agentId)) throw error;
-    return "";
-  }
-};
-
-const serveEphemeralMcp = (handler: (req: Request) => Promise<Response>) => {
-  return Bun.serve({ port: 0, fetch: handler });
-};
-
-const ensurePlannerProducedTasks = async () => {
-  const tasks = await store.loadTasks();
-  if (tasks.length === 0) {
-    throw new Error("Planner completed without emitting tasks");
-  }
-  return tasks;
-};
-
-export const runPlanner = async (plan: Plan, config: Config) => {
-  const journal = new Journal(store.crewPath("journal.sqlite"));
-  const bus = new Bus({ journal });
-  const sessionToken = await getOrCreateSessionToken(store);
-  const pool = new AgentPool(root, store, bus, { templatesDir, mcpToken: sessionToken });
-  const askRouter = new AskRouter(store, pool, bus);
-  let server: ReturnType<typeof Bun.serve> | null = null;
-
-  try {
-    const mcpHandler = createMcpHandler({ store, bus, askRouter, agentPool: pool, sessionToken });
-    server = serveEphemeralMcp((req) => mcpHandler(req));
-
-    const member = plannerMember(config);
-    const prompt = `Initial user prompt:\n\n${plan.prompt}`;
-    const agent = await pool.spawn("planner", member.cli, member.model, prompt, {
-      command: member.command,
-      port: server.port,
-    });
-    const summary = await waitForPlannerCompletionOrTasks(bus, pool, agent.id, () => store.loadTasks());
-    const tasks = await ensurePlannerProducedTasks();
-    pool.kill(agent.id);
-    await store.savePlan({
-      ...plan,
-      task_count: tasks.length,
-      updated_at: new Date().toISOString(),
-      status: "awaiting_approval",
-    });
-    return { tasks, summary };
-  } finally {
-    askRouter.close();
-    journal.close();
-    server?.stop();
-  }
-};
-
 export const main = async () => {
   const [command, ...rest] = Bun.argv.slice(2);
   if (!command) {
-    console.log("Usage: orq <plan|import|approve|start|status|logs|doctor>");
+    console.log("Usage: orq <run|import|skill|migrate|start|status|logs|doctor>");
     return;
   }
 
-  if (command === "plan") {
-    const prompt = rest.join(" ").trim();
-    if (!prompt) {
-      console.log("Usage: orq plan <prompt>");
-      return;
-    }
-    const daemonPort = Number(Bun.env.ORQ_PORT ?? 8000);
-    const daemonUrl = `http://localhost:${daemonPort}/api/plan`;
-    const sessionToken = await Bun.file(store.crewPath("session.token")).text().then((text) => text.trim()).catch(() => "");
-    try {
-      const response = await fetch(daemonUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(sessionToken ? { "X-Orquesta-Token": sessionToken } : {}) },
-        body: JSON.stringify({ prompt }),
-      });
-      if (response.ok) {
-        const body = await response.json();
-        console.log(`Planner started via daemon: agentId=${body.agentId} runId=${body.runId}`);
-        console.log(`Open http://localhost:${daemonPort}/ to chat with the planner.`);
-        return;
-      }
-      const body = await response.json().catch(() => ({}));
-      console.error(`Daemon rejected plan request (${response.status}): ${body.error ?? "unknown error"}`);
-      return;
-    } catch {
-      console.log(`Daemon not reachable on :${daemonPort}. Running planner standalone…`);
-      const plan = await ensurePlanScaffold(prompt);
-      const config = await store.loadConfig().catch(() => defaultConfig());
-      await runPlanner(plan, config);
-      await printStatus();
-      return;
-    }
-  }
-
-  if (command === "import") {
-    const file = rest[0];
+  const startRunFromFile = async (file: string, options: { deprecatedImport?: boolean } = {}) => {
     if (!file) {
-      console.log("Usage: orq import <file>");
+      console.log(options.deprecatedImport ? "Usage: orq import <file>" : "Usage: orq run start <file>");
       return;
+    }
+    if (options.deprecatedImport) {
+      console.warn("orq import is deprecated; use `orq run start <file>`.");
     }
     const filePath = path.resolve(root, file);
     const fileHandle = Bun.file(filePath);
@@ -243,43 +69,103 @@ export const main = async () => {
     const daemonPort = Number(Bun.env.ORQ_PORT ?? 8000);
     const sessionToken = await Bun.file(store.crewPath("session.token")).text().then((text) => text.trim()).catch(() => "");
     try {
-      const response = await fetch(`http://localhost:${daemonPort}/api/tasks/import`, {
+      const response = await fetch(`http://localhost:${daemonPort}/api/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(sessionToken ? { "X-Orquesta-Token": sessionToken } : {}) },
         body: JSON.stringify(payload),
       });
       const body = await response.json().catch(() => ({}));
       if (response.ok) {
-        console.log(`Imported via daemon: runId=${body.runId}`);
+        console.log(`Run started via daemon: runId=${body.runId}`);
         return;
       }
-      console.error(`Daemon rejected import (${response.status}): ${body.error?.message ?? body.error ?? "unknown error"}`);
+      console.error(`Daemon rejected run start (${response.status}): ${body.error?.message ?? body.error ?? "unknown error"}`);
       process.exitCode = 1;
       return;
     } catch {
-      console.log(`Daemon not reachable on :${daemonPort}. Importing in-process…`);
-      const result = await importTasks(store, payload);
+      console.log(`Daemon not reachable on :${daemonPort}. Starting run in-process...`);
+      const result = await ingestRun(store, payload);
       if (!result.ok) {
-        console.error(`Import failed (${result.error.code}): ${result.error.message}`);
+        console.error(`Run start failed (${result.error.code}): ${result.error.message}`);
         process.exitCode = 1;
         return;
       }
-      console.log(`Imported in-process: runId=${result.runId}`);
+      console.log(`Run started in-process: runId=${result.runId}`);
       return;
     }
+  };
+
+  if (command === "run") {
+    const [subcommand, ...runRest] = rest;
+    if (subcommand === "start") {
+      await startRunFromFile(runRest[0]);
+      return;
+    }
+    if (subcommand === "cancel") {
+      const daemonPort = Number(Bun.env.ORQ_PORT ?? 8000);
+      const sessionToken = await Bun.file(store.crewPath("session.token")).text().then((text) => text.trim()).catch(() => "");
+      const runId = runRest[0] ?? (await store.loadPlan()).runId;
+      try {
+        const response = await fetch(`http://localhost:${daemonPort}/api/runs/${runId}/cancel`, {
+          method: "POST",
+          headers: sessionToken ? { "X-Orquesta-Token": sessionToken } : {},
+        });
+        const body = await response.json().catch(() => ({}));
+        if (response.ok) {
+          console.log(`Run cancelled: runId=${runId} archive=${body.archive_path}`);
+          return;
+        }
+        console.error(`Daemon rejected run cancel (${response.status}): ${body.error ?? "unknown error"}`);
+        process.exitCode = 1;
+        return;
+      } catch {
+      const archivePath = await store.archiveRun("cancelled");
+        console.log(`Run cancelled in-process: runId=${runId} archive=${archivePath}`);
+        return;
+      }
+    }
+    console.log("Usage: orq run <start|cancel> ...");
+    return;
   }
 
-  if (command === "approve") {
-    const plan = await store.loadPlan();
-    await store.savePlan({ ...plan, status: "approved", updated_at: new Date().toISOString() });
-    console.log("Plan approved");
+  if (command === "skill") {
+    const [subcommand, ...skillRest] = rest;
+    try {
+      const target = parseSkillTarget(skillRest);
+      if (subcommand === "install") {
+        installBuildDagSkill(root, templatesDir, target);
+        console.log(`Installed orquesta-build-dag skill for ${target}.`);
+        return;
+      }
+      if (subcommand === "uninstall") {
+        uninstallBuildDagSkill(root, target);
+        console.log(`Uninstalled orquesta-build-dag skill for ${target}.`);
+        return;
+      }
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+      return;
+    }
+    console.log("Usage: orq skill <install|uninstall> [--target claude|codex|gemini|all]");
+    return;
+  }
+
+  if (command === "import") {
+    await startRunFromFile(rest[0], { deprecatedImport: true });
     return;
   }
 
   if (command === "start") {
     const daemonEntry = resolveDaemonEntry();
+    if (!daemonEntry) {
+      console.error("Unable to locate daemon entrypoint. Run from the source checkout or rebuild with `bun run build`.");
+      process.exitCode = 1;
+      return;
+    }
     const proc = Bun.spawn(["bun", "run", daemonEntry], { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
-    await proc.exited;
+    const exitCode = await proc.exited;
+    process.exitCode = exitCode;
     return;
   }
 
@@ -315,8 +201,19 @@ export const main = async () => {
     return;
   }
 
+  if (command === "migrate") {
+    const issues = checkCrewCompatibility(store);
+    if (issues.length === 0) {
+      console.log("No crew migration needed.");
+      return;
+    }
+    const archivePath = migrateCrew(store);
+    console.log(`Migrated incompatible crew state to ${archivePath}`);
+    return;
+  }
+
   if (!command) {
-    console.log("Usage: orq <plan|import|approve|start|status|logs|doctor>");
+    console.log("Usage: orq <run|import|skill|migrate|start|status|logs|doctor>");
     return;
   }
 

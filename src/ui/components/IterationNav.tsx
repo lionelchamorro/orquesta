@@ -17,7 +17,7 @@ export function IterationNav({
     ? new Date(iteration.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
     : "";
   const status = plan?.status ?? "idle";
-  const isRunning = status === "running" || status === "approved";
+  const isRunning = status === "running";
 
   return (
     <div className="panel nav">

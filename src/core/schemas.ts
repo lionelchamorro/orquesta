@@ -1,19 +1,31 @@
 import { z } from "zod";
 
-const PlanStatusSchema = z.enum(["drafting", "awaiting_approval", "approved", "running", "done", "failed", "failed_quota"]);
+const PlanStatusSchema = z.enum(["running", "done", "failed", "failed_quota"]);
 const CliNameSchema = z.enum(["claude", "codex", "gemini"]);
-const RoleSchema = z.enum(["planner", "coder", "tester", "critic", "architect", "pm", "qa"]);
+const RoleSchema = z.enum(["coder", "tester", "critic", "architect", "pm", "qa"]);
 const TaskStatusSchema = z.enum(["pending", "ready", "running", "blocked", "done", "failed", "failed_quota", "cancelled"]);
 const SubtaskTypeSchema = z.enum(["code", "test", "critic", "fix", "custom"]);
 const IterationTriggerSchema = z.enum(["initial", "architect_replan", "qa_regression"]);
+const IterationPhaseSchema = z.enum(["executing", "validating"]);
 const AgentStatusSchema = z.enum(["idle", "working", "live", "dead"]);
+const TaskIdSchema = z.string().regex(/^[a-z][a-z0-9-]*$/, "task id must start with a lowercase letter and contain only lowercase letters, digits, and dashes");
+
+const FallbackCandidateSchema = z.object({
+  cli: CliNameSchema,
+  model: z.string().min(1),
+  command: z.array(z.string()).optional(),
+});
 
 export const TeamMemberSchema = z.object({
   role: RoleSchema,
   cli: CliNameSchema,
   model: z.string().min(1),
   command: z.array(z.string()).optional(),
-});
+  fallbacks: z.array(FallbackCandidateSchema).default([]),
+}).refine((member) => {
+  const keys = [member, ...member.fallbacks].map((candidate) => `${candidate.cli}:${candidate.model}`);
+  return new Set(keys).size === keys.length;
+}, "fallback cli/model pairs must be unique");
 
 export const PlanSchema = z.object({
   runId: z.string().min(1),
@@ -43,6 +55,7 @@ export const ConfigSchema = z.object({
     maxAttemptsPerTask: z.number().int().positive(),
     maxWaves: z.number().int().positive(),
     maxIterations: z.number().int().positive(),
+    maxQuotaWaitMs: z.number().int().positive(),
   }),
   git: z.object({
     enabled: z.boolean(),
@@ -52,7 +65,6 @@ export const ConfigSchema = z.object({
   }).optional(),
   team: z.array(TeamMemberSchema).min(1),
   models_legacy: z.object({
-    planner: z.string(),
     worker: z.string(),
     reviewer: z.string(),
   }).optional(),
@@ -63,6 +75,14 @@ export const CriticFindingSchema = z.object({
   description: z.string().min(1),
   file: z.string().optional(),
   suggestion: z.string().optional(),
+});
+
+export const FallbackAttemptSchema = z.object({
+  cli: CliNameSchema,
+  model: z.string().min(1),
+  error_at: z.string(),
+  error_type: z.literal("rate_limit"),
+  reset_at: z.string().optional(),
 });
 
 export const TaskEvidenceSchema = z.object({
@@ -86,7 +106,7 @@ export const TaskSchema = z.object({
   merge_error: z.string().optional(),
   merged_at: z.string().optional(),
   archive_path: z.string().optional(),
-  closure_reason: z.enum(["critic_ok", "max_attempts", "merge_conflict", "failed_subtask", "blocked_by_dep", "no_changes"]).optional(),
+  closure_reason: z.enum(["critic_ok", "max_attempts", "merge_conflict", "failed_subtask", "blocked_by_dep", "no_changes", "quota_wait_exceeded"]).optional(),
   created_at: z.string(),
   updated_at: z.string(),
   attempt_count: z.number().int().nonnegative(),
@@ -97,6 +117,25 @@ export const TaskSchema = z.object({
   subtasks: z.array(z.string()),
   quota_reset_at: z.string().optional(),
 });
+
+export const RunSubmissionTaskSchema = z
+  .object({
+    id: TaskIdSchema,
+    title: z.string().min(1),
+    description: z.string().optional(),
+    depends_on: z.array(TaskIdSchema).default([]),
+  })
+  .strict();
+
+export const RunSubmissionSchema = z
+  .object({
+    prompt: z.string().default(""),
+    runId: z.string().min(1).optional(),
+    prd: z.string().default("(prompt)"),
+    max_iterations: z.number().int().positive().optional(),
+    tasks: z.array(RunSubmissionTaskSchema).min(1),
+  })
+  .strict();
 
 export const SubtaskSchema = z.object({
   id: z.string().min(1),
@@ -114,6 +153,7 @@ export const SubtaskSchema = z.object({
   output: z.string().optional(),
   artifacts: z.array(z.string()).optional(),
   findings: z.array(CriticFindingSchema).optional(),
+  fallback_attempts: z.array(FallbackAttemptSchema).default([]),
   quota_reset_at: z.string().optional(),
 });
 
@@ -122,6 +162,7 @@ export const IterationSchema = z.object({
   number: z.number().int().positive(),
   runId: z.string().min(1),
   trigger: IterationTriggerSchema,
+  phase: IterationPhaseSchema.default("executing"),
   started_at: z.string(),
   ended_at: z.string().optional(),
   task_ids: z.array(z.string()),
@@ -137,6 +178,7 @@ export const AgentSchema = z.object({
   session_cwd: z.string(),
   bound_subtask: z.string().optional(),
   bound_task: z.string().optional(),
+  bound_iteration: z.string().optional(),
   started_at: z.string().optional(),
   finished_at: z.string().optional(),
   last_activity_at: z.string().optional(),
@@ -156,6 +198,7 @@ export const PendingAskSchema = z.object({
   fromAgent: z.string().min(1),
   question: z.string().min(1),
   options: z.array(z.string()).optional(),
+  target_role: z.enum(["pm", "architect"]).default("pm"),
   status: z.enum(["pending", "fallback", "answered", "timed_out"]),
   created_at: z.string(),
   updated_at: z.string(),

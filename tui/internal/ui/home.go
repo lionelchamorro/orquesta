@@ -645,7 +645,7 @@ func isStructural(eventType string) bool {
 	switch eventType {
 	case "tasks_emitted", "task_ready", "task_started", "task_completed", "task_cancelled",
 		"subtask_started", "subtask_completed", "subtask_failed", "critic_findings",
-		"task_merged", "task_archived", "agent_completed", "agent_failed", "plan_approved":
+		"task_merged", "task_archived", "agent_completed", "agent_failed", "run_started":
 		return true
 	default:
 		return strings.HasPrefix(eventType, "iteration_")

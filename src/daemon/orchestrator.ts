@@ -20,12 +20,28 @@ export class Orchestrator {
 
   async tick() {
     const plan = await this.store.loadPlan();
-    if (!["approved", "running"].includes(plan.status)) return;
+    if (plan.status !== "running") return;
     if (this.iterations.isRunning()) return;
-    if (plan.status !== "running") {
-      await this.store.savePlan({ ...plan, status: "running", updated_at: new Date().toISOString() });
-    }
     let tasks = await this.store.loadTasks();
+    if (this.running.size === 0 && tasks.length > 0 && tasks.every((task) => isTerminal(task.status))) {
+      await this.iterations.onWaveEmpty();
+      return;
+    }
+    if (!(await this.iterations.ensureConsultantsLive())) return;
+    const nowMs = Date.now();
+    for (const task of tasks) {
+      if (task.status !== "pending") continue;
+      const attempts = (await this.store.loadSubtasks(task.id)).flatMap((subtask) => subtask.fallback_attempts ?? []);
+      const firstErrorAt = attempts[0]?.error_at;
+      if (!firstErrorAt) continue;
+      if (nowMs - Date.parse(firstErrorAt) >= this.config.work.maxQuotaWaitMs) {
+        await this.store.transitionTask(task.id, "failed", {
+          closure_reason: "quota_wait_exceeded",
+          summary: `Quota wait exceeded after ${this.config.work.maxQuotaWaitMs}ms.`,
+        });
+      }
+    }
+    tasks = await this.store.loadTasks();
     const blocked = blockedByFailedDeps(tasks).filter((task) => !this.running.has(task.id));
     if (blocked.length > 0) {
       const now = new Date().toISOString();

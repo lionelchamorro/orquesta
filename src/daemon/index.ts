@@ -10,16 +10,23 @@ import { AskRouter } from "./ask-router";
 import { IterationManager } from "./iteration-manager";
 import { createMcpHandler } from "../mcp/server";
 import { Orchestrator } from "./orchestrator";
-import { PlannerService } from "./planner-service";
 import { TaskPipeline } from "./task-pipeline";
 import { getOrCreateSessionToken } from "../core/session-token";
 import { ensureRepoReady } from "../core/git";
+import { checkCrewCompatibility } from "./compatibility";
 
 const root = process.cwd();
 const packageRoot = path.resolve(import.meta.dir, "..", "..");
 const templatesDir = path.join(packageRoot, "templates");
 const store = new PlanStore(root);
 mkdirSync(store.crewPath(), { recursive: true });
+const compatibilityIssues = checkCrewCompatibility(store);
+if (compatibilityIssues.length > 0) {
+  console.error("[daemon] incompatible crew state detected:");
+  for (const issue of compatibilityIssues) console.error(`- ${issue}`);
+  console.error("Run `orq migrate` to archive the old crew state before starting the daemon.");
+  process.exit(1);
+}
 const sessionToken = await getOrCreateSessionToken(store);
 const journal = new Journal(store.crewPath("journal.sqlite"));
 const bus = new Bus({ journal });
@@ -48,7 +55,6 @@ const recovered = await store.recoverInterruptedRun();
 const pipeline = new TaskPipeline(store, bus, pool, config);
 const iterationManager = new IterationManager(store, pool, bus, config);
 const orchestrator = new Orchestrator(store, pipeline, iterationManager, config);
-const plannerService = new PlannerService(store, pool, { mcpPort: port, bus, autonomous });
 const mcpHandler = createMcpHandler({ store, bus, askRouter, agentPool: pool, sessionToken });
 const uiBuildDir = path.join(packageRoot, "dist", "ui");
 await askRouter.recoverPendingAsks();
@@ -59,7 +65,6 @@ const httpHandler = createHttpHandler({
   bus,
   askRouter,
   mcpHandler,
-  plannerService,
   uiBuildDir,
   sessionToken,
   journal,

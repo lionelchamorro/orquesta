@@ -5,7 +5,7 @@ import { existsSync, statSync } from "node:fs";
 import { createIsolatedWorkspace, createTaskWorktree, ensureRepoReady, hasUncommittedChanges, safeGitOutput } from "../core/git";
 import { nextSubtaskId } from "../core/ids";
 import type { PlanStore } from "../core/plan-store";
-import type { Config, Role, Subtask, SubtaskType, Task } from "../core/types";
+import type { Config, Role, Subtask, SubtaskType, Task, TeamMember } from "../core/types";
 import { closeTask } from "./task-closure";
 import { deriveScope, isFakeGreenSummary, requiresReviewableScope } from "./scope";
 import path from "node:path";
@@ -149,11 +149,38 @@ export class TaskPipeline {
     return this.config.team.find((member) => member.role === role) ?? this.config.team[0];
   }
 
+  private nextMember(role: Role): Omit<TeamMember, "role" | "fallbacks"> {
+    const member = this.teamMember(role);
+    const selector = this.pool as AgentPool & { nextAvailable?: (member: TeamMember) => Omit<TeamMember, "role" | "fallbacks"> | null };
+    if (!selector.nextAvailable) return member;
+    const selected = selector.nextAvailable(member);
+    if (!selected) throw new Error(`No available CLI/model for role ${role}`);
+    return selected;
+  }
+
+  private async retryContext(task: Task, role: Role) {
+    const subtasks = await this.store.loadSubtasks(task.id);
+    const attempts = subtasks.flatMap((subtask) => subtask.fallback_attempts ?? []);
+    if (attempts.length === 0) return "";
+    const status = task.worktree_path ? safeGitOutput(task.worktree_path, ["status", "--short"]).trim() : "";
+    return [
+      "",
+      "PREVIOUS ATTEMPT CONTEXT",
+      attempts.slice(-3).map((attempt, index) =>
+        `${index + 1}. ${attempt.cli}/${attempt.model} ${attempt.error_type} at ${attempt.error_at}${attempt.reset_at ? ` reset_at=${attempt.reset_at}` : ""}`,
+      ).join("\n"),
+      `Role retrying now: ${role}`,
+      "git status --short:",
+      status || "(clean or unavailable)",
+    ].join("\n");
+  }
+
   private async runSingle(task: Task, type: SubtaskType, role: Role, prompt: string, depends_on: string[] = []) {
     const subtask = await this.createSubtask(task, type, role, prompt, depends_on);
-    const member = this.teamMember(role);
+    const member = this.nextMember(role);
     const sessionDir = task.worktree_path ? path.join(task.worktree_path, ".orq", subtask.id) : undefined;
-    const agent = await this.pool.spawn(role, member.cli, member.model, prompt, {
+    const promptWithRetryContext = `${prompt}${await this.retryContext(task, role)}`;
+    const agent = await this.pool.spawn(role, member.cli, member.model, promptWithRetryContext, {
       taskId: task.id,
       subtaskId: subtask.id,
       command: member.command,
@@ -173,15 +200,18 @@ export class TaskPipeline {
       const currentPlan = await this.store.loadPlan();
       await this.store.saveSubtask({
         ...(await this.store.loadSubtask(task.id, subtask.id)),
-        status: "failed_quota",
-        completed_at: now,
+        status: "pending",
         quota_reset_at: info.reset_at,
         summary: message,
+        fallback_attempts: [
+          ...((await this.store.loadSubtask(task.id, subtask.id)).fallback_attempts ?? []),
+          { cli: member.cli, model: member.model, error_at: now, error_type: "rate_limit" as const, reset_at: info.reset_at },
+        ],
       });
       const taskNow = await this.store.loadTask(task.id);
       await this.store.saveTask({
         ...taskNow,
-        status: "failed_quota",
+        status: "pending",
         updated_at: now,
         quota_reset_at: info.reset_at,
         summary: message,
@@ -189,10 +219,12 @@ export class TaskPipeline {
       });
       await this.store.savePlan({
         ...currentPlan,
-        status: "failed_quota",
+        status: "running",
         updated_at: now,
         quota_reset_at: info.reset_at,
       });
+      const marker = this.pool as AgentPool & { markUnavailable?: (cli: typeof member.cli, model: string, resetAt: string) => void };
+      if (info.reset_at) marker.markUnavailable?.(member.cli, member.model, info.reset_at);
       this.bus.publish({
         tags: [task.id, `iter-${task.iteration}`],
         payload: { type: "activity", fromAgent: "system", message },
@@ -288,7 +320,7 @@ export class TaskPipeline {
       let critic = await this.runSingle(current, "critic", "critic", criticPrompt, [test.id]);
 
       for (let attempt = 1; attempt < this.config.work.maxAttemptsPerTask; attempt += 1) {
-        const member = this.teamMember("coder");
+        const member = this.nextMember("coder");
         let lastFixId = critic.id;
         let drainedAny = false;
         while (true) {

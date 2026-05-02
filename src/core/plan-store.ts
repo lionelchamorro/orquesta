@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { open, rename, rm } from "node:fs/promises";
+import { open, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { detectCycle } from "./dag";
 import {
@@ -59,7 +59,6 @@ const planDefaults = (plan: Partial<Plan>): Plan => ({
 const configDefaults = (config: Record<string, unknown>): Config => {
   const models = (config.models_legacy ?? config.models ?? {}) as Record<string, string>;
   const defaultTeam: TeamMember[] = [
-    { role: "planner", cli: "claude", model: models.planner ?? "claude-opus-4-7" },
     { role: "coder", cli: "codex", model: models.worker ?? "gpt-5.5" },
     { role: "tester", cli: "claude", model: models.worker ?? "claude-opus-4-7" },
     { role: "critic", cli: "claude", model: models.reviewer ?? "claude-opus-4-7" },
@@ -85,6 +84,7 @@ const configDefaults = (config: Record<string, unknown>): Config => {
           (config.review as Record<string, unknown> | undefined)?.maxIterations ??
           2,
       ),
+      maxQuotaWaitMs: Number((config.work as Record<string, unknown> | undefined)?.maxQuotaWaitMs ?? 7_200_000),
     },
     git: {
       enabled: Boolean((config.git as Record<string, unknown> | undefined)?.enabled ?? true),
@@ -96,7 +96,6 @@ const configDefaults = (config: Record<string, unknown>): Config => {
     models_legacy:
       Object.keys(models).length > 0
         ? {
-            planner: models.planner ?? "claude-opus-4-7",
             worker: models.worker ?? "claude-opus-4-7",
             reviewer: models.reviewer ?? "claude-opus-4-7",
           }
@@ -148,6 +147,19 @@ const subtaskDefaults = (subtask: Partial<Subtask>): Subtask => ({
   output: subtask.output,
   artifacts: subtask.artifacts,
   findings: subtask.findings,
+  fallback_attempts: subtask.fallback_attempts ?? [],
+});
+
+const iterationDefaults = (iteration: Partial<Iteration>): Iteration => ({
+  id: iteration.id ?? "iter-1",
+  number: iteration.number ?? 1,
+  runId: iteration.runId ?? "run-1",
+  trigger: iteration.trigger ?? "initial",
+  phase: iteration.phase ?? "executing",
+  started_at: iteration.started_at ?? new Date().toISOString(),
+  ended_at: iteration.ended_at,
+  task_ids: iteration.task_ids ?? [],
+  summary: iteration.summary,
 });
 
 const taskTransitions: Record<TaskStatus, TaskStatus[]> = {
@@ -230,8 +242,11 @@ export class PlanStore {
   async loadIterations(): Promise<Iteration[]> {
     ensureDir(this.crewPath("iterations"));
     const files = Array.from(new Bun.Glob("*.json").scanSync({ cwd: this.crewPath("iterations"), absolute: true }));
-    const iterations = await Promise.all(files.map((filePath) => readJson<Iteration | null>(filePath, null)));
-    return iterations.filter(Boolean).map((iteration) => IterationSchema.parse(iteration)).sort((a, b) => a.number - b.number);
+    const iterations = await Promise.all(files.map((filePath) => readJson<Partial<Iteration> | null>(filePath, null)));
+    return iterations
+      .filter((iteration): iteration is Partial<Iteration> => Boolean(iteration))
+      .map((iteration) => IterationSchema.parse(iterationDefaults(iteration)))
+      .sort((a, b) => a.number - b.number);
   }
 
   async saveIteration(iteration: Iteration) {
@@ -397,6 +412,40 @@ export class PlanStore {
     }
     await this.recalculatePlanCounters();
     return recovered;
+  }
+
+  async archiveRun(reason: "cancelled" | "migrated" = "cancelled", now = new Date()): Promise<string> {
+    const plan = await this.loadPlan();
+    const stamp = now.toISOString().replace(/[:.]/g, "-");
+    const destination = this.crewPath("archive", `${plan.runId}-${reason}-${stamp}`);
+    ensureDir(destination);
+    const entries = await readdir(this.crewPath());
+    for (const entry of entries) {
+      if (entry === "archive") continue;
+      await rename(this.crewPath(entry), path.join(destination, entry));
+    }
+    return destination;
+  }
+
+  async loadArchive(): Promise<Array<{ runId: string; status: string; prompt: string; archived_at: string; archive_path: string; task_count: number }>> {
+    const archiveDir = this.crewPath("archive");
+    ensureDir(archiveDir);
+    const dirs = (await readdir(archiveDir)).map((name) => path.join(archiveDir, name));
+    const rows = await Promise.all(dirs.map(async (dir) => {
+      const planFile = path.join(dir, "plan.json");
+      if (!(await Bun.file(planFile).exists())) return null;
+      const plan = PlanSchema.parse(planDefaults(await readJson<Partial<Plan>>(planFile, {})));
+      const archived_at = path.basename(dir).split("-").slice(-5).join("-") || plan.updated_at;
+      return {
+        runId: plan.runId,
+        status: plan.status,
+        prompt: plan.prompt,
+        archived_at,
+        archive_path: dir,
+        task_count: plan.task_count,
+      };
+    }));
+    return rows.filter((row): row is NonNullable<typeof row> => Boolean(row)).sort((a, b) => b.archive_path.localeCompare(a.archive_path));
   }
 
   async loadPendingAsks(): Promise<PendingAsk[]> {

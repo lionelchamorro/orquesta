@@ -13,7 +13,6 @@ const statusEndIcon = (status: Task["status"]) => {
 };
 
 const roleGlyph: Record<Role, string> = {
-  planner: "✦",
   coder: "⌘",
   tester: "✓",
   critic: "⚑",

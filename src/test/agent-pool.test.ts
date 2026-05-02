@@ -22,7 +22,7 @@ test("agent pool separates general agent output from subtask output", async () =
   });
 
   const pool = new AgentPool(root, store, bus, { templatesDir });
-  const agent = await pool.spawn("planner", "claude", "m", "", {
+  const agent = await pool.spawn("pm", "claude", "m", "", {
     command: ["bash", "-lc", "printf 'hello\\nworld\\n'"],
   });
   await pool.waitForExit(agent.id);
