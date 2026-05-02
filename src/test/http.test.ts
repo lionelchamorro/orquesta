@@ -10,7 +10,7 @@ test("http handler serves run details", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-http-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
   await Bun.write(path.join(root, ".orquesta", "crew", "plan.json"), JSON.stringify({
-    runId: "run-1", prd: "(prompt)", prompt: "x", status: "approved", created_at: "a", updated_at: "a", task_count: 1, completed_count: 0, current_iteration: 1, max_iterations: 2,
+    runId: "run-1", prd: "(prompt)", prompt: "x", status: "running", created_at: "a", updated_at: "a", task_count: 1, completed_count: 0, current_iteration: 1, max_iterations: 2,
   }));
   await Bun.write(path.join(root, ".orquesta", "crew", "tasks", "task-1.json"), JSON.stringify({
     id: "task-1", title: "Task", status: "pending", depends_on: [], iteration: 1, created_at: "a", updated_at: "a", attempt_count: 0, subtasks: [],

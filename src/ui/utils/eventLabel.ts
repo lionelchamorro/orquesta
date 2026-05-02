@@ -33,8 +33,8 @@ export const renderEventText = (event: TaggedBusEvent) => {
       return `→ ${payload.toAgent}: ${payload.message}`;
     case "iteration_started":
       return `iteration #${payload.number} · ${payload.trigger}`;
-    case "plan_approved":
-      return "plan approved";
+    case "run_started":
+      return "run started";
     case "run_completed":
       return "run completed";
     case "tasks_emitted":

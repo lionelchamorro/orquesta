@@ -23,6 +23,45 @@ export class IterationManager {
     return this.inFlight;
   }
 
+  private currentConsultantPrompt(role: "pm" | "architect", iteration: Iteration, goal: string) {
+    return [
+      `You are the ${role} consultant for iteration ${iteration.number}.`,
+      "",
+      "Goal:",
+      goal,
+      "",
+      "During this wave, workers may ask routed questions formatted:",
+      "`[ORQ] question from <agentId>: <question> [askId=<id>]`",
+      "",
+      "Answer with `answer_ask({ askId, answer })`. At wave close you will be asked to validate this same iteration.",
+    ].join("\n");
+  }
+
+  async ensureConsultantsLive() {
+    const plan = await this.store.loadPlan();
+    const iterations = await this.store.loadIterations();
+    const iteration = iterations.find((item) => item.number === plan.current_iteration);
+    if (!iteration || iteration.ended_at) return true;
+    if (iteration.phase !== "executing" && iteration.phase !== "validating") return true;
+    const roles: Array<"pm" | "architect"> = ["pm", "architect"];
+    const pool = this.pool as AgentPool & {
+      getConsultant?: (role: "pm" | "architect", iterationId: string) => Promise<unknown>;
+      spawnConsultant?: (role: "pm" | "architect", member: Config["team"][number], context: { iterationId: string; prompt: string }) => Promise<unknown>;
+    };
+    for (const role of roles) {
+      const member = this.config.team.find((item) => item.role === role);
+      if (!member) continue;
+      const live = await pool.getConsultant?.(role, iteration.id);
+      if (live) continue;
+      const spawned = await pool.spawnConsultant?.(role, member, {
+        iterationId: iteration.id,
+        prompt: this.currentConsultantPrompt(role, iteration, plan.prompt),
+      });
+      if (!spawned) return false;
+    }
+    return iteration.phase === "executing";
+  }
+
   private waitForRoleCompletion(agentId: string) {
     return new Promise<void>((resolve) => {
       let settled = false;
@@ -87,6 +126,27 @@ export class IterationManager {
     return this.pool.spawn(role, member.cli, member.model, prompt, { command: member.command });
   }
 
+  private validationPrompt(role: Role, summary: string, originalGoal: string, iterationNumber: number, maxIterations: number, alreadyProposed: Task[]) {
+    const proposedSection = alreadyProposed.length === 0
+      ? "(none yet — you are the first validator to run)"
+      : alreadyProposed.map((task) => `- ${task.id}: ${task.title}`).join("\n");
+    return [
+      `[ORQ] iteration boundary validation for ${role}.`,
+      `Iteration ${iterationNumber} of ${maxIterations}.`,
+      "",
+      "Original user goal:",
+      originalGoal,
+      "",
+      "Current state:",
+      summary,
+      "",
+      "Refinement tasks already proposed:",
+      proposedSection,
+      "",
+      "If you find gaps, call `emit_tasks`. Then call `report_complete`.",
+    ].join("\n");
+  }
+
   async onWaveEmpty() {
     if (this.inFlight) return;
     this.inFlight = true;
@@ -101,24 +161,36 @@ export class IterationManager {
       }
       const tasks = await this.store.loadTasks();
       const previous = await this.store.loadIterations();
-      const nextNumber = plan.current_iteration + 1;
-      const iteration: Iteration = {
+      const pendingValidation = previous.find((item) => item.number === plan.current_iteration && item.phase === "validating" && !item.ended_at);
+      const nextNumber = pendingValidation?.number ?? plan.current_iteration + 1;
+      const iteration: Iteration = pendingValidation ?? {
         id: nextIterationId(previous.map((item) => item.id)),
         number: nextNumber,
         runId: plan.runId,
         trigger: "architect_replan",
+        phase: "validating",
         started_at: new Date().toISOString(),
         task_ids: [],
         summary: tasks.map((task) => `${task.id}: ${task.summary ?? task.title}`).join("\n"),
       };
       await this.store.saveIteration(iteration);
-      await this.store.savePlan({ ...plan, current_iteration: nextNumber, updated_at: new Date().toISOString() });
-      this.bus.publish({ tags: [plan.runId, iteration.id], payload: { type: "iteration_started", iterationId: iteration.id, number: nextNumber, trigger: iteration.trigger } });
+      if (!pendingValidation) {
+        await this.store.savePlan({ ...plan, current_iteration: nextNumber, updated_at: new Date().toISOString() });
+        this.bus.publish({ tags: [plan.runId, iteration.id], payload: { type: "iteration_started", iterationId: iteration.id, number: nextNumber, trigger: iteration.trigger } });
+      }
       const summary = iteration.summary ?? "No summary";
       const validatorRoles: Role[] = ["architect", "pm", "qa"];
       try {
         for (const role of validatorRoles) {
           const proposedSoFar = (await this.store.loadTasks()).filter((task) => task.iteration === nextNumber);
+          if (role === "architect" || role === "pm") {
+            const existing = (await this.store.loadAgents()).find((agent) => agent.role === role && agent.status !== "dead");
+            if (existing) {
+              this.pool.write(existing.id, `${this.validationPrompt(role, summary, plan.prompt, nextNumber, plan.max_iterations, proposedSoFar)}\n`);
+              await this.waitForRoleCompletion(existing.id);
+              continue;
+            }
+          }
           const agent = await this.spawnValidationRole(role, summary, plan.prompt, nextNumber, plan.max_iterations, proposedSoFar);
           if (!agent) continue;
           await this.waitForRoleCompletion(agent.id);
@@ -136,9 +208,17 @@ export class IterationManager {
       const hasNewTasks = tasksAfter.some((task) => task.iteration === nextNumber);
       await this.store.saveIteration({
         ...(updatedIteration ?? iteration),
+        phase: "executing",
         task_ids: tasksAfter.filter((task) => task.iteration === nextNumber).map((task) => task.id),
         ended_at: new Date().toISOString(),
       });
+      for (const agent of (await this.store.loadAgents()).filter((item) =>
+        (item.role === "pm" || item.role === "architect") &&
+        item.status !== "dead" &&
+        item.bound_iteration === iteration.id
+      )) {
+        this.pool.kill(agent.id);
+      }
       if (!hasNewTasks) {
         const refreshedPlan = await this.store.loadPlan();
         const status = finalRunStatus(tasksAfter);

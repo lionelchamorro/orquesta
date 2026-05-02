@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { TaggedBusEvent } from "../../core/types";
 import { renderEventText } from "../utils/eventLabel";
 
-const ROLE_TAG_RE = /^(coder|tester|architect|pm|critic|planner|qa)$/;
+const ROLE_TAG_RE = /^(coder|tester|architect|pm|critic|qa)$/;
 
 const extractRole = (event: TaggedBusEvent): string => {
   const payload = event.payload as { fromRole?: string; type: string };

@@ -5,7 +5,7 @@ test("requiresReviewableScope is true only for tester and critic", () => {
   expect(requiresReviewableScope("tester")).toBe(true);
   expect(requiresReviewableScope("critic")).toBe(true);
   expect(requiresReviewableScope("coder")).toBe(false);
-  expect(requiresReviewableScope("planner")).toBe(false);
+  expect(requiresReviewableScope("pm")).toBe(false);
 });
 
 test("deriveScope returns none when no worktree path", () => {

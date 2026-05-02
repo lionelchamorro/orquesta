@@ -1,6 +1,6 @@
 # Orquesta
 
-Orquesta is a Bun/TypeScript multi-agent orchestration daemon. A planner agent emits a DAG of tasks; an orchestrator drives them through `coder → tester → critic → fix` waves inside isolated git worktrees, with `architect / pm / qa` validators at each iteration boundary. State is persisted as JSON + a SQLite event journal under `.orquesta/crew/`. Three optional front-ends ship in this repo: an in-process React Web UI, a standalone Web UI server, and a Go (Bubble Tea) TUI.
+Orquesta is a Bun/TypeScript multi-agent orchestration daemon. Day mode produces a Task DAG outside the daemon, then Orquesta ingests that DAG and drives it through `coder → tester → critic → fix` waves inside isolated git worktrees. Resident `pm` and `architect` consultants answer worker questions during each wave, then `architect / pm / qa` validate at iteration boundaries and may emit refinement tasks. State is persisted as JSON + a SQLite event journal under `.orquesta/crew/`. Three optional front-ends ship in this repo: an in-process React Web UI, a standalone Web UI server, and a Go (Bubble Tea) TUI.
 
 > **Architecture:** see `docs/ARCHITECTURE.md` (full) and `docs/ARCHITECTURE.min.md` (condensed). Agents working on the codebase should also read `AGENTS.md`.
 
@@ -22,15 +22,16 @@ cd tui && go mod download && cd ..    # only if you'll build the TUI
 
 ## Build
 
-The repo produces three independent artifacts.
+The repo produces four independent artifacts.
 
 | Artifact | Command | Output |
 |---|---|---|
 | Daemon (server bundle) | `bun run build:daemon` | `dist/daemon/` |
 | Web UI (Vite bundle)   | `bun run build:ui`     | `dist/ui/` |
+| CLI (native binary)    | `bun run build:cli`    | `dist/orq` |
 | Go TUI (native binary) | `bun run build:tui`    | `dist/orq-tui` |
 
-Build daemon + UI together with `bun run build`. Full gate (typecheck + tests + build): `bun run check`.
+Build daemon + UI + CLI together with `bun run build`. Full gate (typecheck + tests + build): `bun run check`.
 
 ## Install `orq` as a command-line program
 
@@ -38,7 +39,7 @@ The CLI source is `src/cli/orq.ts`. Compile it to a standalone executable with B
 
 ```bash
 # 1. compile the CLI into a single binary
-bun build src/cli/orq.ts --compile --outfile dist/orq
+bun run build:cli
 
 # 2. install it somewhere on your PATH
 mkdir -p ~/.local/bin
@@ -50,25 +51,18 @@ orq doctor
 
 `bun build --compile` bakes Bun and the script into one file, so `orq` works without `bun run` going forward. (The TUI binary is similarly portable: `cp dist/orq-tui ~/.local/bin/orq-tui`.)
 
-If you'd rather not compile, you can also do:
-
-```bash
-ln -sf "$(pwd)/scripts/orq.sh" ~/.local/bin/orq
-```
-
-…with a one-line wrapper at `scripts/orq.sh`:
-
-```sh
-#!/usr/bin/env sh
-exec bun run "$(dirname "$0")/../src/cli/orq.ts" "$@"
-```
+`package.json` also declares `bin.orq = ./dist/orq`, so package installers can expose the same compiled binary.
 
 ### `orq` subcommands
 
 | Command | What it does |
 |---|---|
-| `orq plan "<prompt>"` | POST to a running daemon at `/api/plan`. If no daemon is reachable, runs the planner in-process. |
-| `orq approve` | Marks the current plan `approved`. |
+| `orq run start <file>` | Starts a Run from a JSON DAG file. Uses `POST /api/runs` when the daemon is reachable, otherwise ingests in-process. |
+| `orq run cancel [runId]` | Cancels the active Run and archives its crew state. |
+| `orq import <file>` | Deprecated alias for `orq run start <file>`. |
+| `orq skill install [--target claude\|codex\|gemini\|all]` | Installs the `orquesta-build-dag` skill into local agent config files. |
+| `orq skill uninstall [--target claude\|codex\|gemini\|all]` | Removes the local `orquesta-build-dag` skill installation. |
+| `orq migrate` | Archives incompatible pre-redesign crew state before daemon boot. |
 | `orq start` | Spawns the daemon (`bun run src/daemon/index.ts`) with inherited stdio. |
 | `orq status` | Prints plan + task list. |
 | `orq logs` | Tails the last 25 events from the SQLite journal. |
@@ -80,7 +74,7 @@ exec bun run "$(dirname "$0")/../src/cli/orq.ts" "$@"
 
 There are three ways to run Orquesta locally. Pick one based on whether you want a UI on top.
 
-> All modes need a working git repository in the directory you're running from. Otherwise the daemon refuses to plan unless you set `git.enabled=false` in `.orquesta/crew/config.json`.
+> All modes need a working git repository in the directory you're running from. Otherwise the daemon reports degraded health unless you set `git.enabled=false` in `.orquesta/crew/config.json`.
 
 ### A) Daemon only (headless / API-only)
 
@@ -96,9 +90,9 @@ bun run dev
 Drive it from another terminal:
 
 ```bash
-orq plan "refactor the auth module to use JWT and add a test suite"
+orq skill install --target all
+orq run start ./orquesta-run.json
 orq status
-orq approve              # only after the plan is awaiting_approval
 ```
 
 Inspect events:
@@ -110,12 +104,27 @@ curl -s -H "x-orquesta-token: $(cat .orquesta/crew/session.token)" \
      http://127.0.0.1:8000/api/runs/current | jq
 ```
 
-**Example — autonomous, no human gating:**
+Minimal DAG file:
 
-```bash
-ORQ_AUTONOMOUS=true ORQ_PORT=8000 orq start
-orq plan "add structured logging to every request handler"
-# planner auto-approves; orchestrator runs to completion
+```json
+{
+  "prompt": "Refactor the auth module to use JWT and add a test suite.",
+  "max_iterations": 2,
+  "tasks": [
+    {
+      "id": "auth-jwt",
+      "title": "Refactor auth to JWT",
+      "description": "Replace session auth with JWT issuing and validation.",
+      "depends_on": []
+    },
+    {
+      "id": "auth-tests",
+      "title": "Add auth tests",
+      "description": "Cover login, token validation, and rejected invalid tokens.",
+      "depends_on": ["auth-jwt"]
+    }
+  ]
+}
 ```
 
 ### B) Daemon + Web UI
@@ -188,14 +197,21 @@ ORQ_DAEMON_URL=http://remote.host:8000 orq-tui
 
 ## Configuration
 
-Per-run config lives at `.orquesta/crew/config.json`. The defaults (see `src/cli/orq.ts`'s `defaultConfig`) use `claude-opus-4-7` for every role except `coder`, which defaults to `codex` / `gpt-5.5`; `concurrency.workers = 2`, `maxAttemptsPerTask = 3`, `maxWaves = 50`, `maxIterations = 2`. Override per-role CLI/model:
+Per-run config lives at `.orquesta/crew/config.json`. The defaults use `claude-opus-4-7` for every role except `coder`, which defaults to `codex` / `gpt-5.5`; `concurrency.workers = 2`, `maxAttemptsPerTask = 3`, `maxWaves = 50`, `maxIterations = 2`, and `maxQuotaWaitMs = 7200000`. Override per-role CLI/model and optional fallback chains:
 
 ```json
 {
   "team": [
-    { "role": "planner",   "cli": "claude", "model": "claude-opus-4-7" },
-    { "role": "coder",     "cli": "codex",  "model": "gpt-5.5" },
-    { "role": "critic",    "cli": "gemini", "model": "gemini-2.5-pro" }
+    {
+      "role": "coder",
+      "cli": "codex",
+      "model": "gpt-5.5",
+      "fallbacks": [
+        { "cli": "claude", "model": "claude-opus-4-7" },
+        { "cli": "gemini", "model": "gemini-2.5-pro" }
+      ]
+    },
+    { "role": "critic", "cli": "gemini", "model": "gemini-2.5-pro" }
   ]
 }
 ```
@@ -206,12 +222,13 @@ Per-run config lives at `.orquesta/crew/config.json`. The defaults (see `src/cli
 |---|---|---|
 | `ORQ_PORT` | `8000` | Daemon HTTP/WS port. |
 | `ORQ_HOST` | `127.0.0.1` | Daemon bind address. |
-| `ORQ_AUTONOMOUS` | `false` | Auto-approve plans, auto-answer asks after timeout. |
+| `ORQ_AUTONOMOUS` | `false` | Auto-answer asks after timeout. |
 | `ORQ_CORS_ORIGIN` | unset | Allow cross-origin requests from this origin (separated UI / TUI). |
 | `ORQ_UI_PORT` | `4173` | Port for `bun run serve:ui`. |
 | `VITE_DAEMON_URL` | `http://localhost:8000` | Daemon URL baked into the UI bundle (build-time). |
 | `ORQ_DAEMON_URL` | `http://localhost:8000` | Daemon URL the Go TUI dials. |
 | `ORQ_SUBTASK_TIMEOUT_MS` | `300000` | Per-subtask wall-clock limit. |
+| `ORQ_ROLE_TIMEOUT_MS` | `300000` | Iteration-boundary validator wall-clock limit. |
 
 Full list in `docs/ARCHITECTURE.md` §3.2.
 
@@ -232,6 +249,8 @@ src/ui-server/   Standalone Bun static server for the SPA
 src/test/        Bun test suite
 tui/             Go (Bubble Tea) terminal client
 templates/       Role markdown + .mcp.json template
+templates/build-dag-skill/
+                 Day-mode DAG authoring skill + JSON schema
 scripts/         dev.sh and helpers
 ```
 

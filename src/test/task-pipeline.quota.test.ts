@@ -38,7 +38,7 @@ class QuotaPool {
   kill() {}
 }
 
-test("task pipeline enters failed_quota without consuming an attempt", async () => {
+test("task pipeline records fallback attempt and requeues without consuming an attempt", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "orq-quota-"));
   mkdirSync(path.join(root, ".orquesta", "crew"), { recursive: true });
   const store = new PlanStore(root);
@@ -47,7 +47,7 @@ test("task pipeline enters failed_quota without consuming an attempt", async () 
     dependencies: "strict",
     concurrency: { workers: 1, max: 1 },
     review: { enabled: true, maxIterations: 1 },
-    work: { maxAttemptsPerTask: 3, maxWaves: 1, maxIterations: 1 },
+    work: { maxAttemptsPerTask: 3, maxWaves: 1, maxIterations: 1, maxQuotaWaitMs: 7200000 },
     git: { enabled: false, baseBranch: "main", autoCommit: false, removeWorktreeOnArchive: false },
     team: [
       { role: "coder", cli: "claude", model: "m" },
@@ -85,12 +85,19 @@ test("task pipeline enters failed_quota without consuming an attempt", async () 
   const plan = await store.loadPlan();
   const task = await store.loadTask("task-1");
   const [subtask] = await store.loadSubtasks("task-1");
-  expect(plan.status).toBe("failed_quota");
+  expect(plan.status).toBe("running");
   expect(plan.quota_reset_at).toBe("2026-01-01T00:01:00.000Z");
-  expect(task.status).toBe("failed_quota");
+  expect(task.status).toBe("pending");
   expect(task.attempt_count).toBe(0);
   expect(task.quota_reset_at).toBe("2026-01-01T00:01:00.000Z");
-  expect(subtask.status).toBe("failed_quota");
+  expect(subtask.status).toBe("pending");
+  expect(subtask.fallback_attempts).toEqual([{
+    cli: "claude",
+    model: "m",
+    error_at: expect.any(String),
+    error_type: "rate_limit",
+    reset_at: "2026-01-01T00:01:00.000Z",
+  }]);
   expect(task.closure_reason).toBeUndefined();
   rmSync(root, { recursive: true, force: true });
 });

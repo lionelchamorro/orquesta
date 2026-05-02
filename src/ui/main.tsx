@@ -35,12 +35,13 @@ function App() {
     selectedTerminalAgent,
     effectiveSelectedAgentId,
     chatTargetAgentId,
+    refresh,
   } = useRunState();
 
   return (
     <div className="app-shell">
       <Shell plan={plan} />
-      {mode === "empty" && <EmptyState />}
+      {mode === "empty" && <EmptyState onStarted={refresh} />}
       {mode === "run" && (
         <>
           <IterationNav

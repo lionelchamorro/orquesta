@@ -1,5 +1,5 @@
 import { newAgentId } from "../core/ids";
-import type { Agent, CliName, Role } from "../core/types";
+import type { Agent, CliName, Role, TeamMember } from "../core/types";
 import type { Bus } from "../bus/bus";
 import type { PlanStore } from "../core/plan-store";
 import { argvFor, argvForResume, parseLineFor, supportsResume } from "./adapters";
@@ -18,6 +18,7 @@ export class AgentPool {
   private eventLineBuffers = new Map<string, string>();
   private agentMetrics = new Map<string, Partial<StreamLogEvent>>();
   private rateLimits = new Map<string, RateLimitInfo>();
+  readonly unavailableUntil = new Map<string, string>();
   // Tracks agents currently in the exit handler so chunk-driven last_event_at
   // updates do not race with the final saveAgent.
   private exitingAgents = new Set<string>();
@@ -69,7 +70,10 @@ export class AgentPool {
         this.appendOutputBuffer(id, chunk);
         const tailText = new TextDecoder("utf-8", { fatal: false }).decode(this.outputBuffers.get(id) ?? new Uint8Array());
         const rateLimit = detectRateLimit(text) ?? detectRateLimit(tailText);
-        if (rateLimit) this.rateLimits.set(id, rateLimit);
+        if (rateLimit) {
+          this.rateLimits.set(id, rateLimit);
+          if (rateLimit.reset_at) this.markUnavailable(cli, model, rateLimit.reset_at);
+        }
         this.broadcastTty(id, chunk);
         const lineBuf = (this.lineBuffers.get(id) ?? "") + text;
         const lines = lineBuf.split("\n");
@@ -138,6 +142,21 @@ export class AgentPool {
       this.exitingAgents.delete(id);
     });
     return agent;
+  }
+
+  async spawnConsultant(role: Extract<Role, "pm" | "architect">, member: TeamMember, context: { iterationId: string; prompt: string }) {
+    const selected = this.nextAvailable(member);
+    if (!selected) return null;
+    const agent = await this.spawn(role, selected.cli, selected.model, context.prompt, {
+      command: selected.command,
+    });
+    await this.store.saveAgent({ ...agent, bound_iteration: context.iterationId });
+    return { ...agent, bound_iteration: context.iterationId };
+  }
+
+  async getConsultant(role: Extract<Role, "pm" | "architect">, iterationId: string) {
+    const agents = await this.store.loadAgents();
+    return agents.find((agent) => agent.role === role && agent.bound_iteration === iterationId && agent.status !== "dead") ?? null;
   }
 
   write(agentId: string, data: string | Uint8Array) {
@@ -239,6 +258,22 @@ export class AgentPool {
     const buffer = this.getOutputBuffer(agentId);
     const text = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
     return detectRateLimit(text);
+  }
+
+  markUnavailable(cli: CliName, model: string, resetAt: string) {
+    this.unavailableUntil.set(`${cli}:${model}`, resetAt);
+  }
+
+  nextAvailable(member: TeamMember, now = new Date()): Omit<TeamMember, "role" | "fallbacks"> | null {
+    const candidates = [
+      { cli: member.cli, model: member.model, command: member.command },
+      ...(member.fallbacks ?? []),
+    ];
+    for (const candidate of candidates) {
+      const blockedUntil = this.unavailableUntil.get(`${candidate.cli}:${candidate.model}`);
+      if (!blockedUntil || Date.parse(blockedUntil) <= now.getTime()) return candidate;
+    }
+    return null;
   }
 
   list() {

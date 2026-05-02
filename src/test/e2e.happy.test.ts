@@ -33,7 +33,7 @@ test("e2e happy path runs pipeline, merges and archives task", async () => {
     runId: "run-1",
     prd: "(prompt)",
     prompt: "build feature",
-    status: "approved",
+    status: "running",
     created_at: "a",
     updated_at: "a",
     task_count: 1,
@@ -108,7 +108,7 @@ test("e2e happy path runs pipeline, merges and archives task", async () => {
     dependencies: "strict",
     concurrency: { workers: 1, max: 1 },
     review: { enabled: true, maxIterations: 1 },
-    work: { maxAttemptsPerTask: 2, maxWaves: 1, maxIterations: 1 },
+    work: { maxAttemptsPerTask: 2, maxWaves: 1, maxIterations: 1, maxQuotaWaitMs: 7200000 },
     git: { enabled: true, baseBranch: "main", autoCommit: true, removeWorktreeOnArchive: true },
     team: [
       { role: "coder", cli: "claude", model: "m" },

@@ -283,8 +283,8 @@ test("plan store config merges user team entries with default team by role", asy
     path.join(root, ".orquesta", "crew", "config.json"),
     JSON.stringify({
       team: [
-        { role: "planner", cli: "gemini", model: "gemini-2.5-pro" },
         { role: "coder", cli: "codex", model: "gpt-5.5" },
+        { role: "qa", cli: "gemini", model: "gemini-2.5-pro" },
       ],
     }),
   );
@@ -292,11 +292,10 @@ test("plan store config merges user team entries with default team by role", asy
   const config = await store.loadConfig();
 
   const byRole = new Map(config.team.map((member) => [member.role, member]));
-  expect(byRole.get("planner")).toEqual({ role: "planner", cli: "gemini", model: "gemini-2.5-pro" });
-  expect(byRole.get("coder")).toEqual({ role: "coder", cli: "codex", model: "gpt-5.5" });
+  expect(byRole.get("coder")).toMatchObject({ role: "coder", cli: "codex", model: "gpt-5.5" });
+  expect(byRole.get("qa")).toMatchObject({ role: "qa", cli: "gemini", model: "gemini-2.5-pro" });
   expect(byRole.get("architect")?.cli).toBe("claude");
   expect(byRole.get("pm")?.cli).toBe("claude");
-  expect(byRole.get("qa")?.cli).toBe("claude");
   expect(byRole.get("tester")?.cli).toBe("claude");
   expect(byRole.get("critic")?.cli).toBe("claude");
   rmSync(root, { recursive: true, force: true });

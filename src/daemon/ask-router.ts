@@ -14,6 +14,7 @@ export class AskRouter {
     fromAgent: string;
     question: string;
     options?: string[];
+    targetRole: "pm" | "architect";
   }>();
 
   constructor(
@@ -29,11 +30,11 @@ export class AskRouter {
     return `[ORQ-AUTO] No PM available. Proceed with your best judgment given the question: "${question}". Document the assumption you made and the rationale in your report_complete summary.`;
   }
 
-  async ask(fromAgent: string, question: string, options?: string[]) {
+  async ask(fromAgent: string, question: string, options?: string[], targetRole: "pm" | "architect" = "pm") {
     const askId = crypto.randomUUID();
     const agents = await this.store.loadAgents();
-    const pm = agents.find((agent) => agent.role === "pm" && agent.status !== "dead");
-    const initialFallback = !pm;
+    const consultant = agents.find((agent) => agent.role === targetRole && agent.status !== "dead");
+    const initialFallback = !consultant;
     const now = new Date().toISOString();
     if (initialFallback && this.options.autonomous) {
       const answer = this.autonomousAnswer(question, options);
@@ -42,6 +43,7 @@ export class AskRouter {
         fromAgent,
         question,
         options,
+        target_role: targetRole,
         status: "answered",
         answer,
         answered_by: HUMAN_FALLBACK_AGENT_ID,
@@ -59,6 +61,7 @@ export class AskRouter {
       fromAgent,
       question,
       options,
+      target_role: targetRole,
       status: initialFallback ? "fallback" : "pending",
       created_at: now,
       updated_at: now,
@@ -79,6 +82,7 @@ export class AskRouter {
             fromAgent,
             question,
             options,
+            target_role: targetRole,
             status: "answered",
             answer,
             answered_by: HUMAN_FALLBACK_AGENT_ID,
@@ -111,10 +115,10 @@ export class AskRouter {
           `[ORQ] No human/PM response received within ${Math.round(ASK_HARD_TIMEOUT_MS / 60_000)}min. Proceed using your best judgment, document the assumption you made and the rationale in your report_complete summary.`,
         );
       }, ASK_HARD_TIMEOUT_MS);
-      this.pending.set(askId, { resolve, fallbackTimer, hardTimer, fromAgent, question, options });
+      this.pending.set(askId, { resolve, fallbackTimer, hardTimer, fromAgent, question, options, targetRole });
       this.bus.publish({ tags: [fromAgent, askId], payload: { type: "ask_user", askId, fromAgent, question, options, fallback: initialFallback } });
-      if (pm) {
-        this.pool.write(pm.id, `[ORQ] question from ${fromAgent}: ${question} [askId=${askId}]\n`);
+      if (consultant) {
+        this.pool.write(consultant.id, `[ORQ] question from ${fromAgent}: ${question} [askId=${askId}]\n`);
       }
     });
   }
@@ -140,9 +144,9 @@ export class AskRouter {
     if (fromAgent !== HUMAN_FALLBACK_AGENT_ID) {
       const agents = await this.store.loadAgents();
       const agent = agents.find((item) => item.id === fromAgent);
-      if (!agent || agent.role !== "pm") {
-        throw new Error("Only pm agent can answer");
-      }
+      const ask = await this.store.loadPendingAsk(askId);
+      const targetRole = ask?.target_role ?? this.pending.get(askId)?.targetRole ?? "pm";
+      if (!agent || agent.role !== targetRole) throw new Error(`Only ${targetRole} agent can answer`);
     }
     const pending = this.pending.get(askId);
     const ask = await this.store.loadPendingAsk(askId);

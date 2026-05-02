@@ -19,7 +19,7 @@ const tmpRoot = (label: string) => {
       review: { enabled: false, maxIterations: 1 },
       work: { maxAttemptsPerTask: 1, maxWaves: 1, maxIterations: 1 },
       git: { enabled: false, baseBranch: "main", autoCommit: false, removeWorktreeOnArchive: false },
-      team: [{ role: "planner", cli: "claude", model: "claude-opus-4-7" }],
+      team: [{ role: "coder", cli: "codex", model: "gpt-5.5" }],
     }),
   );
   return root;
@@ -42,7 +42,7 @@ test("importTasks happy path writes plan, tasks, and iteration-1 atomically", as
 
   const plan = await store.loadPlan();
   expect(plan.runId).toBe(result.runId);
-  expect(plan.status).toBe("approved");
+  expect(plan.status).toBe("running");
   expect(plan.current_iteration).toBe(1);
   expect(plan.task_count).toBe(2);
   expect(plan.prompt).toBe("imported plan");

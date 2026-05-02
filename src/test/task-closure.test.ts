@@ -79,7 +79,7 @@ test("task closure merges branch and archives sessions", async () => {
       dependencies: "strict",
       concurrency: { workers: 1, max: 1 },
       review: { enabled: true, maxIterations: 1 },
-      work: { maxAttemptsPerTask: 1, maxWaves: 1, maxIterations: 1 },
+      work: { maxAttemptsPerTask: 1, maxWaves: 1, maxIterations: 1, maxQuotaWaitMs: 7200000 },
       git: { enabled: true, baseBranch: "main", autoCommit: true, removeWorktreeOnArchive: true },
       team: [],
     },

@@ -3,8 +3,7 @@ import type { AgentPool } from "../agents/pool";
 import type { Bus } from "../bus/bus";
 import type { Journal } from "../bus/journal";
 import { HUMAN_FALLBACK_AGENT_ID, type AskRouter } from "../daemon/ask-router";
-import type { PlannerService } from "../daemon/planner-service";
-import { importTasks } from "../daemon/task-import";
+import { ingestRun } from "../daemon/run-ingest";
 import { ensureRepoReady, gitAvailable, isGitRepo, safeGitOutput } from "../core/git";
 import type { PlanStore } from "../core/plan-store";
 import { requestHasSessionToken, sessionCookie } from "../core/session-token";
@@ -38,9 +37,8 @@ const withCors = (response: Response, origin?: string, sessionToken?: string): R
 };
 
 const mutatingRoutes = [
-  /^\/api\/plan$/,
-  /^\/api\/plan\/reset$/,
-  /^\/api\/approve$/,
+  /^\/api\/runs$/,
+  /^\/api\/runs\/[^/]+\/cancel$/,
   /^\/api\/tasks\/import$/,
   /^\/api\/agents\/[^/]+\/input$/,
   /^\/api\/agents\/[^/]+\/resume$/,
@@ -86,7 +84,6 @@ export const createHttpHandler = (deps: {
   bus: Bus;
   askRouter: AskRouter;
   mcpHandler: (req: Request) => Promise<Response>;
-  plannerService?: PlannerService;
   uiBuildDir?: string;
   sessionToken?: string;
   journal?: Journal;
@@ -110,7 +107,6 @@ export const createHttpHandler = (deps: {
       const plan = await deps.store.loadPlan();
       const tasks = await deps.store.loadTasks();
       const agents = await deps.store.loadAgents();
-      const plannerAgentId = deps.plannerService?.getCurrentAgentId() ?? null;
       const readiness = await gitReadiness(deps.store);
       return json({
         ok: true,
@@ -136,30 +132,7 @@ export const createHttpHandler = (deps: {
           tasks: tasks.length,
           completed: tasks.filter((task) => task.status === "done").length,
           liveAgents: agents.filter((agent) => agent.status !== "dead").length,
-          plannerAgentId,
         },
-      });
-    }
-    if (req.method === "GET" && url.pathname === "/api/planner/diagnostics") {
-      const plan = await deps.store.loadPlan();
-      const tasks = await deps.store.loadTasks();
-      const plannerAgentId = deps.plannerService?.getCurrentAgentId() ?? null;
-      const plannerAgent = plannerAgentId ? await deps.store.loadAgent(plannerAgentId) : null;
-      const output = plannerAgentId ? deps.pool.getOutputBuffer(plannerAgentId) : new Uint8Array();
-      const outputTail = new TextDecoder("utf-8", { fatal: false }).decode(output.slice(-8_000));
-      return json({
-        ok: true,
-        plan: {
-          runId: plan.runId,
-          status: plan.status,
-          updated_at: plan.updated_at,
-          task_count: plan.task_count,
-        },
-        task_count: tasks.length,
-        plannerAgentId,
-        plannerAgent,
-        outputTail,
-        recentEvents: deps.journal?.query({ tagsIncludes: plannerAgentId ?? "planner", limit: 25 }) ?? [],
       });
     }
     if (req.method === "GET" && url.pathname === "/api/export") {
@@ -192,6 +165,18 @@ export const createHttpHandler = (deps: {
       return new Response(Bun.file(path.join(deps.uiBuildDir, url.pathname.slice(1))));
     }
 
+    if (req.method === "GET" && url.pathname === "/api/skill/build-dag") {
+      return new Response(Bun.file(path.join(deps.root, "templates", "build-dag-skill", "SKILL.md")), {
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/skill/build-dag/schema") {
+      return new Response(Bun.file(path.join(deps.root, "templates", "build-dag-skill", "dag-schema.json")), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     if (req.method === "GET" && url.pathname === "/api/runs/current") {
       const plan = await deps.store.loadPlan();
       const tasks = await deps.store.loadTasks();
@@ -200,13 +185,32 @@ export const createHttpHandler = (deps: {
       const subtasks = (
         await Promise.all(tasks.map((task) => deps.store.loadSubtasks(task.id)))
       ).flat();
-      const plannerAgentId = deps.plannerService?.getCurrentAgentId() ?? null;
-      return json({ plan, tasks, iterations, agents, subtasks, plannerAgentId });
+      return json({ plan, tasks, iterations, agents, subtasks });
     }
 
     if (req.method === "GET" && url.pathname === "/api/runs") {
       const plan = await deps.store.loadPlan();
       return json([plan]);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/runs") {
+      const readiness = await gitReadiness(deps.store);
+      if (!readiness.ready && url.searchParams.get("force") !== "true") {
+        return json({ ok: false, error: { code: "git_not_ready", message: readiness.reason ?? "git not ready" } }, { status: 412 });
+      }
+      const body = await readJsonBody<unknown>(req).catch((error) => error);
+      if (body instanceof Error) return jsonBodyError(body);
+      const result = await ingestRun(deps.store, body);
+      if (!result.ok) {
+        const status = result.error.code === "run_in_progress" ? 409 : 400;
+        return json({ ok: false, error: result.error }, { status });
+      }
+      deps.bus.publish({ tags: [result.runId], payload: { type: "run_started", runId: result.runId, at: new Date().toISOString() } });
+      return json({ ok: true, runId: result.runId }, { status: 201 });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/runs/archive") {
+      return json(await deps.store.loadArchive());
     }
 
     if (req.method === "GET" && url.pathname.match(/^\/api\/runs\/[^/]+$/)) {
@@ -271,24 +275,6 @@ export const createHttpHandler = (deps: {
       return json(await deps.store.loadAgents());
     }
 
-    if (req.method === "POST" && url.pathname === "/api/plan") {
-      if (!deps.plannerService) return json({ error: "planner service unavailable" }, { status: 503 });
-      const readiness = await gitReadiness(deps.store);
-      if (!readiness.ready && url.searchParams.get("force") !== "true") {
-        return json({ ok: false, error: readiness.reason }, { status: 412 });
-      }
-      const body = await readJsonBody<{ prompt?: unknown }>(req).catch((error) => error);
-      if (body instanceof Error) return jsonBodyError(body);
-      const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
-      if (!prompt) return json({ error: "prompt required" }, { status: 400 });
-      const existingPlan = await deps.store.loadPlan();
-      if (existingPlan.status === "approved" || existingPlan.status === "running") {
-        return json({ error: "run in progress; call /api/plan/reset first" }, { status: 409 });
-      }
-      const result = await deps.plannerService.startPlanner(prompt);
-      return json({ ok: true, ...result });
-    }
-
     if (req.method === "POST" && url.pathname === "/api/tasks/import") {
       const readiness = await gitReadiness(deps.store);
       if (!readiness.ready && url.searchParams.get("force") !== "true") {
@@ -296,35 +282,29 @@ export const createHttpHandler = (deps: {
       }
       const body = await readJsonBody<unknown>(req).catch((error) => error);
       if (body instanceof Error) return jsonBodyError(body);
-      const result = await importTasks(deps.store, body);
+      const result = await ingestRun(deps.store, body);
       if (!result.ok) {
         const status = result.error.code === "run_in_progress" ? 409 : 400;
         return json({ ok: false, error: result.error }, { status });
       }
-      deps.bus.publish({ tags: [result.runId], payload: { type: "plan_approved", runId: result.runId, at: new Date().toISOString() } });
+      deps.bus.publish({ tags: [result.runId], payload: { type: "run_started", runId: result.runId, at: new Date().toISOString() } });
       return json({ ok: true, runId: result.runId });
     }
 
-    if (req.method === "POST" && url.pathname === "/api/plan/reset") {
-      if (!deps.plannerService) return json({ error: "planner service unavailable" }, { status: 503 });
-      await deps.plannerService.reset();
-      return json({ ok: true });
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/approve") {
+    if (req.method === "POST" && url.pathname.match(/^\/api\/runs\/[^/]+\/cancel$/)) {
+      const runId = url.pathname.split("/")[3];
       const plan = await deps.store.loadPlan();
-      const tasks = await deps.store.loadTasks();
-      if (!["awaiting_approval", "approved"].includes(plan.status)) {
-        return json({ ok: false, error: `plan is ${plan.status}; expected awaiting_approval` }, { status: 409 });
+      if (plan.runId !== runId) return json({ ok: false, error: "run not found" }, { status: 404 });
+      if (["done", "failed"].includes(plan.status)) {
+        return json({ ok: false, error: `run is already ${plan.status}` }, { status: 400 });
       }
-      if (tasks.length === 0) {
-        return json({ ok: false, error: "cannot approve a plan with no tasks" }, { status: 409 });
+      const agents = await deps.store.loadAgents();
+      for (const agent of agents) {
+        if (agent.status !== "dead") deps.pool.kill(agent.id);
       }
-      deps.plannerService?.killCurrent();
-      const next = { ...plan, task_count: tasks.length, status: "approved" as const, updated_at: new Date().toISOString() };
-      await deps.store.savePlan(next);
-      deps.bus.publish({ tags: [plan.runId], payload: { type: "plan_approved", runId: plan.runId, at: next.updated_at } });
-      return json({ ok: true, plan: next });
+      const archivePath = await deps.store.archiveRun("cancelled");
+      deps.bus.publish({ tags: [runId], payload: { type: "run_completed", runId } });
+      return json({ ok: true, runId, archive_path: archivePath });
     }
 
     if (req.method === "POST" && url.pathname.match(/^\/api\/agents\/[^/]+\/resume$/)) {

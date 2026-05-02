@@ -2,6 +2,9 @@
   "name": "orquesta",
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "orq": "./dist/orq"
+  },
   "scripts": {
     "dev": "bun run --watch src/daemon/index.ts",
     "dev:all": "bash scripts/dev.sh",
@@ -12,11 +15,12 @@
     "build:daemon": "bun build src/daemon/index.ts --target bun --outdir dist/daemon",
     "build:ui": "bunx vite build --outDir ../../dist/ui --emptyOutDir",
     "postbuild:ui": "cp src/ui/theme.css dist/ui/theme.css",
+    "build:cli": "bun build src/cli/orq.ts --compile --outfile dist/orq",
     "serve:ui": "bun run src/ui-server/index.ts",
     "dev:separate": "ORQ_CORS_ORIGIN=http://localhost:4173 bun run dev & VITE_DAEMON_URL=http://localhost:8000 bun run src/ui-server/index.ts",
     "build:tui": "cd tui && go build -o ../dist/orq-tui .",
     "tui": "dist/orq-tui",
-    "build": "bun run build:daemon && bun run build:ui",
+    "build": "bun run build:daemon && bun run build:ui && bun run build:cli",
     "check": "bun run typecheck && bun test && bun run build"
   },
   "dependencies": {
