@@ -1,5 +1,7 @@
 # Orquesta
 
+![Orquesta dashboard brand image](public/orquesta-brand.png)
+
 Orquesta is a web control plane for `orq-lite`: a Next.js console plus a FastAPI backend for managing projects, runs, flows, and teams.
 
 ## Frontend
