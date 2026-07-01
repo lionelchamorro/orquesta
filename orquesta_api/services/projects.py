@@ -1,0 +1,142 @@
+"""Project registry CRUD service."""
+
+import re
+import shutil
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from orquesta_api.core.integrations import git
+from orquesta_api.db.tables import ProjectRow, RepoRow
+from orquesta_api.logger import get_logger
+from orquesta_api.services.repos import RepoManager
+
+logger = get_logger(__name__)
+
+
+def _slugify(name: str) -> str:
+    slug = name.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    return slug.strip("-")
+
+
+class ProjectService:
+    """CRUD operations for the project registry."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        name: str,
+        repo_url: str | None = None,
+        workspace_path: str | None = None,
+        base_branch: str,
+        description: str | None = None,
+        language: str | None = None,
+        watch: bool = False,
+    ) -> ProjectRow:
+        """Register a new project, persisting to projects + repos tables."""
+        if repo_url is None and workspace_path is None:
+            raise ValueError("Either repo_url or workspace_path must be provided")
+
+        slug = _slugify(name)
+
+        existing = await self._session.get(ProjectRow, slug)
+        if existing is not None:
+            raise FileExistsError(f"Project with slug '{slug}' already exists")
+
+        if workspace_path is not None:
+            dup = await self._session.execute(select(RepoRow).where(RepoRow.root == workspace_path))
+            if dup.scalar_one_or_none() is not None:
+                raise FileExistsError(f"Workspace path '{workspace_path}' is already registered")
+            effective_workspace = workspace_path
+            managed = False
+        else:
+            from orquesta_api.config import settings
+
+            effective_workspace = str(Path(settings.workspaces_dir) / slug)
+            managed = True
+
+        project = ProjectRow(
+            id=slug,
+            name=name,
+            repo_url=repo_url,
+            workspace_path=effective_workspace,
+            base_branch=base_branch,
+            watch_prs=watch,
+            watch_issues=watch,
+            description=description,
+            language=language,
+        )
+        self._session.add(project)
+
+        repo = RepoRow(
+            id=slug,
+            project_id=slug,
+            root=effective_workspace,
+            remote_url=repo_url,
+            base_branch=base_branch,
+            managed=managed,
+        )
+        self._session.add(repo)
+
+        await self._session.commit()
+        await self._session.refresh(project)
+
+        workspace_obj = Path(effective_workspace)
+        if repo_url is not None or (workspace_obj.exists() and git.is_git_repo(workspace_obj)):
+            await RepoManager(self._session).ensure(project)
+
+        logger.info("Created project => %s", slug)
+        return project
+
+    async def list(self) -> list[ProjectRow]:
+        """Return all registered projects."""
+        result = await self._session.execute(select(ProjectRow))
+        return list(result.scalars().all())
+
+    async def get(self, id: str) -> ProjectRow:
+        """Return the project by id, raising ValueError('not found') if absent."""
+        row = await self._session.get(ProjectRow, id)
+        if row is None:
+            raise ValueError(f"Project '{id}' not found")
+        return row
+
+    async def update(self, id: str, **patch: object) -> ProjectRow:
+        """Mutate allowed fields (name, base_branch, watch, description) on a project."""
+        row = await self.get(id)
+        allowed = {"name", "base_branch", "watch", "description"}
+        for key, value in patch.items():
+            if key not in allowed:
+                continue
+            if key == "watch":
+                row.watch_prs = bool(value)
+                row.watch_issues = bool(value)
+            else:
+                setattr(row, key, value)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def delete(self, id: str, prune: bool = False) -> None:
+        """Remove the project from the registry, optionally pruning its managed workspace."""
+        row = await self.get(id)
+
+        repo_result = await self._session.execute(select(RepoRow).where(RepoRow.project_id == id))
+        repo = repo_result.scalar_one_or_none()
+
+        if prune and repo is not None and repo.managed:
+            workspace = Path(repo.root)
+            if workspace.exists():
+                shutil.rmtree(workspace)
+                logger.info("Pruned managed workspace => %s", workspace)
+
+        if repo is not None:
+            await self._session.delete(repo)
+
+        await self._session.delete(row)
+        await self._session.commit()
+        logger.info("Deleted project => %s", id)
