@@ -37,6 +37,8 @@ def build_argv(bin_path: str, spec: RunSpec) -> list[str]:
                 raise ValueError("flow runs require a flow name")
             argv = [bin_path, "flow", "run", spec.flow]
             argv.extend(f"{k}={v}" for k, v in spec.inputs.items())
+        case RunKind.watch:
+            argv = [bin_path, "watch", "--prs", "--issues"]
     return [*argv, *spec.args]
 
 

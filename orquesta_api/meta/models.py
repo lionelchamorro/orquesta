@@ -96,6 +96,11 @@ class RunKind(str, Enum):
     factory = "factory"
     plan = "plan"
     flow = "flow"
+    # Long-lived daemon (`orq-lite watch --prs --issues`); supervised the same
+    # way as any other run (Task 3) — it just doesn't exit until stop() is
+    # called. Fallback for projects with watch enabled but no GitHub webhook
+    # configured (Task 13).
+    watch = "watch"
 
 
 class ContainerState(str, Enum):

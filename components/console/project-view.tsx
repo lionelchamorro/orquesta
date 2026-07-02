@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { Play, GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2 } from "lucide-react"
+import { Play, GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
@@ -108,16 +108,13 @@ export function ProjectActions({ project }: { project: Project }) {
 
   const isRunning = project.state === "running"
   const disabled = isRunning || launching
+  const watchEnabled = project.watch.prs || project.watch.issues
 
-  async function launchRun() {
+  async function launchKind(runKind: string, flow?: string) {
     setLaunching(true)
     setMessage("")
     try {
-      const body =
-        kind === "factory"
-          ? { kind: "factory" }
-          : { kind: "flow", flow: kind, inputs: {} }
-
+      const body = flow ? { kind: runKind, flow, inputs: {} } : { kind: runKind }
       const res = await fetch(`/api/control-plane/projects/${project.id}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -139,6 +136,10 @@ export function ProjectActions({ project }: { project: Project }) {
     } finally {
       setLaunching(false)
     }
+  }
+
+  async function launchRun() {
+    await launchKind(kind === "factory" ? "factory" : "flow", kind === "factory" ? undefined : kind)
   }
 
   return (
@@ -166,6 +167,19 @@ export function ProjectActions({ project }: { project: Project }) {
         <Play className="h-3.5 w-3.5" />
         {launching ? "launching…" : "Run"}
       </Button>
+      {watchEnabled && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="font-mono text-xs"
+          disabled={disabled}
+          onClick={() => launchKind("watch")}
+          title="Fallback for projects without a GitHub webhook configured: supervises `orq-lite watch --prs --issues` as a long-lived run"
+        >
+          <Radar className="h-3.5 w-3.5" />
+          Start watch daemon
+        </Button>
+      )}
       {message && (
         <span
           className={cn(

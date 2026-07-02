@@ -8,8 +8,10 @@ from starlette.responses import JSONResponse, Response
 from orquesta_api.config import settings
 
 # /health must stay reachable without a token: it's what load balancers and
-# container orchestrators poll to decide whether to route traffic here at all.
-EXEMPT_PATHS = frozenset({"/health"})
+# container orchestrators poll to decide whether to route traffic here at
+# all. /webhooks/github is authenticated a different way entirely (its own
+# HMAC signature, verify_signature()) — GitHub cannot supply our bearer token.
+EXEMPT_PATHS = frozenset({"/health", "/webhooks/github"})
 
 
 def startup_check() -> None:

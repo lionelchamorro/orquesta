@@ -113,7 +113,7 @@ export interface ProjectWatch {
   issues: boolean
 }
 
-export type RunKind = "run" | "factory" | "plan" | "flow"
+export type RunKind = "run" | "factory" | "plan" | "flow" | "watch"
 
 export type ProjectState = "running" | "idle" | "needs_human" | "paused"
 

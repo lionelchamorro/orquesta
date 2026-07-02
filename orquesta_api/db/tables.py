@@ -100,3 +100,12 @@ class ChatMessageRow(Base):
     project: Mapped[str | None] = mapped_column(String)
     action: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class WebhookDeliveryRow(Base):
+    """Records a processed GitHub webhook delivery id, for dedup on retry."""
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

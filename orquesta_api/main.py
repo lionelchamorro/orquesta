@@ -20,6 +20,7 @@ from orquesta_api.routers.projects import router as projects_router
 from orquesta_api.routers.repos import router as repos_router
 from orquesta_api.routers.runs import router as runs_router
 from orquesta_api.routers.teams import router as teams_router
+from orquesta_api.routers.webhooks import router as webhooks_router
 from orquesta_api.services.events import EventIngestManager, get_event_bus
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
 from orquesta_api.services.runs import RunSupervisor, _make_executor
@@ -112,6 +113,7 @@ def create_app() -> FastAPI:
     app.include_router(runs_router)
     app.include_router(events_router)
     app.include_router(chat_router)
+    app.include_router(webhooks_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
