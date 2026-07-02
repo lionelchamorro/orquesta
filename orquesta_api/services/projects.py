@@ -159,8 +159,9 @@ class ProjectService:
             if key not in allowed:
                 continue
             if key == "watch":
-                row.watch_prs = bool(value)
-                row.watch_issues = bool(value)
+                if isinstance(value, dict):
+                    row.watch_prs = bool(value.get("prs", row.watch_prs))
+                    row.watch_issues = bool(value.get("issues", row.watch_issues))
             else:
                 setattr(row, key, value)
         await self._session.commit()

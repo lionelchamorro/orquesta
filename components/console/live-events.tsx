@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { StatusBadge } from "@/components/status-badge"
-import { liveEventFor } from "@/lib/mock-data"
 import type { RunEvent } from "@/lib/types"
 
 function parseRunEvent(data: string): RunEvent | undefined {
@@ -105,17 +104,6 @@ export function LiveEvents({
     }
     return () => es.close()
   }, [live])
-
-  useEffect(() => {
-    if (!live || initial.length === 0) return
-    const id = setInterval(() => {
-      setEvents((prev) => {
-        const next = [...prev, liveEventFor(projectId)]
-        return next.slice(-200)
-      })
-    }, 4000)
-    return () => clearInterval(id)
-  }, [initial.length, live, projectId])
 
   useEffect(() => {
     const el = listRef.current

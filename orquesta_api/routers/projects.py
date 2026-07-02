@@ -58,7 +58,7 @@ class ProjectPatch(BaseModel):
 
     name: str | None = None
     base_branch: str | None = None
-    watch: bool | None = None
+    watch: ProjectWatch | None = None
     description: str | None = None
 
 

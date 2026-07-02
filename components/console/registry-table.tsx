@@ -48,12 +48,36 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
   const [form, setForm] = useState({ name: "", repo: "", path: "", branch: "main" })
   const [error, setError] = useState("")
 
-  function toggleWatch(id: string, key: "prs" | "issues") {
+  async function toggleWatch(id: string, key: "prs" | "issues") {
+    const project = projects.find((p) => p.id === id)
+    if (!project) return
+    const originalWatch = project.watch
+    const newWatch = { ...originalWatch, [key]: !originalWatch[key] }
+
+    // Optimistic update
     setProjects((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, watch: { ...p.watch, [key]: !p.watch[key] } } : p,
-      ),
+      prev.map((p) => (p.id === id ? { ...p, watch: newWatch } : p)),
     )
+
+    try {
+      const res = await fetch(`/api/control-plane/projects/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ watch: newWatch }),
+      })
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}))
+        setProjects((prev) =>
+          prev.map((p) => (p.id === id ? { ...p, watch: originalWatch } : p)),
+        )
+        setError(`watch toggle rejected: ${detail?.detail ?? `HTTP ${res.status}`}`)
+      }
+    } catch (err) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, watch: originalWatch } : p)),
+      )
+      setError(`watch toggle failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   const [saving, setSaving] = useState(false)

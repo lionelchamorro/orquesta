@@ -91,14 +91,84 @@ export function ProjectView({ project }: { project: Project }) {
   )
 }
 
+const RUN_OPTIONS = [
+  { value: "factory", label: "factory" },
+  { value: "factory_fast_governed", label: "factory_fast_governed" },
+  { value: "pr_review", label: "pr_review" },
+  { value: "issue_fix", label: "issue_fix" },
+] as const
+
+type RunOption = (typeof RUN_OPTIONS)[number]["value"]
+
 export function ProjectActions({ project }: { project: Project }) {
+  const [kind, setKind] = useState<RunOption>("factory")
+  const [launching, setLaunching] = useState(false)
+  const [message, setMessage] = useState("")
+
+  const isRunning = project.state === "running"
+  const disabled = isRunning || launching
+
+  async function launchRun() {
+    setLaunching(true)
+    setMessage("")
+    try {
+      const body =
+        kind === "factory"
+          ? { kind: "factory" }
+          : { kind: "flow", flow: kind, inputs: {} }
+
+      const res = await fetch(`/api/control-plane/projects/${project.id}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+
+      if (res.status === 409) {
+        setMessage("run already active")
+        return
+      }
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}))
+        setMessage(`launch failed: ${detail?.detail ?? `HTTP ${res.status}`}`)
+        return
+      }
+      setMessage("launched")
+    } catch (err) {
+      setMessage(`launch failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setLaunching(false)
+    }
+  }
+
   return (
     <>
       <StatusBadge status={project.state} />
-      <Button size="sm" className="font-mono text-xs">
+      <select
+        value={kind}
+        onChange={(e) => setKind(e.target.value as RunOption)}
+        disabled={disabled}
+        className="rounded-lg border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none focus:border-primary/50 disabled:opacity-50"
+      >
+        {RUN_OPTIONS.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+      <Button size="sm" className="font-mono text-xs" disabled={disabled} onClick={launchRun}>
         <Play className="h-3.5 w-3.5" />
-        Run factory
+        {launching ? "launching…" : "Run"}
       </Button>
+      {message && (
+        <span
+          className={cn(
+            "font-mono text-[11px]",
+            message.startsWith("launch failed") ? "text-err" : "text-muted-foreground",
+          )}
+        >
+          {message}
+        </span>
+      )}
     </>
   )
 }
