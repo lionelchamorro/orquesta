@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, Boxes, MessagesSquare, Users, Settings, Workflow } from "lucide-react"
+import { LayoutDashboard, Boxes, MessagesSquare, Users, Settings, Workflow, Gamepad2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { BrandWordmark } from "@/components/brand-mark"
 import type { Project } from "@/lib/types"
@@ -55,20 +55,34 @@ export function ConsoleSidebar({ projects }: { projects: Project[] }) {
         <div className="flex flex-col gap-0.5">
           {projects.map((p) => {
             const active = pathname === `/projects/${p.id}`
+            const officeActive = pathname === `/projects/${p.id}/office`
             return (
-              <Link
-                key={p.id}
-                href={`/projects/${p.id}`}
-                className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-3 py-2 font-mono text-[13px] transition-colors",
-                  active
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground",
-                )}
-              >
-                <StateDot state={p.state} />
-                <span className="truncate">{p.name}</span>
-              </Link>
+              <div key={p.id} className="flex items-center gap-1">
+                <Link
+                  href={`/projects/${p.id}`}
+                  className={cn(
+                    "flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-3 py-2 font-mono text-[13px] transition-colors",
+                    active
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground",
+                  )}
+                >
+                  <StateDot state={p.state} />
+                  <span className="truncate">{p.name}</span>
+                </Link>
+                <Link
+                  href={`/projects/${p.id}/office`}
+                  title="Virtual office"
+                  className={cn(
+                    "shrink-0 rounded-lg p-2 transition-colors",
+                    officeActive
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground",
+                  )}
+                >
+                  <Gamepad2 className="h-3.5 w-3.5" />
+                </Link>
+              </div>
             )
           })}
         </div>

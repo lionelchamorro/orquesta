@@ -1,7 +1,8 @@
 "use client"
 
 import { useState } from "react"
-import { Play, GitBranch, Folder, GitPullRequest, CircleDot } from "lucide-react"
+import Link from "next/link"
+import { Play, GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
@@ -143,6 +144,12 @@ export function ProjectActions({ project }: { project: Project }) {
   return (
     <>
       <StatusBadge status={project.state} />
+      <Button asChild size="sm" variant="outline" className="font-mono text-xs">
+        <Link href={`/projects/${project.id}/office`}>
+          <Gamepad2 className="h-3.5 w-3.5" />
+          Office
+        </Link>
+      </Button>
       <select
         value={kind}
         onChange={(e) => setKind(e.target.value as RunOption)}
