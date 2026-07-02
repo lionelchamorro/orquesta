@@ -75,3 +75,28 @@ class EventCursorRow(Base):
 
     run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), primary_key=True)
     offset: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class ConversationRow(Base):
+    """A chat thread. Single-user v1: one implicit conversation is reused."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class ChatMessageRow(Base):
+    """A single message (user, assistant, or tool-result) within a conversation."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String, ForeignKey("conversations.id"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    project: Mapped[str | None] = mapped_column(String)
+    action: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

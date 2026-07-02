@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     team_path: str = "./team.json"
     auth_token: SecretStr = SecretStr("")
     github_webhook_secret: str = ""
-    opencode_server_url: str = ""
+    anthropic_api_key: SecretStr = SecretStr("")
+    chat_model: str = "claude-sonnet-5"
     creds_mounts: str = "~/.claude,~/.codex,~/.gemini"
     log_level: str = "INFO"
 
