@@ -1,11 +1,6 @@
 import { flows as mockFlows, teams as mockTeams } from "./mock-data"
-import type { AgentDefinition, Feature, FlowDefinition, FlowStep, Project, Task, TeamDefinition, TeamRoleDefinition } from "./types"
+import type { AgentDefinition, FlowDefinition, FlowStep, Project, TeamDefinition, TeamRoleDefinition } from "./types"
 
-type RawTask = Partial<Task> & { description?: string }
-type RawTasks = { tasks?: RawTask[] }
-type RawFeature = Partial<Feature> & { started_at?: string; finished_at?: string }
-type RawFactory = { base_branch?: string; features?: RawFeature[] } | null
-type RawCost = { available?: boolean; total_usd?: number }
 type RawAgent = Omit<Partial<AgentDefinition>, "id"> & { provider?: string; cmd?: string[] }
 type RawTeamRole = Partial<TeamRoleDefinition>
 type RawTeam = Partial<TeamDefinition> & {
@@ -20,37 +15,19 @@ type RawFlow = Partial<Omit<FlowDefinition, "steps">> & {
   steps?: RawFlowStep[]
 }
 
-const defaultProjectId = process.env.ORQ_LITE_PROJECT_ID ?? "orquestalite"
-const defaultProjectName = process.env.ORQ_LITE_PROJECT_NAME ?? "orquestalite"
-const defaultProjectRepo = process.env.ORQ_LITE_REPO_URL ?? "github.com/lionelchamorro/orquestalite"
-const defaultWorkspace = process.env.ORQ_LITE_WORKSPACE_PATH ?? "."
-
-export function orqLiteBaseURL() {
-  return (process.env.ORQ_LITE_API_URL ?? process.env.NEXT_PUBLIC_ORQ_LITE_API_URL ?? "").replace(/\/$/, "")
-}
-
 export function orquestaApiBaseURL() {
   return (process.env.ORQUESTA_API_URL ?? process.env.NEXT_PUBLIC_ORQUESTA_API_URL ?? "").replace(/\/$/, "")
 }
 
 export async function getProjects(): Promise<Project[]> {
-  const controlPlaneProjects = await getControlPlaneProjects()
-  if (controlPlaneProjects.length > 0) return controlPlaneProjects
-
-  const live = await getLiveProject()
-  return live ? [live] : []
+  return getControlPlaneProjects()
 }
 
 export async function getProject(id: string): Promise<Project | undefined> {
   const baseURL = orquestaApiBaseURL()
-  if (baseURL) {
-    const project = await fetchJSON<Project | undefined>(`${baseURL}/projects/${id}`, undefined)
-    if (project) return { ...project, source: project.source ?? "orq-lite" }
-  }
-
-  const live = await getLiveProject()
-  if (live) return live.id === id ? live : undefined
-  return undefined
+  if (!baseURL) return undefined
+  const project = await fetchJSON<Project | undefined>(`${baseURL}/projects/${id}`, undefined)
+  return project ? { ...project, source: project.source ?? "orq-lite" } : undefined
 }
 
 export async function getFlows(projectId?: string): Promise<FlowDefinition[]> {
@@ -91,49 +68,6 @@ async function getControlPlaneProjects(): Promise<Project[]> {
   }))
 }
 
-async function getLiveProject(): Promise<Project | undefined> {
-  const baseURL = orqLiteBaseURL()
-  if (!baseURL) return undefined
-
-  try {
-    const [tasksRaw, factoryRaw, costRaw] = await Promise.all([
-      fetchJSON<RawTasks>(`${baseURL}/api/tasks`, { tasks: [] }),
-      fetchJSON<RawFactory>(`${baseURL}/api/factory`, null),
-      fetchJSON<RawCost>(`${baseURL}/api/cost`, { available: false }),
-    ])
-
-    const tasks = normalizeTasks(tasksRaw)
-    const features = normalizeFeatures(factoryRaw)
-    const running =
-      tasks.some((t) => t.status === "in_progress") ||
-      features.some((f) => f.status === "in_progress")
-    const needsHuman =
-      tasks.some((t) => t.status === "needs_human" || t.status === "failed") ||
-      features.some((f) => f.status === "failed")
-    const lastRun = latestTimestamp(factoryRaw?.features ?? []) ?? new Date(0).toISOString()
-
-    return {
-      id: defaultProjectId,
-      name: defaultProjectName,
-      repo_url: defaultProjectRepo,
-      workspace_path: defaultWorkspace,
-      base_branch: factoryRaw?.base_branch ?? process.env.ORQ_LITE_BASE_BRANCH ?? "main",
-      watch: { prs: false, issues: false },
-      state: running ? "running" : needsHuman ? "needs_human" : "idle",
-      description: "Live state from orq-lite serve.",
-      language: process.env.ORQ_LITE_LANGUAGE ?? "Go",
-      tasks,
-      features,
-      events: [],
-      cost_usd: costRaw.available ? (costRaw.total_usd ?? 0) : features.reduce((sum, f) => sum + f.cost_usd, 0),
-      last_run: lastRun,
-      source: "orq-lite",
-    }
-  } catch {
-    return undefined
-  }
-}
-
 async function fetchJSON<T>(url: string, fallback: T): Promise<T> {
   try {
     const res = await fetch(url, { cache: "no-store" })
@@ -142,31 +76,6 @@ async function fetchJSON<T>(url: string, fallback: T): Promise<T> {
   } catch {
     return fallback
   }
-}
-
-function normalizeTasks(raw: RawTasks): Task[] {
-  return (raw.tasks ?? []).map((task, index) => ({
-    id: task.id ?? `T${String(index + 1).padStart(3, "0")}`,
-    status: task.status ?? "pending",
-    verify_state: task.verify_state || "pending",
-    attempts: task.attempts ?? 0,
-    last_agent: task.last_agent ?? "",
-    title: task.title ?? task.description ?? "Untitled task",
-    failure_reason: task.failure_reason,
-  }))
-}
-
-function normalizeFeatures(raw: RawFactory): Feature[] {
-  return (raw?.features ?? []).map((feature, index) => ({
-    id: feature.id ?? `F${String(index + 1).padStart(3, "0")}`,
-    status: feature.status ?? "pending",
-    branch: feature.branch ?? "",
-    tasks_done: feature.tasks_done ?? 0,
-    tasks_failed: feature.tasks_failed ?? 0,
-    cost_usd: feature.cost_usd ?? 0,
-    title: feature.title ?? "Untitled feature",
-    pr_url: feature.pr_url,
-  }))
 }
 
 function normalizeFlows(raw: unknown): FlowDefinition[] {
@@ -276,17 +185,6 @@ function normalizeRoles(raw: RawTeam["roles"]): TeamRoleDefinition[] {
     mode: value.mode,
     cycle_prompt: value.cycle_prompt,
   }))
-}
-
-function latestTimestamp(features: RawFeature[]) {
-  const times = features
-    .flatMap((f) => [f.finished_at, f.started_at])
-    .filter((value): value is string => Boolean(value))
-    .map((value) => new Date(value).getTime())
-    .filter(Number.isFinite)
-
-  if (times.length === 0) return undefined
-  return new Date(Math.max(...times)).toISOString()
 }
 
 function slug(value: string) {
