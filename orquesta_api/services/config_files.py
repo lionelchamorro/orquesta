@@ -52,7 +52,9 @@ class FlowConfigStore:
             items = list(raw_flows.items())
         else:
             items = []
-        return [self._normalise_flow(flow_id, raw) for flow_id, raw in items if isinstance(raw, dict)]
+        return [
+            self._normalise_flow(flow_id, raw) for flow_id, raw in items if isinstance(raw, dict)
+        ]
 
     def upsert(self, flow_id: str, flow: FlowDefinition) -> FlowDefinition:
         document = _read_json(self.path, {"flows": {}})
@@ -167,7 +169,9 @@ class TeamConfigStore:
             description=str(raw.get("description") or "orq-lite team.json roster"),
             agents=agents,
             roles=roles,
-            limits=TeamLimits(**raw.get("limits", {})) if isinstance(raw.get("limits", {}), dict) else TeamLimits(),
+            limits=TeamLimits(**raw.get("limits", {}))
+            if isinstance(raw.get("limits", {}), dict)
+            else TeamLimits(),
             full_test_command=str(raw.get("full_test_command") or ""),
             lint_command=raw.get("lint_command") or "",
             conventions_file=raw.get("conventions_file"),

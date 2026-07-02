@@ -118,7 +118,7 @@ class LocalExecutor(ExecutorInterface):
             return
 
         if tail is not None:
-            for line in ([] if tail == 0 else cache[-tail:]):
+            for line in [] if tail == 0 else cache[-tail:]:
                 yield line
             return
 
