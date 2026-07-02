@@ -384,7 +384,7 @@ class RunSupervisor:
             raise ValueError(f"Run '{run_id}' not found")
         return row
 
-    async def _emit_lifecycle(self, row: RunRow, kind: EventKind, **extra: object) -> None:
+    async def _emit_lifecycle(self, row: RunRow, kind: EventKind, **extra: str) -> None:
         """Publish a run_started/run_finished event stamped with the run's project."""
         await self._events.publish(
             RunEvent(

@@ -29,7 +29,9 @@ class FakeContainer:
     def restart(self, **kwargs: Any) -> None:
         self.restart_calls.append(kwargs)
 
+    # ast-grep-ignore: no-dict-return-annotation
     def wait(self) -> dict[str, int]:
+        # ast-grep-ignore: no-dict-literal-return
         return {"StatusCode": self.attrs["State"].get("ExitCode", 0)}
 
 

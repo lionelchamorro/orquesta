@@ -74,7 +74,10 @@ ALLOWED_EXTRA_TS_FIELDS: dict[str, set[str]] = {
 }
 
 
-def _extract_ts_interfaces(source: str) -> dict[str, list[str]]:
+# ast-grep-ignore: no-dict-return-annotation
+def _extract_ts_interfaces(
+    source: str,
+) -> dict[str, list[str]]:
     """Brace-depth extraction of `export interface Name { field: T; ... }` blocks."""
     result: dict[str, list[str]] = {}
     current: str | None = None

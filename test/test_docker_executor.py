@@ -10,6 +10,7 @@ mapping logic here is real and tested.
 from pathlib import Path
 
 import pytest
+from fake_docker_sdk import FakeDockerSDK
 
 from orquesta_api.core.integrations.docker_client import (
     MANAGED_LABEL,
@@ -20,7 +21,6 @@ from orquesta_api.core.integrations.docker_client import (
 )
 from orquesta_api.executors.docker import DockerExecutor
 from orquesta_api.meta.models import ContainerState, RunHandle, RunKind, RunSpec, RunState
-from test.fake_docker_sdk import FakeDockerSDK
 
 # ---------------------------------------------------------------------------
 # DockerClient

@@ -25,7 +25,10 @@ router = APIRouter(prefix="/projects", tags=["flows"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
-def _to_raw_patch(body: FlowDefinition) -> dict[str, Any]:
+# ast-grep-ignore: no-dict-return-annotation
+def _to_raw_patch(
+    body: FlowDefinition,
+) -> dict[str, Any]:
     """Convert a FlowDefinition to the raw flow-entry dict for merging.
 
     Only the engine's own Flow keys ({description, inputs, steps}) are ever

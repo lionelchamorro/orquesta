@@ -76,45 +76,51 @@ DOCTOR = {
 }
 
 
-def _runs_response(request: httpx.Request) -> dict:
+def _runs_response(request: httpx.Request) -> httpx.Response:
     if request.url.params.get("active") == "true":
-        return {"runs": [], "total": 0}
-    return {"runs": [RUN_SUMMARY], "total": 1}
+        return httpx.Response(200, json={"runs": [], "total": 0})
+    return httpx.Response(200, json={"runs": [RUN_SUMMARY], "total": 1})
 
 
-def _events_response(request: httpx.Request) -> dict:
+def _events_response(request: httpx.Request) -> httpx.Response:
     assert request.url.params.get("limit") == "200"
-    return {"events": [{"ts": "2026-07-02T10:00:00Z", "event": "run_start"}], "total": 1}
+    return httpx.Response(
+        200,
+        json={"events": [{"ts": "2026-07-02T10:00:00Z", "event": "run_start"}], "total": 1},
+    )
 
 
-def _agent_runs_response(request: httpx.Request) -> dict:
+def _agent_runs_response(request: httpx.Request) -> httpx.Response:
     assert request.url.params.get("run_id") == "r-2026-07-02-abc"
-    return {"agent_runs": [AGENT_RUN], "total": 1}
+    return httpx.Response(200, json={"agent_runs": [AGENT_RUN], "total": 1})
 
 
-def _cost_response(request: httpx.Request) -> dict:
-    return {
-        "by": request.url.params.get("by", "run"),
-        "rows": [
-            {
-                "key": "codex_gpt5",
-                "cost_usd": 0.5,
-                "input_tokens": 5000,
-                "output_tokens": 2000,
-                "agent_runs": 1,
-            }
-        ],
-    }
+def _cost_response(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "by": request.url.params.get("by", "run"),
+            "rows": [
+                {
+                    "key": "codex_gpt5",
+                    "cost_usd": 0.5,
+                    "input_tokens": 5000,
+                    "output_tokens": 2000,
+                    "agent_runs": 1,
+                }
+            ],
+        },
+    )
 
 
 _ROUTES = {
     "/api/runs": _runs_response,
-    "/api/runs/r-2026-07-02-abc": lambda _req: RUN_SUMMARY,
+    "/api/runs/r-2026-07-02-abc": lambda _req: httpx.Response(200, json=RUN_SUMMARY),
     "/api/runs/r-2026-07-02-abc/events": _events_response,
     "/api/agent-runs": _agent_runs_response,
     "/api/stats/cost": _cost_response,
-    "/api/flows": lambda _req: FLOW_CATALOG,
-    "/api/doctor": lambda _req: DOCTOR,
+    "/api/flows": lambda _req: httpx.Response(200, json=FLOW_CATALOG),
+    "/api/doctor": lambda _req: httpx.Response(200, json=DOCTOR),
 }
 
 
@@ -128,7 +134,7 @@ def _fake_serve() -> httpx.MockTransport:
         route = _ROUTES.get(path)
         if route is None:
             return httpx.Response(404, json={"error": f"unknown path {path}"})
-        return httpx.Response(200, json=route(request))
+        return route(request)
 
     return httpx.MockTransport(handler)
 

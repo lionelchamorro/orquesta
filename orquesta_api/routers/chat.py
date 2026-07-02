@@ -1,6 +1,6 @@
 """Centralized admin chat endpoints: POST /chat (SSE) and GET /chat/history."""
 
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
@@ -71,7 +71,13 @@ async def get_chat_history(
     rows = await get_history(session, conversation_id)
     return [
         ChatMessage(
-            id=row.id, role=row.role, content=row.content, project=row.project, action=row.action
+            id=row.id,
+            # Only ChatService writes these rows and it only writes the two
+            # literal roles; the DB column is a plain str, hence the cast.
+            role=cast(Literal["user", "assistant"], row.role),
+            content=row.content,
+            project=row.project,
+            action=row.action,
         )
         for row in rows
     ]

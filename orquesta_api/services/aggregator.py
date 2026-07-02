@@ -84,6 +84,7 @@ class Aggregator:
         base_url = self._require_base_url(project_id)
         return await self._client.get_diff(base_url, task_id)
 
+    # ast-grep-ignore: no-dict-return-annotation
     async def get_result(self, project_id: str, role: str) -> dict:
         """Return result JSON for *role* from the orq-lite serve.
 

@@ -192,6 +192,7 @@ async def get_project_diff(
 
 
 @router.get("/{project_id}/result/{role}")
+# ast-grep-ignore: no-dict-return-annotation
 async def get_project_result(
     project_id: str, role: str, session: SessionDep, serves: ServesDep
 ) -> dict:

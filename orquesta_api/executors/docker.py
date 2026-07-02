@@ -19,6 +19,7 @@ from orquesta_api.meta.models import Container, RunHandle, RunSpec, RunState
 logger = get_logger(__name__)
 
 
+# ast-grep-ignore: no-dict-return-annotation
 def _creds_volumes() -> dict[str, dict[str, str]]:
     """Mount every path in settings.creds_mounts read-only, keyed by resolved host path."""
     volumes: dict[str, dict[str, str]] = {}

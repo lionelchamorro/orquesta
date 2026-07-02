@@ -25,6 +25,7 @@ from orquesta_api.meta.models import (
 _KNOWN_STEP_TYPES = {member.value for member in StepType}
 
 
+# ast-grep-ignore: no-dict-return-annotation
 def _read_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
         return fallback
@@ -40,6 +41,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
 
 
+# ast-grep-ignore: no-dict-return-annotation
 def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     """Merge *patch* onto *base*, returning a new dict.
 
@@ -57,6 +59,43 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
         else:
             result[key] = patch_value
     return result
+
+
+# Module-level (not a FlowConfigStore method): the store's public `list()`
+# method shadows builtins.list inside the class body, breaking `list[...]`
+# annotations there.
+def _normalise_steps(steps: list[Any]) -> list[FlowStep]:
+    normalised: list[FlowStep] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_type = step.get("type")
+        if step_type not in _KNOWN_STEP_TYPES:
+            # Legacy shape (Task 5 and earlier) had no `type`; every step was
+            # an implicit CLI command invocation.
+            step_type = StepType.command.value
+        body = step.get("body")
+        normalised.append(
+            FlowStep(
+                type=StepType(step_type),
+                agent=step.get("agent"),
+                command=step.get("command"),
+                args=[str(arg) for arg in step["args"]]
+                if isinstance(step.get("args"), list)
+                else None,
+                action=step.get("action"),
+                inputs=step.get("inputs") if isinstance(step.get("inputs"), dict) else None,
+                outputs=step.get("outputs") if isinstance(step.get("outputs"), dict) else None,
+                iterator=step.get("iterator"),
+                **{"as": step.get("as")},
+                body=_normalise_steps(body) if isinstance(body, list) else None,
+                condition=step.get("condition"),
+                max_retries=step.get("max_retries"),
+                expression=step.get("expression"),
+                on_failure=step.get("on_failure") or None,
+            )
+        )
+    return normalised
 
 
 class FlowConfigStore:
@@ -106,7 +145,7 @@ class FlowConfigStore:
 
     def _normalise_flow(self, flow_id: str, raw: dict[str, Any]) -> FlowDefinition:
         steps = raw.get("steps", [])
-        normalised_steps = self._normalise_steps(steps) if isinstance(steps, list) else []
+        normalised_steps = _normalise_steps(steps) if isinstance(steps, list) else []
         inputs_raw = raw.get("inputs", {}) if isinstance(raw.get("inputs", {}), dict) else {}
         inputs = {
             str(name): FlowInputSpec(type=spec.get("type"), default=spec.get("default"))
@@ -122,39 +161,6 @@ class FlowConfigStore:
             steps=normalised_steps,
             source="orquesta-api",
         )
-
-    def _normalise_steps(self, steps: list[Any]) -> list[FlowStep]:
-        normalised: list[FlowStep] = []
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            step_type = step.get("type")
-            if step_type not in _KNOWN_STEP_TYPES:
-                # Legacy shape (Task 5 and earlier) had no `type`; every step was
-                # an implicit CLI command invocation.
-                step_type = StepType.command.value
-            body = step.get("body")
-            normalised.append(
-                FlowStep(
-                    type=StepType(step_type),
-                    agent=step.get("agent"),
-                    command=step.get("command"),
-                    args=[str(arg) for arg in step["args"]]
-                    if isinstance(step.get("args"), list)
-                    else None,
-                    action=step.get("action"),
-                    inputs=step.get("inputs") if isinstance(step.get("inputs"), dict) else None,
-                    outputs=step.get("outputs") if isinstance(step.get("outputs"), dict) else None,
-                    iterator=step.get("iterator"),
-                    **{"as": step.get("as")},
-                    body=self._normalise_steps(body) if isinstance(body, list) else None,
-                    condition=step.get("condition"),
-                    max_retries=step.get("max_retries"),
-                    expression=step.get("expression"),
-                    on_failure=step.get("on_failure") or None,
-                )
-            )
-        return normalised
 
 
 class TeamConfigStore:

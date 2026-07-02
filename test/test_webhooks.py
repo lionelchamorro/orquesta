@@ -81,7 +81,9 @@ async def watched_project(session, tmp_path: Path) -> str:
     return "atlas"
 
 
+# ast-grep-ignore: no-dict-return-annotation
 def _pr_payload(action: str, number: int = 42) -> dict:
+    # ast-grep-ignore: no-dict-literal-return
     return {
         "action": action,
         "number": number,
@@ -90,7 +92,9 @@ def _pr_payload(action: str, number: int = 42) -> dict:
     }
 
 
+# ast-grep-ignore: no-dict-return-annotation
 def _issue_payload(action: str, number: int = 7) -> dict:
+    # ast-grep-ignore: no-dict-literal-return
     return {
         "action": action,
         "issue": {"number": number},

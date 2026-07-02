@@ -6,7 +6,7 @@ from orquesta_api.meta.models import EventKind, RunEvent
 from orquesta_api.services.events import EventBus
 
 
-def _event(project: str | None = None, **extra: object) -> RunEvent:
+def _event(project: str | None = None, **extra: str) -> RunEvent:
     return RunEvent(
         ts="2026-07-02T00:00:00Z", event=EventKind.run_started, project=project, **extra
     )

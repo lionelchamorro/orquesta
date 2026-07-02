@@ -76,3 +76,8 @@ markers = [
 
 [tool.pyrefly]
 python-version = "3.12"
+# test/: pytest fakes intentionally violate nominal types (in-memory stand-ins
+# for asyncio.Process etc., CES-64), and the prek CI job runs pyrefly without
+# the project's dev deps installed, so pytest itself is unresolvable there.
+# alembic/: framework-generated scaffolding. .agents/: documentation snippets.
+project-excludes = ["test/**", "alembic/**", ".agents/**"]

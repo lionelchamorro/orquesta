@@ -1,9 +1,10 @@
 """Task 14: /containers and /images/pull endpoints.
 
 501 with the local executor; real dispatch with the docker executor
-(against test/fake_docker_sdk.py).
+(against fake_docker_sdk.py).
 """
 
+from fake_docker_sdk import FakeDockerSDK
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
@@ -14,7 +15,6 @@ from orquesta_api.config import settings
 from orquesta_api.core.integrations.docker_client import DockerClient
 from orquesta_api.routers.containers import images_router
 from orquesta_api.routers.containers import router as containers_router
-from test.fake_docker_sdk import FakeDockerSDK
 
 
 def _make_app() -> FastAPI:

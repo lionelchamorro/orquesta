@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -31,6 +32,12 @@ from orquesta_api.services.runs import RunSupervisor, _make_executor
 from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
+
+
+class HealthResponse(BaseModel):
+    """Response body for GET /health."""
+
+    status: str = "ok"
 
 
 @asynccontextmanager
@@ -126,8 +133,8 @@ def create_app() -> FastAPI:
     app.include_router(history_router)
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> HealthResponse:
+        return HealthResponse()
 
     _register_exception_handlers(app)
 

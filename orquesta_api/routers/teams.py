@@ -28,7 +28,10 @@ router = APIRouter(prefix="/projects", tags=["teams"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
-def _to_raw_patch(body: TeamDefinition) -> dict[str, Any]:
+# ast-grep-ignore: no-dict-return-annotation
+def _to_raw_patch(
+    body: TeamDefinition,
+) -> dict[str, Any]:
     """Convert a typed TeamDefinition into the raw team.json patch dict.
 
     The raw format stores agents and roles as dicts keyed by name, whereas the

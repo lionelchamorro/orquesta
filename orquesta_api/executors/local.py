@@ -191,7 +191,8 @@ class LocalExecutor(ExecutorInterface):
 
         # Live streaming: yield cached lines then follow new ones until reader exits.
         # Uses position-based indexing (O(n) on deque but cache is capped at 5000).
-        task = self._reader_tasks.get(handle.pid)
+        # A cache hit implies handle.pid was set, but the type doesn't know that.
+        task = self._reader_tasks.get(handle.pid) if handle.pid is not None else None
         pos = 0
         while True:
             while pos < len(cache):

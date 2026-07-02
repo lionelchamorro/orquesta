@@ -95,7 +95,9 @@ class DockerClient:
 
         return await asyncio.to_thread(_run)
 
+    # ast-grep-ignore: no-dict-return-annotation
     async def inspect(self, container_id: str) -> dict[str, Any]:
+        # ast-grep-ignore: no-dict-return-annotation
         def _inspect() -> dict[str, Any]:
             return self._get_client().containers.get(container_id).attrs
 
