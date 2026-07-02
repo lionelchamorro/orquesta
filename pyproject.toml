@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28",
     "rich>=13",
     "uvicorn[standard]>=0.34",
+    "alembic>=1.18.5",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +34,8 @@ packages = ["orquesta_api"]
 line-length = 100
 target-version = "py312"
 # .agents/snippets/ are documentation examples, not production code.
-exclude = [".agents"]
+# alembic/ is framework-generated scaffolding (env.py + versions/), not house-style code.
+exclude = [".agents", "alembic"]
 
 [tool.ruff.lint]
 select = [

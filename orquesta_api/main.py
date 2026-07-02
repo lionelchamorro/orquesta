@@ -9,8 +9,9 @@ from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from orquesta_api.core.auth import bearer_auth_middleware, startup_check
+from orquesta_api.db.migrations import ensure_schema_current
 from orquesta_api.db.session import SessionLocal, engine
-from orquesta_api.db.tables import Base, ProjectRow
+from orquesta_api.db.tables import ProjectRow
 from orquesta_api.logger import get_logger
 from orquesta_api.routers.events import router as events_router
 from orquesta_api.routers.flows import router as flows_router
@@ -28,9 +29,8 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables created => startup complete")
+    await ensure_schema_current(engine)
+    logger.info("Database schema check complete => startup continuing")
 
     # Reconcile any runs that were active when the API last shut down.
     # Must run before serving requests so stale "running" rows are cleaned up.
