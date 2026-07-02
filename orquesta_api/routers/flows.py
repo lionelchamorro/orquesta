@@ -28,11 +28,20 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 def _to_raw_patch(body: FlowDefinition) -> dict[str, Any]:
     """Convert a FlowDefinition to the raw flow-entry dict for merging.
 
-    The ``source`` meta-field is excluded because it is control-plane internal
-    and must not leak into the user's flows.json. ``by_alias=True`` writes the
-    ``as`` key (not the Python-safe ``as_`` field name) for loop steps.
+    Only the engine's own Flow keys ({description, inputs, steps}) are ever
+    written — flows.json is a user-owned file that `orq-lite flow run`
+    parses, and the acceptance criterion is that editing one field changes
+    only that field in the diff. UI-side conveniences (id/name/entrypoint/
+    source) never reach disk. ``by_alias=True`` writes the ``as`` key (not
+    the Python-safe ``as_`` field name) for loop steps.
     """
-    return body.model_dump(exclude={"source"}, exclude_none=True, by_alias=True)
+    patch = body.model_dump(
+        include={"description", "inputs", "steps"}, exclude_none=True, by_alias=True
+    )
+    if not patch.get("inputs"):
+        # Don't stamp an empty "inputs": {} into flows that never declared any.
+        patch.pop("inputs", None)
+    return patch
 
 
 def _validate_or_422(body: FlowDefinition) -> None:

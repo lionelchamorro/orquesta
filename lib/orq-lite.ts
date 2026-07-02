@@ -9,9 +9,6 @@ type RawTeam = Partial<TeamDefinition> & {
 }
 type RawFlowStep = Partial<FlowStep>
 type RawFlow = Partial<Omit<FlowDefinition, "steps">> & {
-  team?: string
-  command?: string
-  args?: string[]
   steps?: RawFlowStep[]
 }
 
@@ -107,23 +104,18 @@ function normalizeFlows(raw: unknown): FlowDefinition[] {
     return {
       id,
       name: rawFlow.name ?? id,
-      description: rawFlow.description ?? "Configured orq-lite flow.",
-      team_id: rawFlow.team_id ?? rawFlow.team ?? "default",
+      description: rawFlow.description ?? "",
       entrypoint: rawFlow.entrypoint ?? `orq-lite flow run ${id}`,
-      variables: rawFlow.variables ?? {},
       inputs: rawFlow.inputs ?? {},
-      steps: (rawFlow.steps ?? []).map((step, stepIndex) => normalizeFlowStep(step, stepIndex)),
-      tags: rawFlow.tags ?? [],
+      steps: (rawFlow.steps ?? []).map(normalizeFlowStep),
       source: rawFlow.source ?? "orquesta-api",
     }
   })
 }
 
-function normalizeFlowStep(step: RawFlowStep, index: number): FlowStep {
+function normalizeFlowStep(step: RawFlowStep): FlowStep {
   return {
-    id: step.id ?? `step-${index + 1}`,
     type: step.type ?? "command",
-    label: step.label,
     agent: step.agent,
     command: step.command,
     args: step.args,
@@ -132,13 +124,11 @@ function normalizeFlowStep(step: RawFlowStep, index: number): FlowStep {
     outputs: step.outputs,
     iterator: step.iterator,
     as: step.as,
-    body: step.body?.map((child, childIndex) => normalizeFlowStep(child, childIndex)),
+    body: step.body?.map(normalizeFlowStep),
     condition: step.condition,
     max_retries: step.max_retries,
     expression: step.expression,
     on_failure: step.on_failure,
-    depends_on: step.depends_on ?? [],
-    description: step.description,
   }
 }
 

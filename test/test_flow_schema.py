@@ -5,6 +5,12 @@ Covers:
   - FlowConfigStore round-trips the real step shape (type/agent/command/args/
     action/inputs/outputs/iterator/as/body/condition/max_retries/expression/
     on_failure) without inventing or dropping fields.
+  - The golden acceptance criterion: the REAL bundled flows.json from
+    orq-lite (test/fixtures/orq_lite_bundled_flows.json, copied verbatim
+    from orquesta-lite/internal/commands/assets/flows.json) survives the
+    full UI save path — normalise (GET) -> FlowDefinition -> _to_raw_patch
+    (PUT) -> upsert — with ONLY the edited field changed. No synthetic ids,
+    no UI-only keys, nothing dropped.
 """
 
 import json
@@ -13,7 +19,10 @@ from pathlib import Path
 import pytest
 
 from orquesta_api.meta.models import FlowStep, validate_flow_steps
+from orquesta_api.routers.flows import _to_raw_patch
 from orquesta_api.services.config_files import FlowConfigStore
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 # ---------------------------------------------------------------------------
 # validate_flow_steps
@@ -21,10 +30,10 @@ from orquesta_api.services.config_files import FlowConfigStore
 
 
 def test_command_step_requires_exactly_one_of_command_args() -> None:
-    neither = FlowStep(id="s1", type="command")
-    both = FlowStep(id="s2", type="command", command="orq-lite", args=["run"])
-    only_command = FlowStep(id="s3", type="command", command="orq-lite run")
-    only_args = FlowStep(id="s4", type="command", args=["orq-lite", "run"])
+    neither = FlowStep(type="command")
+    both = FlowStep(type="command", command="orq-lite", args=["run"])
+    only_command = FlowStep(type="command", command="orq-lite run")
+    only_args = FlowStep(type="command", args=["orq-lite", "run"])
 
     assert validate_flow_steps([neither])
     assert validate_flow_steps([both])
@@ -33,48 +42,48 @@ def test_command_step_requires_exactly_one_of_command_args() -> None:
 
 
 def test_agent_step_requires_agent() -> None:
-    assert validate_flow_steps([FlowStep(id="s1", type="agent")])
-    assert validate_flow_steps([FlowStep(id="s1", type="agent", agent="coder")]) == []
+    assert validate_flow_steps([FlowStep(type="agent")])
+    assert validate_flow_steps([FlowStep(type="agent", agent="coder")]) == []
 
 
 def test_action_step_requires_action() -> None:
-    assert validate_flow_steps([FlowStep(id="s1", type="action")])
-    assert validate_flow_steps([FlowStep(id="s1", type="action", action="publish_pr")]) == []
+    assert validate_flow_steps([FlowStep(type="action")])
+    assert validate_flow_steps([FlowStep(type="action", action="publish_pr")]) == []
 
 
 def test_loop_step_requires_iterator_and_as() -> None:
-    assert validate_flow_steps([FlowStep(id="s1", type="loop")])
-    assert validate_flow_steps([FlowStep(id="s1", type="loop", iterator="{{features}}")])
-    ok = FlowStep(id="s1", type="loop", iterator="{{features}}", **{"as": "feature"})
+    assert validate_flow_steps([FlowStep(type="loop")])
+    assert validate_flow_steps([FlowStep(type="loop", iterator="{features}")])
+    ok = FlowStep(type="loop", iterator="{features}", **{"as": "feature"})
     assert validate_flow_steps([ok]) == []
 
 
 def test_loop_body_is_validated_recursively() -> None:
-    bad_child = FlowStep(id="child", type="command")
-    loop = FlowStep(id="s1", type="loop", iterator="{{x}}", **{"as": "x"}, body=[bad_child])
+    bad_child = FlowStep(type="command")
+    loop = FlowStep(type="loop", iterator="{x}", **{"as": "x"}, body=[bad_child])
     errors = validate_flow_steps([loop])
     assert errors
-    assert "(s1).steps[0](child)" in errors[0]["step"]
+    assert "steps[0](loop).steps[0](command)" in errors[0]["step"]
 
 
 def test_retry_until_requires_condition() -> None:
-    assert validate_flow_steps([FlowStep(id="s1", type="retry_until")])
-    ok = FlowStep(id="s1", type="retry_until", condition="tests_pass")
+    assert validate_flow_steps([FlowStep(type="retry_until")])
+    ok = FlowStep(type="retry_until", condition="tests_pass")
     assert validate_flow_steps([ok]) == []
 
 
 def test_eval_requires_expression() -> None:
-    assert validate_flow_steps([FlowStep(id="s1", type="eval")])
-    ok = FlowStep(id="s1", type="eval", expression="tasks_done == tasks_total")
+    assert validate_flow_steps([FlowStep(type="eval")])
+    ok = FlowStep(type="eval", expression="tasks_done == tasks_total")
     assert validate_flow_steps([ok]) == []
 
 
 def test_on_failure_must_be_empty_or_continue() -> None:
-    step = FlowStep(id="s1", type="command", command="orq-lite run")
+    step = FlowStep(type="command", command="orq-lite run")
     assert validate_flow_steps([step]) == []
     # Pydantic itself rejects any other literal at construction time.
     with pytest.raises(Exception):  # noqa: B017 — pydantic ValidationError
-        FlowStep(id="s2", type="command", command="orq-lite run", on_failure="retry")
+        FlowStep(type="command", command="orq-lite run", on_failure="retry")
 
 
 # ---------------------------------------------------------------------------
@@ -84,40 +93,29 @@ def test_on_failure_must_be_empty_or_continue() -> None:
 GOLDEN_FLOWS: dict = {
     "flows": {
         "pr_review": {
-            "name": "PR review",
             "description": "Review an open pull request end to end.",
-            "team_id": "default",
-            "variables": {},
+            "inputs": {"pr_number": {"type": "string"}},
             "custom_scheduler": "cron",  # unknown field that must survive edits
             "steps": [
                 {
-                    "id": "fetch",
                     "type": "command",
-                    "label": "Fetch PR",
-                    "command": "orq-lite pr fetch {{pr_number}}",
-                    "depends_on": [],
+                    "args": ["gh", "pr", "checkout", "{inputs.pr_number}"],
                 },
                 {
-                    "id": "review",
                     "type": "agent",
-                    "label": "Review",
                     "agent": "reviewer",
-                    "inputs": {"pr_number": "{{pr_number}}"},
-                    "depends_on": ["fetch"],
+                    "inputs": {"pr_number": "{inputs.pr_number}"},
+                    "outputs": {"review_res": "."},
                 },
                 {
-                    "id": "wait_for_green",
                     "type": "retry_until",
-                    "condition": "ci_status == 'success'",
+                    "condition": "{ci_status} == 'success'",
                     "max_retries": 5,
-                    "depends_on": ["review"],
                 },
                 {
-                    "id": "publish",
                     "type": "action",
                     "action": "publish_review",
                     "on_failure": "continue",
-                    "depends_on": ["wait_for_green"],
                 },
             ],
         },
@@ -135,8 +133,9 @@ def test_flow_roundtrip_preserves_unknown_and_step_shape(tmp_path: Path) -> None
     assert flow.steps[0].type.value == "command"
     assert flow.steps[1].type.value == "agent"
     assert flow.steps[1].agent == "reviewer"
+    assert flow.steps[1].outputs == {"review_res": "."}
     assert flow.steps[2].type.value == "retry_until"
-    assert flow.steps[2].condition == "ci_status == 'success'"
+    assert flow.steps[2].condition == "{ci_status} == 'success'"
     assert flow.steps[3].on_failure == "continue"
 
 
@@ -156,3 +155,44 @@ def test_flow_edit_description_only_touches_description(tmp_path: Path) -> None:
     assert flow["steps"] == GOLDEN_FLOWS["flows"]["pr_review"]["steps"], (
         "steps must be untouched when only description is patched"
     )
+    assert sorted(flow.keys()) == sorted(GOLDEN_FLOWS["flows"]["pr_review"].keys()), (
+        "no keys may be added or removed by a description-only patch"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Golden acceptance test: the REAL bundled flows.json through the full UI path
+# ---------------------------------------------------------------------------
+
+
+def test_real_bundled_flows_survive_full_ui_save_path(tmp_path: Path) -> None:
+    """Simulate exactly what the console does: GET -> edit description -> PUT.
+
+    The fixture is orq-lite's own bundled flows.json (factory +
+    factory_fast, with nested loop/retry_until bodies, action steps, and
+    command steps carrying outputs). After the round trip, every flow entry
+    must be byte-identical except the one edited description — no synthetic
+    ids, no UI-only keys (name/team_id/entrypoint/variables/tags), no
+    dropped outputs.
+    """
+    import shutil
+
+    shutil.copy(FIXTURES / "orq_lite_bundled_flows.json", tmp_path / "flows.json")
+    before = json.loads((tmp_path / "flows.json").read_text())
+
+    store = FlowConfigStore(tmp_path)
+    factory = next(f for f in store.list() if f.id == "factory")
+    assert validate_flow_steps(factory.steps) == [], "real bundled flow must validate clean"
+
+    edited = factory.model_copy(update={"description": "edited description"})
+    store.upsert("factory", _to_raw_patch(edited))
+
+    after = json.loads((tmp_path / "flows.json").read_text())
+
+    # The edited field changed...
+    assert after["flows"]["factory"]["description"] == "edited description"
+
+    # ...and nothing else did, at any depth.
+    expected = json.loads(json.dumps(before))
+    expected["flows"]["factory"]["description"] = "edited description"
+    assert after == expected, "UI save path must not add, drop, or reshape any other key"

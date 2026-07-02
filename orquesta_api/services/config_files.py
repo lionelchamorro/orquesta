@@ -93,8 +93,6 @@ class FlowConfigStore:
 
         existing = flows.get(flow_id, {}) if isinstance(flows.get(flow_id), dict) else {}
         merged = _deep_merge(existing, patch)
-        # Always stamp the canonical id so normalise_flow can rely on it.
-        merged["id"] = flow_id
         flows[flow_id] = merged
         _write_json(self.path, document)
         return self._normalise_flow(flow_id, merged)
@@ -109,8 +107,6 @@ class FlowConfigStore:
     def _normalise_flow(self, flow_id: str, raw: dict[str, Any]) -> FlowDefinition:
         steps = raw.get("steps", [])
         normalised_steps = self._normalise_steps(steps) if isinstance(steps, list) else []
-        variables = raw.get("variables", {}) if isinstance(raw.get("variables", {}), dict) else {}
-        tags = raw.get("tags", []) if isinstance(raw.get("tags", []), list) else []
         inputs_raw = raw.get("inputs", {}) if isinstance(raw.get("inputs", {}), dict) else {}
         inputs = {
             str(name): FlowInputSpec(type=spec.get("type"), default=spec.get("default"))
@@ -118,21 +114,18 @@ class FlowConfigStore:
             if isinstance(spec, dict)
         }
         return FlowDefinition(
-            id=str(raw.get("id") or flow_id),
+            id=flow_id,
             name=str(raw.get("name") or flow_id),
-            description=str(raw.get("description") or "Configured orq-lite flow"),
-            team_id=str(raw.get("team_id") or raw.get("team") or "default"),
-            entrypoint=str(raw.get("entrypoint") or f"orq-lite flow run {flow_id}"),
-            variables={str(key): str(value) for key, value in variables.items()},
+            description=str(raw.get("description") or ""),
+            entrypoint=f"orq-lite flow run {flow_id}",
             inputs=inputs,
             steps=normalised_steps,
-            tags=[str(tag) for tag in tags],
             source="orquesta-api",
         )
 
     def _normalise_steps(self, steps: list[Any]) -> list[FlowStep]:
         normalised: list[FlowStep] = []
-        for index, step in enumerate(steps):
+        for step in steps:
             if not isinstance(step, dict):
                 continue
             step_type = step.get("type")
@@ -143,9 +136,7 @@ class FlowConfigStore:
             body = step.get("body")
             normalised.append(
                 FlowStep(
-                    id=str(step.get("id") or f"step-{index + 1}"),
                     type=StepType(step_type),
-                    label=step.get("label"),
                     agent=step.get("agent"),
                     command=step.get("command"),
                     args=[str(arg) for arg in step["args"]]
@@ -161,8 +152,6 @@ class FlowConfigStore:
                     max_retries=step.get("max_retries"),
                     expression=step.get("expression"),
                     on_failure=step.get("on_failure") or None,
-                    depends_on=[str(dep) for dep in step.get("depends_on", [])],
-                    description=step.get("description"),
                 )
             )
         return normalised

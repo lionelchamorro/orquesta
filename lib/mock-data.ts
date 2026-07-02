@@ -328,71 +328,113 @@ export const teams: TeamDefinition[] = [
   },
 ]
 
+// Engine-valid demo flows: condensed from the real orq-lite bundled flows.json
+// and examples/pr-review — same step vocabulary the engine actually parses
+// (no invented fields, exactly one of command/args per command step).
 export const flows: FlowDefinition[] = [
   {
     id: "factory",
-    name: "Factory queue",
-    description: "Develop each feature from a features markdown file on its own branch, with optional serve and PR publishing.",
-    team_id: "default",
-    entrypoint: "orq-lite flow run factory features=features.md",
-    variables: { features: "features.md", log_format: "human" },
-    tags: ["factory", "features", "branches"],
+    name: "factory",
+    description:
+      "Develop features in parallel on their own branches and create PRs (per-task coder/tester/critic retry loop).",
+    entrypoint: "orq-lite flow run factory features_path=features.md",
+    inputs: {
+      features_path: { type: "string", default: "features.md" },
+      base_branch: { type: "string", default: "main" },
+    },
     source: "mock",
     steps: [
       {
-        id: "plan",
-        type: "command",
-        label: "Extract features",
-        command: "orq-lite",
-        args: ["factory", "{{features}}", "--serve"],
-        depends_on: [],
-        description: "Reads the feature file and creates independently shippable work items.",
+        type: "action",
+        action: "factory_extract_features",
+        inputs: { path: "{inputs.features_path}" },
+        outputs: { features_queue: "." },
       },
       {
-        id: "implement",
-        type: "command",
-        label: "Run delivery loop",
-        command: "orq-lite",
-        args: ["run", "--fast", "--log-format", "{{log_format}}"],
-        depends_on: ["plan"],
-        description: "Runs parser, coder, tester, critic, verifier, and reviewer through the configured team.",
-      },
-      {
-        id: "publish",
-        type: "command",
-        label: "Publish PR",
-        command: "orq-lite",
-        args: ["factory", "--pr"],
-        depends_on: ["implement"],
-        description: "Publishes accepted branches when the queue passes merge gates.",
+        type: "loop",
+        iterator: "{features_queue}",
+        as: "feature",
+        body: [
+          {
+            type: "command",
+            args: ["git", "checkout", "-b", "{feature.branch_name}", "{inputs.base_branch}"],
+          },
+          {
+            type: "agent",
+            agent: "parser",
+            inputs: { PLAN: "{feature.plan}" },
+            outputs: { tasks: "tasks" },
+          },
+          {
+            type: "retry_until",
+            condition: "{task_verified} == true",
+            max_retries: 5,
+            body: [
+              {
+                type: "agent",
+                agent: "coder",
+                inputs: { TASKS: "{tasks}" },
+                outputs: { coder_res: "." },
+              },
+              {
+                type: "command",
+                command: "go test ./...",
+                on_failure: "continue",
+                outputs: { test_res: "." },
+              },
+              {
+                type: "eval",
+                expression: "{test_res.pass}",
+                outputs: { task_verified: "." },
+              },
+            ],
+          },
+          {
+            type: "command",
+            args: ["git", "push", "-u", "origin", "{feature.branch_name}"],
+            on_failure: "continue",
+          },
+        ],
       },
     ],
   },
   {
-    id: "issue-intake",
-    name: "Issue intake",
-    description: "Triage a GitHub issue file, ask for missing information when needed, and optionally run implementation.",
-    team_id: "default",
-    entrypoint: "orq-lite flow run issue-intake issue=issue.md run=true",
-    variables: { issue: "issue.md", run: "true" },
-    tags: ["triage", "issues"],
+    id: "pr_review",
+    name: "pr_review",
+    description:
+      "Review an existing GitHub pull request with independent lenses plus test + lint gates, then post the verdict as a PR comment.",
+    entrypoint: "orq-lite flow run pr_review pr_number=42",
+    inputs: {
+      pr_number: { type: "string" },
+      test_command: { type: "string", default: "go test ./..." },
+    },
     source: "mock",
     steps: [
       {
-        id: "triage",
         type: "command",
-        label: "Triage issue",
-        command: "orq-lite",
-        args: ["intake", "--issue", "{{issue}}"],
-        depends_on: [],
+        args: ["gh", "pr", "checkout", "{inputs.pr_number}"],
       },
       {
-        id: "deliver",
         type: "command",
-        label: "Implement if ready",
-        command: "orq-lite",
-        args: ["run", "--log-format", "human"],
-        depends_on: ["triage"],
+        args: ["gh", "pr", "diff", "{inputs.pr_number}"],
+        outputs: { pr_diff: "." },
+      },
+      {
+        type: "command",
+        command: "{inputs.test_command}",
+        on_failure: "continue",
+        outputs: { test_res: "." },
+      },
+      {
+        type: "agent",
+        agent: "critic",
+        inputs: { FILES_CHANGED: "{pr_diff.stdout}" },
+        outputs: { critic_res: "." },
+      },
+      {
+        type: "command",
+        args: ["gh", "pr", "comment", "{inputs.pr_number}", "--body", "{critic_res.review_body}"],
+        on_failure: "continue",
       },
     ],
   },

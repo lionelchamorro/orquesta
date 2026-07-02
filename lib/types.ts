@@ -195,13 +195,13 @@ export interface TeamDefinition {
 
 export type FlowStepType = "agent" | "command" | "action" | "loop" | "retry_until" | "eval"
 
-// Mirrors orquesta_api.meta.models.FlowStep, which mirrors the engine schema
-// at orquesta-lite/internal/engine/engine.go:37-79. Recursive: loop/retry_until
-// steps nest their body.
+// Mirrors orquesta_api.meta.models.FlowStep, which is field-for-field the
+// engine's Step struct (orquesta-lite/internal/engine/engine.go) and nothing
+// else — flows.json is a user-owned file the engine parses, so no UI-only
+// fields may exist here (they'd be written back into the file on save).
+// Recursive: loop/retry_until steps nest their body.
 export interface FlowStep {
-  id: string
   type: FlowStepType
-  label?: string
   agent?: string
   command?: string
   args?: string[]
@@ -215,8 +215,6 @@ export interface FlowStep {
   max_retries?: number
   expression?: string
   on_failure?: "" | "continue"
-  depends_on: string[]
-  description?: string
 }
 
 export interface FlowInputSpec {
@@ -224,15 +222,15 @@ export interface FlowInputSpec {
   default?: unknown
 }
 
+// The engine's Flow struct is exactly {description?, inputs?, steps}; only
+// those keys are ever written to flows.json. id (the flows-map key), name,
+// entrypoint, and source are read-side conveniences.
 export interface FlowDefinition {
   id: string
   name: string
   description: string
-  team_id: string
   entrypoint: string
-  variables: Record<string, string>
   inputs?: Record<string, FlowInputSpec>
   steps: FlowStep[]
-  tags: string[]
   source?: "mock" | "orq-lite" | "orquesta-api"
 }

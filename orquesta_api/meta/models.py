@@ -305,13 +305,17 @@ class StepType(str, Enum):
 
 
 class FlowStep(BaseModel):
-    """A single engine step. Recursive: loop/retry_until steps nest a body."""
+    """A single engine step. Recursive: loop/retry_until steps nest a body.
+
+    Field-for-field the engine's Step struct (orquesta-lite/internal/engine/
+    engine.go) and nothing else — flows.json is a user-owned file the engine
+    parses, so this model must not invent fields that would be written back
+    into it on save.
+    """
 
     model_config = ConfigDict(populate_by_name=True)
 
-    id: str
     type: StepType
-    label: str | None = None
     agent: str | None = None
     command: str | None = None
     args: list[str] | None = None
@@ -325,8 +329,6 @@ class FlowStep(BaseModel):
     max_retries: int | None = None
     expression: str | None = None
     on_failure: Literal["", "continue"] | None = None
-    depends_on: list[str] = Field(default_factory=list)
-    description: str | None = None
 
 
 FlowStep.model_rebuild()
@@ -374,7 +376,7 @@ def validate_flow_steps(steps: list[FlowStep], path: str = "") -> list[dict[str,
     """
     errors: list[dict[str, str]] = []
     for index, step in enumerate(steps):
-        locator = f"{path}steps[{index}]({step.id})"
+        locator = f"{path}steps[{index}]({step.type.value})"
         errors.extend(_validate_step_body(step, locator))
         if step.body:
             errors.extend(validate_flow_steps(step.body, path=f"{locator}."))
@@ -384,13 +386,19 @@ def validate_flow_steps(steps: list[FlowStep], path: str = "") -> list[dict[str,
 
 
 class FlowDefinition(BaseModel):
+    """One entry of flows.json's `flows` map.
+
+    The engine's Flow struct is exactly {description?, inputs?, steps}; only
+    those three keys are ever written back to disk (routers/flows.py). The
+    rest are read-side conveniences: `id` is the flows-map key, `name` a
+    display default, `entrypoint` the CLI invocation hint, `source` where
+    the data came from.
+    """
+
     id: str
     name: str
-    description: str = "Configured orq-lite flow"
-    team_id: str = "default"
+    description: str = ""
     entrypoint: str = ""
-    variables: dict[str, str] = Field(default_factory=dict)
     inputs: dict[str, FlowInputSpec] = Field(default_factory=dict)
     steps: list[FlowStep] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
     source: Literal["mock", "orq-lite", "orquesta-api"] | None = "orquesta-api"
