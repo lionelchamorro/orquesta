@@ -2,9 +2,9 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TaskStatus(str, Enum):
@@ -266,14 +266,94 @@ class TeamDefinition(BaseModel):
     source: Literal["mock", "orq-lite", "orquesta-api"] | None = "orquesta-api"
 
 
+class StepType(str, Enum):
+    """Engine step kinds — mirrors orquesta-lite/internal/engine/engine.go:37-79."""
+
+    agent = "agent"
+    command = "command"
+    action = "action"
+    loop = "loop"
+    retry_until = "retry_until"
+    eval = "eval"
+
+
 class FlowStep(BaseModel):
+    """A single engine step. Recursive: loop/retry_until steps nest a body."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str
-    label: str
-    command: str = "orq-lite"
-    args: list[str] = Field(default_factory=list)
-    role: str | None = None
+    type: StepType
+    label: str | None = None
+    agent: str | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    action: str | None = None
+    inputs: dict[str, Any] | None = None
+    outputs: dict[str, Any] | None = None
+    iterator: str | None = None
+    as_: str | None = Field(default=None, alias="as")
+    body: list["FlowStep"] | None = None
+    condition: str | None = None
+    max_retries: int | None = None
+    expression: str | None = None
+    on_failure: Literal["", "continue"] | None = None
     depends_on: list[str] = Field(default_factory=list)
     description: str | None = None
+
+
+FlowStep.model_rebuild()
+
+
+class FlowInputSpec(BaseModel):
+    type: str | None = None
+    default: Any | None = None
+
+
+def _step_type_ok(step: FlowStep) -> bool:
+    """Whether *step* satisfies its type's required fields (engine.Validate rules)."""
+    checks: dict[StepType, bool] = {
+        StepType.command: bool(step.command) != bool(step.args),
+        StepType.action: bool(step.action),
+        StepType.agent: bool(step.agent),
+        StepType.loop: bool(step.iterator and step.as_),
+        StepType.retry_until: bool(step.condition),
+        StepType.eval: bool(step.expression),
+    }
+    return checks.get(step.type, True)
+
+
+_STEP_TYPE_ERROR: dict[StepType, str] = {
+    StepType.command: "command steps require exactly one of command/args",
+    StepType.action: "action steps require 'action'",
+    StepType.agent: "agent steps require 'agent'",
+    StepType.loop: "loop steps require 'iterator' and 'as'",
+    StepType.retry_until: "retry_until steps require 'condition'",
+    StepType.eval: "eval steps require 'expression'",
+}
+
+
+def _validate_step_body(step: FlowStep, locator: str) -> list[dict[str, str]]:
+    """Type-specific requirements for a single step (excluding on_failure and body)."""
+    if _step_type_ok(step):
+        return []
+    return [{"step": locator, "error": _STEP_TYPE_ERROR[step.type]}]
+
+
+def validate_flow_steps(steps: list[FlowStep], path: str = "") -> list[dict[str, str]]:
+    """Mirror the subset of orq-lite's engine.Validate that can be checked client-side.
+
+    Returns a list of {"step": <locator>, "error": <message>} dicts; empty when valid.
+    """
+    errors: list[dict[str, str]] = []
+    for index, step in enumerate(steps):
+        locator = f"{path}steps[{index}]({step.id})"
+        errors.extend(_validate_step_body(step, locator))
+        if step.body:
+            errors.extend(validate_flow_steps(step.body, path=f"{locator}."))
+        if step.on_failure not in (None, "", "continue"):
+            errors.append({"step": locator, "error": f"invalid on_failure {step.on_failure!r}"})
+    return errors
 
 
 class FlowDefinition(BaseModel):
@@ -283,6 +363,7 @@ class FlowDefinition(BaseModel):
     team_id: str = "default"
     entrypoint: str = ""
     variables: dict[str, str] = Field(default_factory=dict)
+    inputs: dict[str, FlowInputSpec] = Field(default_factory=dict)
     steps: list[FlowStep] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     source: Literal["mock", "orq-lite", "orquesta-api"] | None = "orquesta-api"

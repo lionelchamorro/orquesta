@@ -5,15 +5,47 @@ import { Braces, Copy, GitBranch, ListPlus, Play, Save, Workflow, X } from "luci
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
-import type { FlowDefinition, FlowStep, Project, TeamDefinition } from "@/lib/types"
+import type { FlowDefinition, FlowStep, FlowStepType, Project, TeamDefinition } from "@/lib/types"
+
+const stepTypes: FlowStepType[] = ["command", "agent", "action", "loop", "retry_until", "eval"]
 
 function emptyStep(index: number): FlowStep {
   return {
     id: `step-${index}`,
+    type: "command",
     label: `Step ${index}`,
     command: "orq-lite",
     args: [],
     depends_on: [],
+  }
+}
+
+// Only serialize the fields the current step type actually uses, so
+// flows.json does not accumulate leftovers from a previous type.
+function flowStepExport(step: FlowStep): Partial<FlowStep> {
+  const base: Partial<FlowStep> = {
+    id: step.id,
+    type: step.type,
+    label: step.label,
+    depends_on: step.depends_on,
+    description: step.description,
+    on_failure: step.on_failure || undefined,
+  }
+  switch (step.type) {
+    case "command":
+      return { ...base, command: step.command, args: step.args }
+    case "agent":
+      return { ...base, agent: step.agent, inputs: step.inputs, outputs: step.outputs }
+    case "action":
+      return { ...base, action: step.action, inputs: step.inputs, outputs: step.outputs }
+    case "loop":
+      return { ...base, iterator: step.iterator, as: step.as, body: step.body?.map(flowStepExport) as FlowStep[] }
+    case "retry_until":
+      return { ...base, condition: step.condition, max_retries: step.max_retries, body: step.body?.map(flowStepExport) as FlowStep[] }
+    case "eval":
+      return { ...base, expression: step.expression }
+    default:
+      return base
   }
 }
 
@@ -25,15 +57,8 @@ function flowExport(flow: FlowDefinition) {
         description: flow.description,
         team_id: flow.team_id,
         variables: flow.variables,
-        steps: flow.steps.map(({ id, label, command, args, role, depends_on, description }) => ({
-          id,
-          label,
-          command,
-          args,
-          role,
-          depends_on,
-          description,
-        })),
+        inputs: flow.inputs,
+        steps: flow.steps.map(flowStepExport),
       },
     },
   }
@@ -249,26 +274,97 @@ export function FlowManager({
           <div className="space-y-3">
             {selected.steps.map((step, index) => (
               <div key={step.id} className="rounded-lg border border-border bg-background p-4">
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px]">
+                <div className="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
+                  <label className="flex flex-col gap-1">
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Type</span>
+                    <select
+                      value={step.type}
+                      onChange={(event) => updateStep(step.id, { type: event.target.value as FlowStepType })}
+                      className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+                    >
+                      {stepTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                    </select>
+                  </label>
                   <label className="flex flex-col gap-1">
                     <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Label</span>
-                    <input value={step.label} onChange={(event) => updateStep(step.id, { label: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Role</span>
-                    <input value={step.role ?? ""} onChange={(event) => updateStep(step.id, { role: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    <input value={step.label ?? ""} onChange={(event) => updateStep(step.id, { label: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
                   </label>
                 </div>
-                <div className="mt-3 grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
+
+                {step.type === "command" && (
+                  <div className="mt-3 grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Command</span>
+                      <input value={step.command ?? ""} onChange={(event) => updateStep(step.id, { command: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Args</span>
+                      <input value={(step.args ?? []).join(" ")} onChange={(event) => updateStep(step.id, { args: event.target.value.split(" ").filter(Boolean) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                  </div>
+                )}
+
+                {step.type === "agent" && (
+                  <label className="mt-3 flex flex-col gap-1">
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Agent role</span>
+                    <input value={step.agent ?? ""} onChange={(event) => updateStep(step.id, { agent: event.target.value })} placeholder="coder" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                  </label>
+                )}
+
+                {step.type === "action" && (
+                  <label className="mt-3 flex flex-col gap-1">
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Action</span>
+                    <input value={step.action ?? ""} onChange={(event) => updateStep(step.id, { action: event.target.value })} placeholder="publish_pr" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                  </label>
+                )}
+
+                {step.type === "loop" && (
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Iterator</span>
+                      <input value={step.iterator ?? ""} onChange={(event) => updateStep(step.id, { iterator: event.target.value })} placeholder="{{features}}" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">As</span>
+                      <input value={step.as ?? ""} onChange={(event) => updateStep(step.id, { as: event.target.value })} placeholder="feature" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                  </div>
+                )}
+
+                {step.type === "retry_until" && (
+                  <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_120px]">
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Condition</span>
+                      <input value={step.condition ?? ""} onChange={(event) => updateStep(step.id, { condition: event.target.value })} placeholder="tests_pass" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Max retries</span>
+                      <input type="number" value={step.max_retries ?? 0} onChange={(event) => updateStep(step.id, { max_retries: Number(event.target.value) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                  </div>
+                )}
+
+                {step.type === "eval" && (
+                  <label className="mt-3 flex flex-col gap-1">
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Expression</span>
+                    <input value={step.expression ?? ""} onChange={(event) => updateStep(step.id, { expression: event.target.value })} placeholder="tasks_done == tasks_total" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                  </label>
+                )}
+
+                <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_140px]">
                   <label className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Command</span>
-                    <input value={step.command} onChange={(event) => updateStep(step.id, { command: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Depends on</span>
+                    <input value={step.depends_on.join(", ")} onChange={(event) => updateStep(step.id, { depends_on: event.target.value.split(",").map((dep) => dep.trim()).filter(Boolean) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Args</span>
-                    <input value={step.args.join(" ")} onChange={(event) => updateStep(step.id, { args: event.target.value.split(" ").filter(Boolean) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">On failure</span>
+                    <select value={step.on_failure ?? ""} onChange={(event) => updateStep(step.id, { on_failure: event.target.value as "" | "continue" })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50">
+                      <option value="">stop</option>
+                      <option value="continue">continue</option>
+                    </select>
                   </label>
                 </div>
+
                 <div className="mt-3 flex items-center justify-between gap-3 font-mono text-[11px] text-muted-foreground">
                   <span className="inline-flex items-center gap-1"><GitBranch className="h-3 w-3" />{step.depends_on.length ? step.depends_on.join(", ") : index === 0 ? "entry" : "linear"}</span>
                   <Button size="icon-xs" variant="ghost" title="Remove step" onClick={() => updateSelected({ steps: selected.steps.filter((candidate) => candidate.id !== step.id) })}><X /></Button>

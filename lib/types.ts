@@ -173,14 +173,35 @@ export interface TeamDefinition {
   source?: "mock" | "orq-lite" | "orquesta-api"
 }
 
+export type FlowStepType = "agent" | "command" | "action" | "loop" | "retry_until" | "eval"
+
+// Mirrors orquesta_api.meta.models.FlowStep, which mirrors the engine schema
+// at orquesta-lite/internal/engine/engine.go:37-79. Recursive: loop/retry_until
+// steps nest their body.
 export interface FlowStep {
   id: string
-  label: string
-  command: string
-  args: string[]
-  role?: string
+  type: FlowStepType
+  label?: string
+  agent?: string
+  command?: string
+  args?: string[]
+  action?: string
+  inputs?: Record<string, unknown>
+  outputs?: Record<string, unknown>
+  iterator?: string
+  as?: string
+  body?: FlowStep[]
+  condition?: string
+  max_retries?: number
+  expression?: string
+  on_failure?: "" | "continue"
   depends_on: string[]
   description?: string
+}
+
+export interface FlowInputSpec {
+  type?: string
+  default?: unknown
 }
 
 export interface FlowDefinition {
@@ -190,6 +211,7 @@ export interface FlowDefinition {
   team_id: string
   entrypoint: string
   variables: Record<string, string>
+  inputs?: Record<string, FlowInputSpec>
   steps: FlowStep[]
   tags: string[]
   source?: "mock" | "orq-lite" | "orquesta-api"

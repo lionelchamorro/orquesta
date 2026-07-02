@@ -1,5 +1,5 @@
 import { flows as mockFlows, teams as mockTeams } from "./mock-data"
-import type { AgentDefinition, Feature, FlowDefinition, Project, Task, TeamDefinition, TeamRoleDefinition } from "./types"
+import type { AgentDefinition, Feature, FlowDefinition, FlowStep, Project, Task, TeamDefinition, TeamRoleDefinition } from "./types"
 
 type RawTask = Partial<Task> & { description?: string }
 type RawTasks = { tasks?: RawTask[] }
@@ -12,7 +12,13 @@ type RawTeam = Partial<TeamDefinition> & {
   agents?: Record<string, RawAgent> | AgentDefinition[]
   roles?: Record<string, RawTeamRole> | TeamRoleDefinition[]
 }
-type RawFlow = Partial<FlowDefinition> & { team?: string; command?: string; args?: string[] }
+type RawFlowStep = Partial<FlowStep>
+type RawFlow = Partial<Omit<FlowDefinition, "steps">> & {
+  team?: string
+  command?: string
+  args?: string[]
+  steps?: RawFlowStep[]
+}
 
 const defaultProjectId = process.env.ORQ_LITE_PROJECT_ID ?? "orquestalite"
 const defaultProjectName = process.env.ORQ_LITE_PROJECT_NAME ?? "orquestalite"
@@ -183,19 +189,35 @@ function normalizeFlows(raw: unknown): FlowDefinition[] {
       team_id: rawFlow.team_id ?? rawFlow.team ?? "default",
       entrypoint: rawFlow.entrypoint ?? `orq-lite flow run ${id}`,
       variables: rawFlow.variables ?? {},
-      steps: (rawFlow.steps ?? []).map((step, stepIndex) => ({
-        id: step.id ?? `step-${stepIndex + 1}`,
-        label: step.label ?? step.id ?? `Step ${stepIndex + 1}`,
-        command: step.command ?? rawFlow.command ?? "orq-lite",
-        args: step.args ?? rawFlow.args ?? [],
-        role: step.role,
-        depends_on: step.depends_on ?? [],
-        description: step.description,
-      })),
+      inputs: rawFlow.inputs ?? {},
+      steps: (rawFlow.steps ?? []).map((step, stepIndex) => normalizeFlowStep(step, stepIndex)),
       tags: rawFlow.tags ?? [],
       source: rawFlow.source ?? "orquesta-api",
     }
   })
+}
+
+function normalizeFlowStep(step: RawFlowStep, index: number): FlowStep {
+  return {
+    id: step.id ?? `step-${index + 1}`,
+    type: step.type ?? "command",
+    label: step.label,
+    agent: step.agent,
+    command: step.command,
+    args: step.args,
+    action: step.action,
+    inputs: step.inputs,
+    outputs: step.outputs,
+    iterator: step.iterator,
+    as: step.as,
+    body: step.body?.map((child, childIndex) => normalizeFlowStep(child, childIndex)),
+    condition: step.condition,
+    max_retries: step.max_retries,
+    expression: step.expression,
+    on_failure: step.on_failure,
+    depends_on: step.depends_on ?? [],
+    description: step.description,
+  }
 }
 
 function normalizeTeams(raw: unknown): TeamDefinition[] {

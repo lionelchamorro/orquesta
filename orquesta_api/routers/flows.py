@@ -12,11 +12,11 @@ entry so that unknown fields in that entry survive the round-trip.
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.db.session import get_session
-from orquesta_api.meta.models import FlowDefinition
+from orquesta_api.meta.models import FlowDefinition, validate_flow_steps
 from orquesta_api.services.config_files import FlowConfigStore
 from orquesta_api.services.projects import ProjectService
 
@@ -29,9 +29,16 @@ def _to_raw_patch(body: FlowDefinition) -> dict[str, Any]:
     """Convert a FlowDefinition to the raw flow-entry dict for merging.
 
     The ``source`` meta-field is excluded because it is control-plane internal
-    and must not leak into the user's flows.json.
+    and must not leak into the user's flows.json. ``by_alias=True`` writes the
+    ``as`` key (not the Python-safe ``as_`` field name) for loop steps.
     """
-    return body.model_dump(exclude={"source"}, exclude_none=True)
+    return body.model_dump(exclude={"source"}, exclude_none=True, by_alias=True)
+
+
+def _validate_or_422(body: FlowDefinition) -> None:
+    errors = validate_flow_steps(body.steps)
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
 
 
 async def _get_workspace(project_id: str, session: AsyncSession) -> Path:
@@ -52,6 +59,7 @@ async def list_flows(project_id: str, session: SessionDep) -> list[FlowDefinitio
 @router.post("/{project_id}/flows", status_code=201)
 async def create_flow(project_id: str, body: FlowDefinition, session: SessionDep) -> FlowDefinition:
     """Create or replace a flow entry in the project's flows.json."""
+    _validate_or_422(body)
     workspace = await _get_workspace(project_id, session)
     patch = _to_raw_patch(body)
     return FlowConfigStore(workspace).upsert(body.id, patch)
@@ -62,6 +70,7 @@ async def update_flow(
     project_id: str, flow_id: str, body: FlowDefinition, session: SessionDep
 ) -> FlowDefinition:
     """Merge the request body onto the named flow entry in flows.json."""
+    _validate_or_422(body)
     workspace = await _get_workspace(project_id, session)
     patch = _to_raw_patch(body)
     return FlowConfigStore(workspace).upsert(flow_id, patch)
