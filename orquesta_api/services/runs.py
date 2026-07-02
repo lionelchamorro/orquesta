@@ -51,20 +51,28 @@ _ACTIVE_RUN_STATES = frozenset(
 
 
 _LOCAL_EXECUTOR: ExecutorInterface | None = None
+_DOCKER_EXECUTOR: ExecutorInterface | None = None
 
 
 def _make_executor() -> ExecutorInterface:
-    # The local executor keeps live process + log-buffer state in memory, so it
-    # must be a process-wide singleton: /logs and /stop run in later requests
-    # and need the same instance that launched the process. (Assumes a single
-    # uvicorn worker, which is how the container runs it.)
-    global _LOCAL_EXECUTOR
+    # Both backends keep live state in memory (local: process handles/log
+    # buffers; docker: a shared DockerClient), so each must be a process-wide
+    # singleton: /logs and /stop run in later requests and need the same
+    # instance that launched the run. (Assumes a single uvicorn worker, which
+    # is how the container runs it.)
+    global _LOCAL_EXECUTOR, _DOCKER_EXECUTOR
     if settings.run_executor == "local":
         from orquesta_api.executors.local import LocalExecutor
 
         if _LOCAL_EXECUTOR is None:
             _LOCAL_EXECUTOR = LocalExecutor()
         return _LOCAL_EXECUTOR
+    if settings.run_executor == "docker":
+        from orquesta_api.executors.docker import DockerExecutor
+
+        if _DOCKER_EXECUTOR is None:
+            _DOCKER_EXECUTOR = DockerExecutor()
+        return _DOCKER_EXECUTOR
     raise ValueError(f"Unknown executor '{settings.run_executor}'")
 
 

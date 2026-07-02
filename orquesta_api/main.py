@@ -14,6 +14,8 @@ from orquesta_api.db.session import SessionLocal, engine
 from orquesta_api.db.tables import ProjectRow
 from orquesta_api.logger import get_logger
 from orquesta_api.routers.chat import router as chat_router
+from orquesta_api.routers.containers import images_router
+from orquesta_api.routers.containers import router as containers_router
 from orquesta_api.routers.events import router as events_router
 from orquesta_api.routers.flows import router as flows_router
 from orquesta_api.routers.projects import router as projects_router
@@ -114,6 +116,8 @@ def create_app() -> FastAPI:
     app.include_router(events_router)
     app.include_router(chat_router)
     app.include_router(webhooks_router)
+    app.include_router(containers_router)
+    app.include_router(images_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

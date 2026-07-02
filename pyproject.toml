@@ -14,6 +14,7 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "alembic>=1.18.5",
     "anthropic>=0.115.1",
+    "docker>=7.1.0",
 ]
 
 [project.optional-dependencies]
