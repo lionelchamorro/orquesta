@@ -19,6 +19,13 @@ export function orquestaApiBaseURL() {
   return (process.env.ORQUESTA_API_URL ?? process.env.NEXT_PUBLIC_ORQUESTA_API_URL ?? "").replace(/\/$/, "")
 }
 
+// Mock/demo data must be opt-in. Without ORQUESTA_DEMO=1, an unconfigured or
+// unreachable control plane renders as empty/error, never silently as demo
+// data masquerading as real state.
+function demoModeEnabled(): boolean {
+  return process.env.ORQUESTA_DEMO === "1"
+}
+
 export async function getProjects(): Promise<Project[]> {
   return getControlPlaneProjects()
 }
@@ -32,7 +39,7 @@ export async function getProject(id: string): Promise<Project | undefined> {
 
 export async function getFlows(projectId?: string): Promise<FlowDefinition[]> {
   const baseURL = orquestaApiBaseURL()
-  if (!baseURL) return mockFlows
+  if (!baseURL) return demoModeEnabled() ? mockFlows : []
   if (!projectId) return []
 
   const raw = await fetchJSON<unknown>(`${baseURL}/projects/${projectId}/flows`, undefined)
@@ -44,15 +51,14 @@ export async function getFlows(projectId?: string): Promise<FlowDefinition[]> {
 
 export async function getTeams(projectId?: string): Promise<TeamDefinition[]> {
   const baseURL = orquestaApiBaseURL()
-  if (!baseURL) return mockTeams
-  if (!projectId) return mockTeams
+  if (!baseURL) return demoModeEnabled() ? mockTeams : []
+  if (!projectId) return demoModeEnabled() ? mockTeams : []
 
   // GET /projects/{projectId}/team returns a single TeamDefinition, not an array.
   const raw = await fetchJSON<unknown>(`${baseURL}/projects/${projectId}/team`, undefined)
-  if (!raw) return mockTeams
+  if (!raw) return demoModeEnabled() ? mockTeams : []
   // Wrap in array for backward-compatibility with callers that expect TeamDefinition[].
-  const teams = normalizeTeams(Array.isArray(raw) ? raw : [raw])
-  return teams.length > 0 ? teams : mockTeams
+  return normalizeTeams(Array.isArray(raw) ? raw : [raw])
 }
 
 async function getControlPlaneProjects(): Promise<Project[]> {
