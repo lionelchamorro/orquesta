@@ -1,5 +1,7 @@
 """Project registry CRUD service."""
 
+from __future__ import annotations
+
 import re
 import shutil
 from pathlib import Path
@@ -11,6 +13,7 @@ from orquesta_api.core.integrations import git
 from orquesta_api.db.tables import ProjectRow, RepoRow
 from orquesta_api.logger import get_logger
 from orquesta_api.services.repos import CloneTargetError, RepoManager, WorkspaceDirtyError
+from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
 
@@ -24,8 +27,13 @@ def _slugify(name: str) -> str:
 class ProjectService:
     """CRUD operations for the project registry."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        serves: ServeManager | None = None,
+    ) -> None:
         self._session = session
+        self._serves = serves
 
     async def create(
         self,
@@ -106,8 +114,30 @@ class ProjectService:
                     f"Could not initialise workspace for '{slug}': {exc}"
                 ) from exc
 
+        await self._try_start_serve(slug, project)
+
         logger.info("Created project => %s", slug)
         return project
+
+    async def _try_start_serve(self, project_id: str, project: ProjectRow) -> None:
+        """Attempt to start the orq-lite serve for a newly-created project.
+
+        Failures are logged as warnings and never propagate — serve startup
+        is best-effort at registration time.
+        """
+        if self._serves is None or not project.workspace_path:
+            return
+        try:
+            port = await self._serves.ensure(project_id, project.workspace_path)
+            project.serve_port = port
+            await self._session.commit()
+            await self._session.refresh(project)
+        except Exception as exc:
+            logger.warning(
+                "Could not start serve after project create => project_id=%s error=%s",
+                project_id,
+                exc,
+            )
 
     async def list(self) -> list[ProjectRow]:
         """Return all registered projects."""
@@ -155,4 +185,8 @@ class ProjectService:
 
         await self._session.delete(row)
         await self._session.commit()
+
+        if self._serves is not None:
+            await self._serves.stop(id)
+
         logger.info("Deleted project => %s", id)

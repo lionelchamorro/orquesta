@@ -28,6 +28,7 @@ class ProjectRow(Base):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     last_run: Mapped[datetime | None] = mapped_column(DateTime)
     source: Mapped[str | None] = mapped_column(String)
+    serve_port: Mapped[int | None] = mapped_column(Integer)
 
 
 class RunRow(Base):

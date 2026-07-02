@@ -1,26 +1,24 @@
-"""Aggregator service: resolve active run and proxy orq-lite state."""
+"""Aggregator service: resolve serve port and proxy orq-lite state."""
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.core.integrations.orq_lite_client import OrqLiteClient
-from orquesta_api.db.tables import RunRow
 from orquesta_api.logger import get_logger
-from orquesta_api.meta.models import Feature, RunState, Task
+from orquesta_api.meta.models import Feature, Task
+from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
 
 
 class CostSnapshot(BaseModel):
-    """Cost data proxied from an orq-lite run."""
+    """Cost data proxied from an orq-lite serve."""
 
     available: bool = False
     total_usd: float = 0.0
 
 
 class Snapshot(BaseModel):
-    """Merged state snapshot for a project, sourced from an active orq-lite run."""
+    """Merged state snapshot for a project, sourced from an active orq-lite serve."""
 
     tasks: list[Task] = Field(default_factory=list)
     features: list[Feature] = Field(default_factory=list)
@@ -28,24 +26,31 @@ class Snapshot(BaseModel):
 
 
 class Aggregator:
-    """Resolves the active run for a project and proxies orq-lite state."""
+    """Resolves the serve port for a project and proxies orq-lite state.
+
+    Base URL resolution is delegated entirely to ``ServeManager.port(project_id)``
+    so that ``snapshot`` returns gracefully even when no run is active.
+    """
 
     def __init__(
         self,
-        session: AsyncSession,
+        serves: ServeManager,
         client: OrqLiteClient | None = None,
     ) -> None:
-        self._session = session
+        self._serves = serves
         self._client = client if client is not None else OrqLiteClient()
 
     async def snapshot(self, project_id: str) -> Snapshot:
-        """Return merged orq-lite state for project_id, or empty snapshot if no active run."""
-        row = await self._active_run(project_id)
-        if row is None:
-            logger.info("No active run => project_id=%s returning empty snapshot", project_id)
+        """Return merged orq-lite state for *project_id*.
+
+        Returns an empty ``Snapshot`` when no serve is running — never raises.
+        """
+        port = self._serves.port(project_id)
+        if port is None:
+            logger.info("No active serve => project_id=%s returning empty snapshot", project_id)
             return Snapshot()
 
-        base_url = self._base_url(row)
+        base_url = f"http://127.0.0.1:{port}"
         logger.info("Fetching snapshot => project_id=%s base_url=%s", project_id, base_url)
 
         tasks_resp = await self._client.get_tasks(base_url)
@@ -62,29 +67,23 @@ class Aggregator:
         )
 
     async def get_diff(self, project_id: str, task_id: str) -> str:
-        """Return diff text for task_id from the active orq-lite run, or raise if none."""
-        row = await self._require_active_run(project_id)
-        return await self._client.get_diff(self._base_url(row), task_id)
+        """Return diff text for *task_id* from the orq-lite serve.
+
+        Raises ``ValueError`` (→ 404) when no serve is running.
+        """
+        base_url = self._require_base_url(project_id)
+        return await self._client.get_diff(base_url, task_id)
 
     async def get_result(self, project_id: str, role: str) -> dict:
-        """Return result JSON for role from the active orq-lite run, or raise if none."""
-        row = await self._require_active_run(project_id)
-        return await self._client.get_result(self._base_url(row), role)
+        """Return result JSON for *role* from the orq-lite serve.
 
-    def _base_url(self, row: RunRow) -> str:
-        return f"http://127.0.0.1:{row.api_port}"
+        Raises ``ValueError`` (→ 404) when no serve is running.
+        """
+        base_url = self._require_base_url(project_id)
+        return await self._client.get_result(base_url, role)
 
-    async def _require_active_run(self, project_id: str) -> RunRow:
-        row = await self._active_run(project_id)
-        if row is None:
-            raise ValueError(f"active run not found for project {project_id!r}")
-        return row
-
-    async def _active_run(self, project_id: str) -> RunRow | None:
-        result = await self._session.execute(
-            select(RunRow).where(
-                RunRow.project_id == project_id,
-                RunRow.state == RunState.running.value,
-            )
-        )
-        return result.scalar_one_or_none()
+    def _require_base_url(self, project_id: str) -> str:
+        port = self._serves.port(project_id)
+        if port is None:
+            raise ValueError(f"serve not found for project {project_id!r}")
+        return f"http://127.0.0.1:{port}"

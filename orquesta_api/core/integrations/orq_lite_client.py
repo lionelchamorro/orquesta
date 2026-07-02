@@ -8,7 +8,18 @@ logger = get_logger(__name__)
 
 
 class OrqLiteClient:
-    """Proxy client for the orq-lite Go API endpoints."""
+    """Proxy client for the orq-lite Go API endpoints.
+
+    Parameters
+    ----------
+    transport:
+        Optional ``httpx.BaseTransport`` injected into every ``AsyncClient``
+        instance.  Pass ``httpx.MockTransport(handler)`` in tests to avoid
+        real network calls.  Production code leaves this as ``None``.
+    """
+
+    def __init__(self, transport: httpx.BaseTransport | None = None) -> None:
+        self._transport = transport
 
     async def get_tasks(self, base_url: str) -> dict:
         """Fetch GET /api/tasks and return the parsed JSON body."""
@@ -26,7 +37,7 @@ class OrqLiteClient:
         """Fetch GET /api/diff/{task_id} and return the response body as plain text."""
         url = f"{base_url}/api/diff/{task_id}"
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(transport=self._transport) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 logger.info("GET %s => %s", url, response.status_code)
@@ -41,7 +52,7 @@ class OrqLiteClient:
     async def _get_json(self, base_url: str, path: str) -> dict:
         url = f"{base_url}{path}"
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(transport=self._transport) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 logger.info("GET %s => %s", url, response.status_code)

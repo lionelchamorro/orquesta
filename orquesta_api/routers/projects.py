@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,12 +12,21 @@ from orquesta_api.db.tables import ProjectRow
 from orquesta_api.meta.models import AgentRole, Feature, Project, ProjectState, ProjectWatch, Task
 from orquesta_api.services.aggregator import Aggregator, CostSnapshot
 from orquesta_api.services.projects import ProjectService
+from orquesta_api.services.serves import ServeManager
 
 _VALID_ROLES = {role.value for role in AgentRole}
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+
+def _get_serves(request: Request) -> ServeManager:
+    """FastAPI dependency: read ServeManager from app.state.serves."""
+    return request.app.state.serves  # type: ignore[no-any-return]
+
+
+ServesDep = Annotated[ServeManager, Depends(_get_serves)]
 
 
 class TasksResponse(BaseModel):
@@ -78,9 +87,9 @@ async def list_projects(session: SessionDep) -> list[Project]:
 
 
 @router.post("", status_code=201)
-async def create_project(body: ProjectCreate, session: SessionDep) -> Project:
+async def create_project(body: ProjectCreate, session: SessionDep, serves: ServesDep) -> Project:
     """Register a new project."""
-    svc = ProjectService(session)
+    svc = ProjectService(session, serves=serves)
     row = await svc.create(
         name=body.name,
         repo_url=body.repo_url,
@@ -94,11 +103,11 @@ async def create_project(body: ProjectCreate, session: SessionDep) -> Project:
 
 
 @router.get("/{project_id}")
-async def get_project(project_id: str, session: SessionDep) -> Project:
+async def get_project(project_id: str, session: SessionDep, serves: ServesDep) -> Project:
     """Return a single project by id."""
     svc = ProjectService(session)
     row = await svc.get(project_id)
-    agg = Aggregator(session=session)
+    agg = Aggregator(serves=serves)
     snapshot = await agg.snapshot(project_id)
     return _row_to_project(row).model_copy(
         update={
@@ -122,49 +131,58 @@ async def patch_project(project_id: str, body: ProjectPatch, session: SessionDep
 async def delete_project(
     project_id: str,
     session: SessionDep,
+    serves: ServesDep,
     prune: Annotated[bool, Query()] = False,
 ) -> None:
     """Remove a project from the registry."""
-    svc = ProjectService(session)
+    svc = ProjectService(session, serves=serves)
     await svc.delete(project_id, prune=prune)
 
 
 @router.get("/{project_id}/tasks")
-async def get_project_tasks(project_id: str, session: SessionDep) -> TasksResponse:
-    """Return tasks proxied from the active orq-lite run, or empty list if none."""
-    agg = Aggregator(session=session)
+async def get_project_tasks(
+    project_id: str, session: SessionDep, serves: ServesDep
+) -> TasksResponse:
+    """Return tasks proxied from the active orq-lite serve, or empty list if none."""
+    agg = Aggregator(serves=serves)
     snapshot = await agg.snapshot(project_id)
     return TasksResponse(tasks=snapshot.tasks)
 
 
 @router.get("/{project_id}/factory")
-async def get_project_factory(project_id: str, session: SessionDep) -> FeaturesResponse:
-    """Return features proxied from the active orq-lite run, or empty list if none."""
-    agg = Aggregator(session=session)
+async def get_project_factory(
+    project_id: str, session: SessionDep, serves: ServesDep
+) -> FeaturesResponse:
+    """Return features proxied from the active orq-lite serve, or empty list if none."""
+    agg = Aggregator(serves=serves)
     snapshot = await agg.snapshot(project_id)
     return FeaturesResponse(features=snapshot.features)
 
 
 @router.get("/{project_id}/cost")
-async def get_project_cost(project_id: str, session: SessionDep) -> CostSnapshot:
-    """Return cost proxied from the active orq-lite run, or unavailable if none."""
-    agg = Aggregator(session=session)
+async def get_project_cost(project_id: str, session: SessionDep, serves: ServesDep) -> CostSnapshot:
+    """Return cost proxied from the active orq-lite serve, or unavailable if none."""
+    agg = Aggregator(serves=serves)
     snapshot = await agg.snapshot(project_id)
     return snapshot.cost
 
 
 @router.get("/{project_id}/diff/{task_id}")
-async def get_project_diff(project_id: str, task_id: str, session: SessionDep) -> PlainTextResponse:
-    """Return diff text for task_id proxied from the active orq-lite run."""
-    agg = Aggregator(session=session)
+async def get_project_diff(
+    project_id: str, task_id: str, session: SessionDep, serves: ServesDep
+) -> PlainTextResponse:
+    """Return diff text for task_id proxied from the active orq-lite serve."""
+    agg = Aggregator(serves=serves)
     diff = await agg.get_diff(project_id, task_id)
     return PlainTextResponse(diff)
 
 
 @router.get("/{project_id}/result/{role}")
-async def get_project_result(project_id: str, role: str, session: SessionDep) -> dict:
-    """Return result JSON for role from the active orq-lite run; 400 for invalid roles."""
+async def get_project_result(
+    project_id: str, role: str, session: SessionDep, serves: ServesDep
+) -> dict:
+    """Return result JSON for role from the active orq-lite serve; 400 for invalid roles."""
     if role not in _VALID_ROLES:
         raise ValueError(f"invalid role {role!r}")
-    agg = Aggregator(session=session)
+    agg = Aggregator(serves=serves)
     return await agg.get_result(project_id, role)

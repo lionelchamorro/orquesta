@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from orquesta_api.db.session import engine
+from orquesta_api.db.session import SessionLocal, engine
 from orquesta_api.db.tables import Base
 from orquesta_api.logger import get_logger
 from orquesta_api.routers.flows import router as flows_router
@@ -15,16 +15,27 @@ from orquesta_api.routers.repos import router as repos_router
 from orquesta_api.routers.runs import router as runs_router
 from orquesta_api.routers.teams import router as teams_router
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
+from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
 
 
 @asynccontextmanager
-async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created => startup complete")
-    yield
+
+    serves = ServeManager()
+    app.state.serves = serves
+
+    async with SessionLocal() as session:
+        await serves.start_all(session)
+
+    try:
+        yield
+    finally:
+        await serves.shutdown()
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
