@@ -28,6 +28,15 @@ from orquesta_api.meta.models import (
     TeamLimits,
     TeamRoleDefinition,
 )
+from orquesta_api.meta.query_models import (
+    AgentRunRecord,
+    CostRow,
+    DoctorCheck,
+    DoctorReport,
+    FlowCatalogEntry,
+    FlowCatalogInput,
+    OrqRunSummary,
+)
 
 _TYPES_TS = Path(__file__).resolve().parents[1] / "lib" / "types.ts"
 
@@ -47,6 +56,13 @@ MIRRORED_MODELS: dict[str, tuple[type, dict[str, str]]] = {
     "FlowStep": (FlowStep, {"as_": "as"}),
     "FlowInputSpec": (FlowInputSpec, {}),
     "FlowDefinition": (FlowDefinition, {}),
+    "OrqRunSummary": (OrqRunSummary, {}),
+    "AgentRunRecord": (AgentRunRecord, {}),
+    "CostRow": (CostRow, {}),
+    "FlowCatalogInput": (FlowCatalogInput, {}),
+    "FlowCatalogEntry": (FlowCatalogEntry, {}),
+    "DoctorCheck": (DoctorCheck, {}),
+    "DoctorReport": (DoctorReport, {}),
 }
 
 # TS fields with no Pydantic counterpart, for a documented reason (not a gap).

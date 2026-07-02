@@ -18,11 +18,13 @@ from orquesta_api.routers.containers import images_router
 from orquesta_api.routers.containers import router as containers_router
 from orquesta_api.routers.events import router as events_router
 from orquesta_api.routers.flows import router as flows_router
+from orquesta_api.routers.history import router as history_router
 from orquesta_api.routers.projects import router as projects_router
 from orquesta_api.routers.repos import router as repos_router
 from orquesta_api.routers.runs import router as runs_router
 from orquesta_api.routers.teams import router as teams_router
 from orquesta_api.routers.webhooks import router as webhooks_router
+from orquesta_api.services.correlation import RunCorrelator
 from orquesta_api.services.events import EventIngestManager, get_event_bus
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
 from orquesta_api.services.runs import RunSupervisor, _make_executor
@@ -48,6 +50,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.events = events
     ingest = EventIngestManager(events, serves.port)
     app.state.ingest = ingest
+    correlator = RunCorrelator(events, SessionLocal)
+    correlator.start()
 
     async with SessionLocal() as session:
         await serves.start_all(session)
@@ -59,6 +63,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await correlator.shutdown()
         await ingest.shutdown()
         await serves.shutdown()
 
@@ -118,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(webhooks_router)
     app.include_router(containers_router)
     app.include_router(images_router)
+    app.include_router(history_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

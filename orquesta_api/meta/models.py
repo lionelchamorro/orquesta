@@ -216,6 +216,7 @@ class Run(BaseModel):
     base_sha: str | None = None
     head_sha: str | None = None
     error: str | None = None
+    orq_run_id: str | None = None
 
 
 class RunSpec(BaseModel):

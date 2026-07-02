@@ -50,6 +50,9 @@ class RunRow(Base):
     base_sha: Mapped[str | None] = mapped_column(String)
     head_sha: Mapped[str | None] = mapped_column(String)
     error: Mapped[str | None] = mapped_column(Text)
+    # orq-lite's own run_id, captured from the run_start SSE event (Task 9) —
+    # the 1:1 link between this launch record and the serve's query API.
+    orq_run_id: Mapped[str | None] = mapped_column(String)
 
 
 class RepoRow(Base):

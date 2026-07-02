@@ -62,11 +62,51 @@ class OrqLiteClient:
         """Fetch GET /api/result/{role} and return the parsed JSON body."""
         return await self._get_json(base_url, f"/api/result/{role}")
 
-    async def _get_json(self, base_url: str, path: str) -> dict:
-        response = await self._request(base_url, path)
+    # -- query API (orq-lite features.md / docs/orq-lite-query-api.md) --------
+
+    async def get_runs(self, base_url: str, params: dict | None = None) -> dict:
+        """Fetch GET /api/runs (limit/offset/active filters) as parsed JSON."""
+        return await self._get_json(base_url, "/api/runs", params=params)
+
+    async def get_run(self, base_url: str, run_id: str) -> dict:
+        """Fetch GET /api/runs/{run_id} as parsed JSON."""
+        return await self._get_json(base_url, f"/api/runs/{run_id}")
+
+    async def get_run_events(self, base_url: str, run_id: str, params: dict | None = None) -> dict:
+        """Fetch GET /api/runs/{run_id}/events (type/task_id filters) as parsed JSON."""
+        return await self._get_json(base_url, f"/api/runs/{run_id}/events", params=params)
+
+    async def get_agent_runs(self, base_url: str, params: dict | None = None) -> dict:
+        """Fetch GET /api/agent-runs (run_id/task_id/role/agent filters) as parsed JSON."""
+        return await self._get_json(base_url, "/api/agent-runs", params=params)
+
+    async def get_cost_stats(self, base_url: str, by: str = "run") -> dict:
+        """Fetch GET /api/stats/cost?by=run|agent|task|role as parsed JSON."""
+        return await self._get_json(base_url, "/api/stats/cost", params={"by": by})
+
+    async def get_flow_catalog(self, base_url: str) -> dict:
+        """Fetch GET /api/flows (flow inputs schema + per-role preflight) as parsed JSON."""
+        return await self._get_json(base_url, "/api/flows")
+
+    async def get_doctor(self, base_url: str) -> dict:
+        """Fetch GET /api/doctor (preflight report) as parsed JSON."""
+        return await self._get_json(base_url, "/api/doctor")
+
+    async def get_attempt_diff(
+        self, base_url: str, task_id: str, role: str, cycle: int, attempt: int
+    ) -> dict:
+        """Fetch GET /api/attempt-diff/{task}/{role}/{cycle}/{attempt} as parsed JSON."""
+        return await self._get_json(
+            base_url, f"/api/attempt-diff/{task_id}/{role}/{cycle}/{attempt}"
+        )
+
+    async def _get_json(self, base_url: str, path: str, params: dict | None = None) -> dict:
+        response = await self._request(base_url, path, params=params)
         return response.json()
 
-    async def _request(self, base_url: str, path: str) -> httpx.Response:
+    async def _request(
+        self, base_url: str, path: str, params: dict | None = None
+    ) -> httpx.Response:
         """GET base_url+path, mapping any transport or HTTP-status failure to RuntimeError (-> 502).
 
         Both failure modes are mapped so callers get a consistent, bounded
@@ -78,7 +118,7 @@ class OrqLiteClient:
         url = f"{base_url}{path}"
         client = self._get_client()
         try:
-            response = await client.get(url)
+            response = await client.get(url, params=params)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(f"orq-lite returned {exc.response.status_code} for {url}") from exc

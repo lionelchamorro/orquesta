@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { Play, GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar } from "lucide-react"
+import { GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
@@ -10,9 +10,11 @@ import { FactoryQueue } from "@/components/console/factory-queue"
 import { TasksTable } from "@/components/console/tasks-table"
 import { LiveEvents } from "@/components/console/live-events"
 import { GlobalChat } from "@/components/console/global-chat"
+import { FlowLauncher } from "@/components/console/flow-launcher"
+import { RunHistory } from "@/components/console/run-history"
 import type { Project } from "@/lib/types"
 
-const tabs = ["Factory", "Tasks", "Chat"] as const
+const tabs = ["Factory", "Tasks", "Runs", "Chat"] as const
 type Tab = (typeof tabs)[number]
 
 export function ProjectView({ project }: { project: Project }) {
@@ -74,6 +76,7 @@ export function ProjectView({ project }: { project: Project }) {
         <div className="mt-5">
           {tab === "Factory" && <FactoryQueue features={project.features} />}
           {tab === "Tasks" && <TasksTable tasks={project.tasks} />}
+          {tab === "Runs" && <RunHistory projectId={project.id} />}
           {tab === "Chat" && (
             <div className="h-[60vh] overflow-hidden rounded-xl border border-border bg-card">
               <GlobalChat compact projects={[project]} />
@@ -92,54 +95,37 @@ export function ProjectView({ project }: { project: Project }) {
   )
 }
 
-const RUN_OPTIONS = [
-  { value: "factory", label: "factory" },
-  { value: "factory_fast_governed", label: "factory_fast_governed" },
-  { value: "pr_review", label: "pr_review" },
-  { value: "issue_fix", label: "issue_fix" },
-] as const
-
-type RunOption = (typeof RUN_OPTIONS)[number]["value"]
-
 export function ProjectActions({ project }: { project: Project }) {
-  const [kind, setKind] = useState<RunOption>("factory")
-  const [launching, setLaunching] = useState(false)
-  const [message, setMessage] = useState("")
+  const [launchingWatch, setLaunchingWatch] = useState(false)
+  const [watchMessage, setWatchMessage] = useState("")
 
   const isRunning = project.state === "running"
-  const disabled = isRunning || launching
   const watchEnabled = project.watch.prs || project.watch.issues
 
-  async function launchKind(runKind: string, flow?: string) {
-    setLaunching(true)
-    setMessage("")
+  async function launchWatchDaemon() {
+    setLaunchingWatch(true)
+    setWatchMessage("")
     try {
-      const body = flow ? { kind: runKind, flow, inputs: {} } : { kind: runKind }
       const res = await fetch(`/api/control-plane/projects/${project.id}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ kind: "watch" }),
       })
-
       if (res.status === 409) {
-        setMessage("run already active")
+        setWatchMessage("run already active")
         return
       }
       if (!res.ok) {
         const detail = await res.json().catch(() => ({}))
-        setMessage(`launch failed: ${detail?.detail ?? `HTTP ${res.status}`}`)
+        setWatchMessage(`launch failed: ${detail?.detail ?? `HTTP ${res.status}`}`)
         return
       }
-      setMessage("launched")
+      setWatchMessage("watch daemon started")
     } catch (err) {
-      setMessage(`launch failed: ${err instanceof Error ? err.message : String(err)}`)
+      setWatchMessage(`launch failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      setLaunching(false)
+      setLaunchingWatch(false)
     }
-  }
-
-  async function launchRun() {
-    await launchKind(kind === "factory" ? "factory" : "flow", kind === "factory" ? undefined : kind)
   }
 
   return (
@@ -151,43 +137,28 @@ export function ProjectActions({ project }: { project: Project }) {
           Office
         </Link>
       </Button>
-      <select
-        value={kind}
-        onChange={(e) => setKind(e.target.value as RunOption)}
-        disabled={disabled}
-        className="rounded-lg border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none focus:border-primary/50 disabled:opacity-50"
-      >
-        {RUN_OPTIONS.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
-      <Button size="sm" className="font-mono text-xs" disabled={disabled} onClick={launchRun}>
-        <Play className="h-3.5 w-3.5" />
-        {launching ? "launching…" : "Run"}
-      </Button>
+      <FlowLauncher projectId={project.id} disabled={isRunning} />
       {watchEnabled && (
         <Button
           size="sm"
           variant="outline"
           className="font-mono text-xs"
-          disabled={disabled}
-          onClick={() => launchKind("watch")}
+          disabled={isRunning || launchingWatch}
+          onClick={launchWatchDaemon}
           title="Fallback for projects without a GitHub webhook configured: supervises `orq-lite watch --prs --issues` as a long-lived run"
         >
           <Radar className="h-3.5 w-3.5" />
           Start watch daemon
         </Button>
       )}
-      {message && (
+      {watchMessage && (
         <span
           className={cn(
             "font-mono text-[11px]",
-            message.startsWith("launch failed") ? "text-err" : "text-muted-foreground",
+            watchMessage.startsWith("launch failed") ? "text-err" : "text-muted-foreground",
           )}
         >
-          {message}
+          {watchMessage}
         </span>
       )}
     </>

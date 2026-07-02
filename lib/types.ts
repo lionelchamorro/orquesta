@@ -234,3 +234,104 @@ export interface FlowDefinition {
   steps: FlowStep[]
   source?: "mock" | "orq-lite" | "orquesta-api"
 }
+
+// ---------------------------------------------------------------------------
+// orq-lite query API mirrors (docs/orq-lite-query-api.md). Field-for-field
+// with orquesta_api/meta/query_models.py — enforced by test_contract_types.py.
+// ---------------------------------------------------------------------------
+
+export interface OrqRunSummary {
+  run_id: string
+  command: string
+  args: string[]
+  status: string // running|ok|error|interrupted
+  started_at: string
+  finished_at?: string | null
+  duration_s?: number | null
+  orq_version: string
+  cost_usd: number
+  input_tokens: number
+  output_tokens: number
+  agent_runs: number
+  tasks_done: number
+  tasks_failed: number
+}
+
+export interface OrqRunsPage {
+  runs: OrqRunSummary[]
+  total: number
+}
+
+export interface OrqRunEventsPage {
+  events: RunEvent[]
+  total: number
+}
+
+export interface AgentRunRecord {
+  ts: string
+  run_id: string
+  role: string
+  agent: string
+  task_id: string
+  cycle: number
+  attempt: number
+  provider: string
+  model: string
+  duration_s: number
+  exit_code: number
+  timed_out: boolean
+  rate_limited: boolean
+  input_tokens: number
+  output_tokens: number
+  cached_input_tokens: number
+  reasoning_tokens: number
+  cost_usd: number
+  artifacts_dir: string
+}
+
+export interface AgentRunsPage {
+  agent_runs: AgentRunRecord[]
+  total: number
+}
+
+export interface CostRow {
+  key: string
+  cost_usd: number
+  input_tokens: number
+  output_tokens: number
+  agent_runs: number
+}
+
+export interface CostStats {
+  by: string
+  rows: CostRow[]
+}
+
+export interface FlowCatalogInput {
+  type: string
+  default?: unknown
+  required: boolean
+}
+
+export interface FlowCatalogEntry {
+  name: string
+  description: string
+  inputs: Record<string, FlowCatalogInput>
+  roles: string[]
+  preflight: Record<string, string> // role -> ok|missing_role|missing_prompt
+}
+
+export interface FlowCatalog {
+  flows: FlowCatalogEntry[]
+}
+
+export interface DoctorCheck {
+  name: string
+  status: string // ok|warn|error
+  detail: string
+}
+
+export interface DoctorReport {
+  ok: boolean
+  checks: DoctorCheck[]
+}

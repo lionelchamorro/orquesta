@@ -35,6 +35,7 @@ def _row_to_model(row: RunRow) -> Run:
         base_sha=row.base_sha,
         head_sha=row.head_sha,
         error=row.error,
+        orq_run_id=row.orq_run_id,
     )
 
 
