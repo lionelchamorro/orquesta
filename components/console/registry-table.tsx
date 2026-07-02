@@ -12,17 +12,20 @@ function Toggle({
   on,
   label,
   onClick,
+  disabled,
 }: {
   on: boolean
   label: string
   onClick: () => void
+  disabled?: boolean
 }) {
   return (
     <button
       onClick={onClick}
       role="switch"
       aria-checked={on}
-      className="flex items-center gap-2 font-mono text-[11px]"
+      disabled={disabled}
+      className={cn("flex items-center gap-2 font-mono text-[11px]", disabled && "cursor-not-allowed opacity-50")}
     >
       <span
         className={cn(
@@ -47,12 +50,16 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState({ name: "", repo: "", path: "", branch: "main" })
   const [error, setError] = useState("")
+  const [watchInFlight, setWatchInFlight] = useState<Set<string>>(new Set())
 
   async function toggleWatch(id: string, key: "prs" | "issues") {
+    if (watchInFlight.has(id)) return
     const project = projects.find((p) => p.id === id)
     if (!project) return
     const originalWatch = project.watch
     const newWatch = { ...originalWatch, [key]: !originalWatch[key] }
+
+    setWatchInFlight((prev) => new Set(prev).add(id))
 
     // Optimistic update
     setProjects((prev) =>
@@ -77,6 +84,12 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
         prev.map((p) => (p.id === id ? { ...p, watch: originalWatch } : p)),
       )
       setError(`watch toggle failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setWatchInFlight((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
     }
   }
 
@@ -224,11 +237,12 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-col gap-1.5">
-                    <Toggle on={p.watch.prs} label="PRs" onClick={() => toggleWatch(p.id, "prs")} />
+                    <Toggle on={p.watch.prs} label="PRs" onClick={() => toggleWatch(p.id, "prs")} disabled={watchInFlight.has(p.id)} />
                     <Toggle
                       on={p.watch.issues}
                       label="Issues"
                       onClick={() => toggleWatch(p.id, "issues")}
+                      disabled={watchInFlight.has(p.id)}
                     />
                   </div>
                 </td>
