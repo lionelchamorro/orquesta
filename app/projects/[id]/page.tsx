@@ -1,12 +1,10 @@
 import { notFound } from "next/navigation"
 import { ConsoleHeader } from "@/components/console/console-header"
 import { ProjectView, ProjectActions } from "@/components/console/project-view"
-import { getProject, getProjects } from "@/lib/orq-lite"
+import { getProject } from "@/lib/orq-lite"
 
-export async function generateStaticParams() {
-  const projects = await getProjects()
-  return projects.map((p) => ({ id: p.id }))
-}
+// Live control-plane data — never statically pre-rendered.
+export const dynamic = "force-dynamic"
 
 export default async function ProjectPage({
   params,

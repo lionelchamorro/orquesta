@@ -1,5 +1,7 @@
 """Project registry CRUD service."""
 
+from __future__ import annotations
+
 import re
 import shutil
 from pathlib import Path
@@ -10,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orquesta_api.core.integrations import git
 from orquesta_api.db.tables import ProjectRow, RepoRow
 from orquesta_api.logger import get_logger
-from orquesta_api.services.repos import RepoManager
+from orquesta_api.services.events import EventIngestManager
+from orquesta_api.services.repos import CloneTargetError, RepoManager, WorkspaceDirtyError
+from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
 
@@ -24,8 +28,15 @@ def _slugify(name: str) -> str:
 class ProjectService:
     """CRUD operations for the project registry."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        serves: ServeManager | None = None,
+        ingest: EventIngestManager | None = None,
+    ) -> None:
         self._session = session
+        self._serves = serves
+        self._ingest = ingest
 
     async def create(
         self,
@@ -88,10 +99,51 @@ class ProjectService:
 
         workspace_obj = Path(effective_workspace)
         if repo_url is not None or (workspace_obj.exists() and git.is_git_repo(workspace_obj)):
-            await RepoManager(self._session).ensure(project)
+            try:
+                await RepoManager(self._session).ensure(project)
+            except Exception as exc:
+                # ensure() runs after the project/repo rows were committed above.
+                # If the clone/adopt fails, roll the registration back instead of
+                # leaving an orphaned project with an empty workspace (this path
+                # previously surfaced to the client as an opaque 502).
+                await self._session.delete(repo)
+                await self._session.delete(project)
+                await self._session.commit()
+                if managed:
+                    shutil.rmtree(effective_workspace, ignore_errors=True)
+                if isinstance(exc, CloneTargetError | WorkspaceDirtyError | ValueError):
+                    raise
+                raise CloneTargetError(
+                    f"Could not initialise workspace for '{slug}': {exc}"
+                ) from exc
+
+        await self._try_start_serve(slug, project)
 
         logger.info("Created project => %s", slug)
         return project
+
+    async def _try_start_serve(self, project_id: str, project: ProjectRow) -> None:
+        """Attempt to start the orq-lite serve for a newly-created project.
+
+        Failures are logged as warnings and never propagate — serve startup
+        is best-effort at registration time.
+        """
+        if self._serves is None or not project.workspace_path:
+            return
+        try:
+            port = await self._serves.ensure(project_id, project.workspace_path)
+            project.serve_port = port
+            await self._session.commit()
+            await self._session.refresh(project)
+        except Exception as exc:
+            logger.warning(
+                "Could not start serve after project create => project_id=%s error=%s",
+                project_id,
+                exc,
+            )
+            return
+        if self._ingest is not None:
+            self._ingest.start(project_id)
 
     async def list(self) -> list[ProjectRow]:
         """Return all registered projects."""
@@ -113,8 +165,9 @@ class ProjectService:
             if key not in allowed:
                 continue
             if key == "watch":
-                row.watch_prs = bool(value)
-                row.watch_issues = bool(value)
+                if isinstance(value, dict):
+                    row.watch_prs = bool(value.get("prs", row.watch_prs))
+                    row.watch_issues = bool(value.get("issues", row.watch_issues))
             else:
                 setattr(row, key, value)
         await self._session.commit()
@@ -139,4 +192,18 @@ class ProjectService:
 
         await self._session.delete(row)
         await self._session.commit()
+
+        if self._serves is not None:
+            try:
+                await self._serves.stop(id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not stop serve after project delete => project_id=%s error=%s",
+                    id,
+                    exc,
+                )
+
+        if self._ingest is not None:
+            await self._ingest.stop(id)
+
         logger.info("Deleted project => %s", id)

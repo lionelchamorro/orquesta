@@ -1,11 +1,22 @@
 """Subprocess wrappers for common git operations."""
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from orquesta_api.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class GitStatus:
+    """Snapshot of a repository's branch/sha/dirtiness/remote state."""
+
+    current_branch: str | None
+    head_sha: str | None
+    dirty: bool
+    remote_url: str | None
 
 
 def is_git_repo(path: Path | str) -> bool:
@@ -18,8 +29,8 @@ def is_git_repo(path: Path | str) -> bool:
     return result.returncode == 0
 
 
-def status(path: Path | str) -> dict[str, str | bool | None]:
-    """Return a dict with current_branch, head_sha, dirty, and remote_url for the repo at path."""
+def status(path: Path | str) -> GitStatus:
+    """Return the current branch, head sha, dirtiness, and remote URL for the repo at path."""
     cwd = str(path)
 
     try:
@@ -72,12 +83,12 @@ def status(path: Path | str) -> dict[str, str | bool | None]:
 
     logger.info("git status => %s branch=%s dirty=%s", cwd, current_branch, dirty)
 
-    return {
-        "current_branch": current_branch,
-        "head_sha": head_sha,
-        "dirty": dirty,
-        "remote_url": remote_url,
-    }
+    return GitStatus(
+        current_branch=current_branch,
+        head_sha=head_sha,
+        dirty=dirty,
+        remote_url=remote_url,
+    )
 
 
 def clone(url: str, dest: str) -> None:

@@ -12,9 +12,16 @@ dependencies = [
     "httpx>=0.28",
     "rich>=13",
     "uvicorn[standard]>=0.34",
+    "alembic>=1.18.5",
+    "anthropic>=0.115.1",
+    "docker>=7.1.0",
 ]
 
-[project.optional-dependencies]
+# PEP 735 dependency group (not an extra): `uv sync` installs the dev group by
+# default, which is what the tests.yml workflow's bare `uv sync --frozen`
+# relies on — an [project.optional-dependencies] extra would NOT be installed
+# there and pytest would be missing at CI time.
+[dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.25",
@@ -32,6 +39,9 @@ packages = ["orquesta_api"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# .agents/snippets/ are documentation examples, not production code.
+# alembic/ is framework-generated scaffolding (env.py + versions/), not house-style code.
+exclude = [".agents", "alembic"]
 
 [tool.ruff.lint]
 select = [
@@ -56,6 +66,7 @@ max-complexity = 10
 "test/test_repo_manager.py" = ["S603", "S607"]
 "test/test_repos.py" = ["S603", "S607"]
 "test/test_projects.py" = ["S603", "S607"]
+"test/test_orqlite_smoke.py" = ["S603", "S607"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -63,6 +74,14 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["test"]
 asyncio_mode = "auto"
+markers = [
+    "orqlite: requires the real orq-lite binary on PATH (skipped otherwise)",
+]
 
 [tool.pyrefly]
 python-version = "3.12"
+# test/: pytest fakes intentionally violate nominal types (in-memory stand-ins
+# for asyncio.Process etc., CES-64), and the prek CI job runs pyrefly without
+# the project's dev deps installed, so pytest itself is unresolvable there.
+# alembic/: framework-generated scaffolding. .agents/: documentation snippets.
+project-excludes = ["test/**", "alembic/**", ".agents/**"]

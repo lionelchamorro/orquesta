@@ -1,7 +1,8 @@
 "use client"
 
 import { useState } from "react"
-import { Play, GitBranch, Folder, GitPullRequest, CircleDot } from "lucide-react"
+import Link from "next/link"
+import { GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
@@ -9,9 +10,11 @@ import { FactoryQueue } from "@/components/console/factory-queue"
 import { TasksTable } from "@/components/console/tasks-table"
 import { LiveEvents } from "@/components/console/live-events"
 import { GlobalChat } from "@/components/console/global-chat"
+import { FlowLauncher } from "@/components/console/flow-launcher"
+import { RunHistory } from "@/components/console/run-history"
 import type { Project } from "@/lib/types"
 
-const tabs = ["Factory", "Tasks", "Chat"] as const
+const tabs = ["Factory", "Tasks", "Runs", "Chat"] as const
 type Tab = (typeof tabs)[number]
 
 export function ProjectView({ project }: { project: Project }) {
@@ -73,9 +76,10 @@ export function ProjectView({ project }: { project: Project }) {
         <div className="mt-5">
           {tab === "Factory" && <FactoryQueue features={project.features} />}
           {tab === "Tasks" && <TasksTable tasks={project.tasks} />}
+          {tab === "Runs" && <RunHistory projectId={project.id} />}
           {tab === "Chat" && (
             <div className="h-[60vh] overflow-hidden rounded-xl border border-border bg-card">
-              <GlobalChat compact projects={[project]} />
+              <GlobalChat compact />
             </div>
           )}
         </div>
@@ -92,13 +96,71 @@ export function ProjectView({ project }: { project: Project }) {
 }
 
 export function ProjectActions({ project }: { project: Project }) {
+  const [launchingWatch, setLaunchingWatch] = useState(false)
+  const [watchMessage, setWatchMessage] = useState("")
+
+  const isRunning = project.state === "running"
+  const watchEnabled = project.watch.prs || project.watch.issues
+
+  async function launchWatchDaemon() {
+    setLaunchingWatch(true)
+    setWatchMessage("")
+    try {
+      const res = await fetch(`/api/control-plane/projects/${project.id}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "watch" }),
+      })
+      if (res.status === 409) {
+        setWatchMessage("run already active")
+        return
+      }
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}))
+        setWatchMessage(`launch failed: ${detail?.detail ?? `HTTP ${res.status}`}`)
+        return
+      }
+      setWatchMessage("watch daemon started")
+    } catch (err) {
+      setWatchMessage(`launch failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setLaunchingWatch(false)
+    }
+  }
+
   return (
     <>
       <StatusBadge status={project.state} />
-      <Button size="sm" className="font-mono text-xs">
-        <Play className="h-3.5 w-3.5" />
-        Run factory
+      <Button asChild size="sm" variant="outline" className="font-mono text-xs">
+        <Link href={`/projects/${project.id}/office`}>
+          <Gamepad2 className="h-3.5 w-3.5" />
+          Office
+        </Link>
       </Button>
+      <FlowLauncher projectId={project.id} disabled={isRunning} />
+      {watchEnabled && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="font-mono text-xs"
+          disabled={isRunning || launchingWatch}
+          onClick={launchWatchDaemon}
+          title="Fallback for projects without a GitHub webhook configured: supervises `orq-lite watch --prs --issues` as a long-lived run"
+        >
+          <Radar className="h-3.5 w-3.5" />
+          Start watch daemon
+        </Button>
+      )}
+      {watchMessage && (
+        <span
+          className={cn(
+            "font-mono text-[11px]",
+            watchMessage.startsWith("launch failed") ? "text-err" : "text-muted-foreground",
+          )}
+        >
+          {watchMessage}
+        </span>
+      )}
     </>
   )
 }

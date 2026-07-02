@@ -12,17 +12,20 @@ function Toggle({
   on,
   label,
   onClick,
+  disabled,
 }: {
   on: boolean
   label: string
   onClick: () => void
+  disabled?: boolean
 }) {
   return (
     <button
       onClick={onClick}
       role="switch"
       aria-checked={on}
-      className="flex items-center gap-2 font-mono text-[11px]"
+      disabled={disabled}
+      className={cn("flex items-center gap-2 font-mono text-[11px]", disabled && "cursor-not-allowed opacity-50")}
     >
       <span
         className={cn(
@@ -47,43 +50,86 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState({ name: "", repo: "", path: "", branch: "main" })
   const [error, setError] = useState("")
+  const [watchInFlight, setWatchInFlight] = useState<Set<string>>(new Set())
 
-  function toggleWatch(id: string, key: "prs" | "issues") {
+  async function toggleWatch(id: string, key: "prs" | "issues") {
+    if (watchInFlight.has(id)) return
+    const project = projects.find((p) => p.id === id)
+    if (!project) return
+    const originalWatch = project.watch
+    const newWatch = { ...originalWatch, [key]: !originalWatch[key] }
+
+    setWatchInFlight((prev) => new Set(prev).add(id))
+
+    // Optimistic update
     setProjects((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, watch: { ...p.watch, [key]: !p.watch[key] } } : p,
-      ),
+      prev.map((p) => (p.id === id ? { ...p, watch: newWatch } : p)),
     )
+
+    try {
+      const res = await fetch(`/api/control-plane/projects/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ watch: newWatch }),
+      })
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}))
+        setProjects((prev) =>
+          prev.map((p) => (p.id === id ? { ...p, watch: originalWatch } : p)),
+        )
+        setError(`watch toggle rejected: ${detail?.detail ?? `HTTP ${res.status}`}`)
+      }
+    } catch (err) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, watch: originalWatch } : p)),
+      )
+      setError(`watch toggle failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setWatchInFlight((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }
   }
 
-  function addProject(e: React.FormEvent) {
+  const [saving, setSaving] = useState(false)
+
+  async function addProject(e: React.FormEvent) {
     e.preventDefault()
     const name = form.name.trim()
     if (!name) return
-    if (projects.some((p) => p.id === name)) {
+    if (projects.some((p) => p.id === name || p.name === name)) {
       setError(`project add rejected: "${name}" already exists`)
       return
     }
-    const next: Project = {
-      id: name,
-      name,
-      repo_url: form.repo.trim() || `github.com/you/${name}`,
-      workspace_path: form.path.trim() || `~/code/${name}`,
-      base_branch: form.branch.trim() || "main",
-      watch: { prs: false, issues: false },
-      state: "idle",
-      description: "Newly registered project.",
-      language: "—",
-      cost_usd: 0,
-      last_run: new Date().toISOString(),
-      tasks: [],
-      features: [],
-      events: [],
-    }
-    setProjects((prev) => [...prev, next])
-    setForm({ name: "", repo: "", path: "", branch: "main" })
     setError("")
-    setAdding(false)
+    setSaving(true)
+    try {
+      const res = await fetch("/api/control-plane/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          repo_url: form.repo.trim() || null,
+          workspace_path: form.path.trim() || null,
+          base_branch: form.branch.trim() || "main",
+        }),
+      })
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}))
+        setError(`project add rejected: ${detail?.detail ?? `HTTP ${res.status}`}`)
+        return
+      }
+      const created: Project = await res.json()
+      setProjects((prev) => [...prev, created])
+      setForm({ name: "", repo: "", path: "", branch: "main" })
+      setAdding(false)
+    } catch (err) {
+      setError(`project add failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -149,8 +195,8 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
           </div>
           {error && <p className="font-mono text-[11px] text-err sm:col-span-2">{error}</p>}
           <div className="sm:col-span-2">
-            <Button type="submit" size="sm" className="font-mono text-xs">
-              orq-lite project add
+            <Button type="submit" size="sm" className="font-mono text-xs" disabled={saving}>
+              {saving ? "registering…" : "orq-lite project add"}
             </Button>
           </div>
         </form>
@@ -191,11 +237,12 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-col gap-1.5">
-                    <Toggle on={p.watch.prs} label="PRs" onClick={() => toggleWatch(p.id, "prs")} />
+                    <Toggle on={p.watch.prs} label="PRs" onClick={() => toggleWatch(p.id, "prs")} disabled={watchInFlight.has(p.id)} />
                     <Toggle
                       on={p.watch.issues}
                       label="Issues"
                       onClick={() => toggleWatch(p.id, "issues")}
+                      disabled={watchInFlight.has(p.id)}
                     />
                   </div>
                 </td>

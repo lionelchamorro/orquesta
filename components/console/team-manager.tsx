@@ -5,7 +5,7 @@ import { Bot, Braces, Check, Copy, ListPlus, Save, Shield, Trash2, Users } from 
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
-import type { AgentDefinition, AgentProvider, TeamDefinition, TeamRoleDefinition } from "@/lib/types"
+import type { AgentDefinition, AgentProvider, Project, TeamDefinition, TeamRoleDefinition } from "@/lib/types"
 
 const providers: AgentProvider[] = ["codex", "claude", "gemini", "opencode", "cmd"]
 
@@ -30,12 +30,35 @@ function teamExport(team: TeamDefinition) {
   }
 }
 
-export function TeamManager({ initialTeams }: { initialTeams: TeamDefinition[] }) {
+export function TeamManager({
+  initialTeams,
+  projects = [],
+  initialProjectId,
+}: {
+  initialTeams: TeamDefinition[]
+  projects?: Project[]
+  initialProjectId?: string
+}) {
   const [teams, setTeams] = useState(initialTeams)
+  const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "")
   const [selectedId, setSelectedId] = useState(initialTeams[0]?.id ?? "default")
   const [message, setMessage] = useState("")
   const selected = teams.find((team) => team.id === selectedId) ?? teams[0]
   const selectedJson = useMemo(() => JSON.stringify(selected ? teamExport(selected) : {}, null, 2), [selected])
+
+  async function switchProject(nextProjectId: string) {
+    setProjectId(nextProjectId)
+    setMessage("Loading team...")
+    const res = await fetch(`/api/control-plane/projects/${nextProjectId}/team`, { cache: "no-store" })
+    if (!res.ok) {
+      setMessage(`Could not load team for ${nextProjectId}`)
+      return
+    }
+    const team: TeamDefinition = await res.json()
+    setTeams([team])
+    setSelectedId(team.id)
+    setMessage("")
+  }
 
   function updateSelected(patch: Partial<TeamDefinition>) {
     if (!selected) return
@@ -95,9 +118,9 @@ export function TeamManager({ initialTeams }: { initialTeams: TeamDefinition[] }
   }
 
   async function saveSelected() {
-    if (!selected) return
+    if (!selected || !projectId) return
     setMessage("Saving team...")
-    const res = await fetch(`/api/control-plane/teams/${selected.id}`, {
+    const res = await fetch(`/api/control-plane/projects/${projectId}/team`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(selected),
@@ -112,6 +135,18 @@ export function TeamManager({ initialTeams }: { initialTeams: TeamDefinition[] }
   return (
     <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)]">
       <div className="space-y-4">
+        {projects.length > 0 && (
+          <div className="rounded-xl border border-border bg-card p-3">
+            <p className="mb-2 font-mono text-xs uppercase tracking-wide text-muted-foreground">Editing project</p>
+            <select
+              value={projectId}
+              onChange={(event) => switchProject(event.target.value)}
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+            >
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+          </div>
+        )}
         <div className="rounded-xl border border-border bg-card p-3">
           <p className="mb-3 font-mono text-xs uppercase tracking-wide text-muted-foreground">Teams</p>
           <div className="space-y-1">

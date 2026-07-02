@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# zizmor: excessive-permissions — deny everything by default; each job opts
+# into exactly what it needs.
+permissions: {}
+
+jobs:
+  python:
+    name: python (ruff + pytest)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # zizmor: artipacked — the checked-out credential is not needed
+          # after checkout and must not persist into later steps.
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.9"
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: ruff check
+        run: uv run ruff check .
+      - name: ruff format --check
+        run: uv run ruff format --check .
+      - name: pytest
+        run: uv run pytest -v
+      - name: alembic upgrade / downgrade / upgrade round-trip
+        run: |
+          rm -f /tmp/orquesta_ci.db
+          DATABASE_URL="sqlite+aiosqlite:////tmp/orquesta_ci.db" uv run alembic upgrade head
+          DATABASE_URL="sqlite+aiosqlite:////tmp/orquesta_ci.db" uv run alembic downgrade base
+          DATABASE_URL="sqlite+aiosqlite:////tmp/orquesta_ci.db" uv run alembic upgrade head
+
+  web:
+    name: web (typecheck + lint + build)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # --frozen-lockfile: fail on any drift between package.json and
+      # pnpm-lock.yaml instead of silently resolving a different dependency
+      # set than what's committed.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run test
+      - run: pnpm run build
+        env:
+          # A build-time-only placeholder so pages that read it don't crash;
+          # no real backend is reachable in CI, and that's fine — force-
+          # dynamic routes render at request time, not build time.
+          ORQUESTA_API_URL: ""

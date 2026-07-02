@@ -2,9 +2,9 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TaskStatus(str, Enum):
@@ -32,11 +32,16 @@ class VerifyState(str, Enum):
 
 
 class AgentRole(str, Enum):
+    planner = "planner"
     parser = "parser"
     coder = "coder"
     tester = "tester"
     critic = "critic"
     reviewer = "reviewer"
+    verifier = "verifier"
+    compactor = "compactor"
+    generalist = "generalist"
+    intake = "intake"
 
 
 class FeatureStatus(str, Enum):
@@ -48,14 +53,32 @@ class FeatureStatus(str, Enum):
 
 
 class EventKind(str, Enum):
+    # Emitted by orq-lite itself in run.log / GET /api/events (verified against
+    # orquesta-lite/internal/web/server.go + eventlog — real wire vocabulary,
+    # not the earlier-guessed set).
     agent_run = "agent_run"
+    agent_diff = "agent_diff"
     task_start = "task_start"
     task_done = "task_done"
+    task_done_no_commit = "task_done_no_commit"
     task_failed = "task_failed"
     cycle_start = "cycle_start"
     cycle_end = "cycle_end"
+    cycle_verification = "cycle_verification"
+    cycle_verification_error = "cycle_verification_error"
     tester_verification_failed = "tester_verification_failed"
     full_suite_failed = "full_suite_failed"
+    run_start = "run_start"
+    run_end = "run_end"
+    plan_written = "plan_written"
+    rate_limit_wait = "rate_limit_wait"
+    handoff_written = "handoff_written"
+    task_routed = "task_routed"
+    # Emitted by orquesta's own RunSupervisor (services/runs.py) — the
+    # control-plane's process-launch lifecycle, distinct from orq-lite's own
+    # internal run_start/run_end above.
+    run_started = "run_started"
+    run_finished = "run_finished"
 
 
 class RunState(str, Enum):
@@ -72,6 +95,12 @@ class RunKind(str, Enum):
     run = "run"
     factory = "factory"
     plan = "plan"
+    flow = "flow"
+    # Long-lived daemon (`orq-lite watch --prs --issues`); supervised the same
+    # way as any other run (Task 3) — it just doesn't exit until stop() is
+    # called. Fallback for projects with watch enabled but no GitHub webhook
+    # configured (Task 13).
+    watch = "watch"
 
 
 class ContainerState(str, Enum):
@@ -92,9 +121,9 @@ class ProjectState(str, Enum):
 class Task(BaseModel):
     id: str
     status: TaskStatus
-    verify_state: VerifyState
+    verify_state: VerifyState = VerifyState.empty
     attempts: int
-    last_agent: AgentRole | Literal[""]
+    last_agent: str = ""
     title: str
     failure_reason: str | None = None
 
@@ -102,18 +131,22 @@ class Task(BaseModel):
 class Feature(BaseModel):
     id: str
     status: FeatureStatus
-    branch: str
-    tasks_done: int
-    tasks_failed: int
-    cost_usd: float
+    branch: str = ""
+    tasks_done: int = 0
+    tasks_failed: int = 0
+    cost_usd: float = 0.0
     title: str
     pr_url: str | None = None
 
 
 class RunEvent(BaseModel):
+    # extra="allow" lets future orq-lite fields (e.g. run_id) and control-plane
+    # lifecycle stamping pass through without a model change on every rev.
+    model_config = ConfigDict(extra="allow")
+
     ts: str
     event: EventKind
-    role: AgentRole | None = None
+    role: str | None = None
     agent: str | None = None
     status: str | None = None
     task_id: str | None = None
@@ -183,14 +216,16 @@ class Run(BaseModel):
     base_sha: str | None = None
     head_sha: str | None = None
     error: str | None = None
+    orq_run_id: str | None = None
 
 
 class RunSpec(BaseModel):
     project_id: str
     workspace_path: str
     kind: RunKind
-    serve: bool = True
     plan_path: str | None = None
+    flow: str | None = None
+    inputs: dict[str, str] = Field(default_factory=dict)
     args: list[str] = Field(default_factory=list)
 
 
@@ -198,6 +233,7 @@ class RunHandle(BaseModel):
     container_id: str | None = None
     pid: int | None = None
     api_port: int | None = None
+    run_id: str | None = None
 
 
 class Container(BaseModel):
@@ -258,23 +294,112 @@ class TeamDefinition(BaseModel):
     source: Literal["mock", "orq-lite", "orquesta-api"] | None = "orquesta-api"
 
 
+class StepType(str, Enum):
+    """Engine step kinds — mirrors orquesta-lite/internal/engine/engine.go:37-79."""
+
+    agent = "agent"
+    command = "command"
+    action = "action"
+    loop = "loop"
+    retry_until = "retry_until"
+    eval = "eval"
+
+
 class FlowStep(BaseModel):
-    id: str
-    label: str
-    command: str = "orq-lite"
-    args: list[str] = Field(default_factory=list)
-    role: str | None = None
-    depends_on: list[str] = Field(default_factory=list)
-    description: str | None = None
+    """A single engine step. Recursive: loop/retry_until steps nest a body.
+
+    Field-for-field the engine's Step struct (orquesta-lite/internal/engine/
+    engine.go) and nothing else — flows.json is a user-owned file the engine
+    parses, so this model must not invent fields that would be written back
+    into it on save.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: StepType
+    agent: str | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    action: str | None = None
+    inputs: dict[str, Any] | None = None
+    outputs: dict[str, Any] | None = None
+    iterator: str | None = None
+    as_: str | None = Field(default=None, alias="as")
+    body: list["FlowStep"] | None = None
+    condition: str | None = None
+    max_retries: int | None = None
+    expression: str | None = None
+    on_failure: Literal["", "continue"] | None = None
+
+
+FlowStep.model_rebuild()
+
+
+class FlowInputSpec(BaseModel):
+    type: str | None = None
+    default: Any | None = None
+
+
+def _step_type_ok(step: FlowStep) -> bool:
+    """Whether *step* satisfies its type's required fields (engine.Validate rules)."""
+    checks: dict[StepType, bool] = {
+        StepType.command: bool(step.command) != bool(step.args),
+        StepType.action: bool(step.action),
+        StepType.agent: bool(step.agent),
+        StepType.loop: bool(step.iterator and step.as_),
+        StepType.retry_until: bool(step.condition),
+        StepType.eval: bool(step.expression),
+    }
+    return checks.get(step.type, True)
+
+
+_STEP_TYPE_ERROR: dict[StepType, str] = {
+    StepType.command: "command steps require exactly one of command/args",
+    StepType.action: "action steps require 'action'",
+    StepType.agent: "agent steps require 'agent'",
+    StepType.loop: "loop steps require 'iterator' and 'as'",
+    StepType.retry_until: "retry_until steps require 'condition'",
+    StepType.eval: "eval steps require 'expression'",
+}
+
+
+def _validate_step_body(step: FlowStep, locator: str) -> list[dict[str, str]]:
+    """Type-specific requirements for a single step (excluding on_failure and body)."""
+    if _step_type_ok(step):
+        return []
+    return [{"step": locator, "error": _STEP_TYPE_ERROR[step.type]}]
+
+
+def validate_flow_steps(steps: list[FlowStep], path: str = "") -> list[dict[str, str]]:
+    """Mirror the subset of orq-lite's engine.Validate that can be checked client-side.
+
+    Returns a list of {"step": <locator>, "error": <message>} dicts; empty when valid.
+    """
+    errors: list[dict[str, str]] = []
+    for index, step in enumerate(steps):
+        locator = f"{path}steps[{index}]({step.type.value})"
+        errors.extend(_validate_step_body(step, locator))
+        if step.body:
+            errors.extend(validate_flow_steps(step.body, path=f"{locator}."))
+        if step.on_failure not in (None, "", "continue"):
+            errors.append({"step": locator, "error": f"invalid on_failure {step.on_failure!r}"})
+    return errors
 
 
 class FlowDefinition(BaseModel):
+    """One entry of flows.json's `flows` map.
+
+    The engine's Flow struct is exactly {description?, inputs?, steps}; only
+    those three keys are ever written back to disk (routers/flows.py). The
+    rest are read-side conveniences: `id` is the flows-map key, `name` a
+    display default, `entrypoint` the CLI invocation hint, `source` where
+    the data came from.
+    """
+
     id: str
     name: str
-    description: str = "Configured orq-lite flow"
-    team_id: str = "default"
+    description: str = ""
     entrypoint: str = ""
-    variables: dict[str, str] = Field(default_factory=dict)
+    inputs: dict[str, FlowInputSpec] = Field(default_factory=dict)
     steps: list[FlowStep] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
     source: Literal["mock", "orq-lite", "orquesta-api"] | None = "orquesta-api"

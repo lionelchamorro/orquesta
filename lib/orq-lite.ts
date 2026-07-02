@@ -1,68 +1,61 @@
-import { flows as mockFlows, projects as mockProjects, teams as mockTeams } from "./mock-data"
-import type { AgentDefinition, Feature, FlowDefinition, Project, Task, TeamDefinition, TeamRoleDefinition } from "./types"
+import { flows as mockFlows, teams as mockTeams } from "./mock-data"
+import type { AgentDefinition, FlowDefinition, FlowStep, Project, TeamDefinition, TeamRoleDefinition } from "./types"
 
-type RawTask = Partial<Task> & { description?: string }
-type RawTasks = { tasks?: RawTask[] }
-type RawFeature = Partial<Feature> & { started_at?: string; finished_at?: string }
-type RawFactory = { base_branch?: string; features?: RawFeature[] } | null
-type RawCost = { available?: boolean; total_usd?: number }
 type RawAgent = Omit<Partial<AgentDefinition>, "id"> & { provider?: string; cmd?: string[] }
 type RawTeamRole = Partial<TeamRoleDefinition>
 type RawTeam = Partial<TeamDefinition> & {
   agents?: Record<string, RawAgent> | AgentDefinition[]
   roles?: Record<string, RawTeamRole> | TeamRoleDefinition[]
 }
-type RawFlow = Partial<FlowDefinition> & { team?: string; command?: string; args?: string[] }
-
-const defaultProjectId = process.env.ORQ_LITE_PROJECT_ID ?? "orquestalite"
-const defaultProjectName = process.env.ORQ_LITE_PROJECT_NAME ?? "orquestalite"
-const defaultProjectRepo = process.env.ORQ_LITE_REPO_URL ?? "github.com/lionelchamorro/orquestalite"
-const defaultWorkspace = process.env.ORQ_LITE_WORKSPACE_PATH ?? "."
-
-export function orqLiteBaseURL() {
-  return (process.env.ORQ_LITE_API_URL ?? process.env.NEXT_PUBLIC_ORQ_LITE_API_URL ?? "").replace(/\/$/, "")
+type RawFlowStep = Partial<FlowStep>
+type RawFlow = Partial<Omit<FlowDefinition, "steps">> & {
+  steps?: RawFlowStep[]
 }
 
 export function orquestaApiBaseURL() {
   return (process.env.ORQUESTA_API_URL ?? process.env.NEXT_PUBLIC_ORQUESTA_API_URL ?? "").replace(/\/$/, "")
 }
 
-export async function getProjects(): Promise<Project[]> {
-  const controlPlaneProjects = await getControlPlaneProjects()
-  if (controlPlaneProjects.length > 0) return controlPlaneProjects
+// Mock/demo data must be opt-in. Without ORQUESTA_DEMO=1, an unconfigured or
+// unreachable control plane renders as empty/error, never silently as demo
+// data masquerading as real state.
+function demoModeEnabled(): boolean {
+  return process.env.ORQUESTA_DEMO === "1"
+}
 
-  const live = await getLiveProject()
-  return live ? [live] : mockProjects
+export async function getProjects(): Promise<Project[]> {
+  return getControlPlaneProjects()
 }
 
 export async function getProject(id: string): Promise<Project | undefined> {
   const baseURL = orquestaApiBaseURL()
-  if (baseURL) {
-    const project = await fetchJSON<Project | undefined>(`${baseURL}/projects/${id}`, undefined)
-    if (project) return { ...project, source: project.source ?? "orq-lite" }
-  }
-
-  const live = await getLiveProject()
-  if (live) return live.id === id ? live : undefined
-  return mockProjects.find((p) => p.id === id)
+  if (!baseURL) return undefined
+  const project = await fetchJSON<Project | undefined>(`${baseURL}/projects/${id}`, undefined)
+  return project ? { ...project, source: project.source ?? "orq-lite" } : undefined
 }
 
-export async function getFlows(): Promise<FlowDefinition[]> {
+export async function getFlows(projectId?: string): Promise<FlowDefinition[]> {
   const baseURL = orquestaApiBaseURL()
-  if (!baseURL) return mockFlows
+  if (!baseURL) return demoModeEnabled() ? mockFlows : []
+  if (!projectId) return []
 
-  const raw = await fetchJSON<unknown>(`${baseURL}/flows`, undefined)
-  const flows = normalizeFlows(raw)
-  return flows.length > 0 ? flows : mockFlows
+  const raw = await fetchJSON<unknown>(`${baseURL}/projects/${projectId}/flows`, undefined)
+  // Backend is the source of truth once configured (flows.json is seeded with
+  // real defaults); reflect an empty list as empty instead of masking it with
+  // mock flows.
+  return normalizeFlows(raw)
 }
 
-export async function getTeams(): Promise<TeamDefinition[]> {
+export async function getTeams(projectId?: string): Promise<TeamDefinition[]> {
   const baseURL = orquestaApiBaseURL()
-  if (!baseURL) return mockTeams
+  if (!baseURL) return demoModeEnabled() ? mockTeams : []
+  if (!projectId) return demoModeEnabled() ? mockTeams : []
 
-  const raw = await fetchJSON<unknown>(`${baseURL}/teams`, undefined)
-  const teams = normalizeTeams(raw)
-  return teams.length > 0 ? teams : mockTeams
+  // GET /projects/{projectId}/team returns a single TeamDefinition, not an array.
+  const raw = await fetchJSON<unknown>(`${baseURL}/projects/${projectId}/team`, undefined)
+  if (!raw) return demoModeEnabled() ? mockTeams : []
+  // Wrap in array for backward-compatibility with callers that expect TeamDefinition[].
+  return normalizeTeams(Array.isArray(raw) ? raw : [raw])
 }
 
 async function getControlPlaneProjects(): Promise<Project[]> {
@@ -78,82 +71,21 @@ async function getControlPlaneProjects(): Promise<Project[]> {
   }))
 }
 
-async function getLiveProject(): Promise<Project | undefined> {
-  const baseURL = orqLiteBaseURL()
-  if (!baseURL) return undefined
-
-  try {
-    const [tasksRaw, factoryRaw, costRaw] = await Promise.all([
-      fetchJSON<RawTasks>(`${baseURL}/api/tasks`, { tasks: [] }),
-      fetchJSON<RawFactory>(`${baseURL}/api/factory`, null),
-      fetchJSON<RawCost>(`${baseURL}/api/cost`, { available: false }),
-    ])
-
-    const tasks = normalizeTasks(tasksRaw)
-    const features = normalizeFeatures(factoryRaw)
-    const running =
-      tasks.some((t) => t.status === "in_progress") ||
-      features.some((f) => f.status === "in_progress")
-    const needsHuman =
-      tasks.some((t) => t.status === "needs_human" || t.status === "failed") ||
-      features.some((f) => f.status === "failed")
-    const lastRun = latestTimestamp(factoryRaw?.features ?? []) ?? new Date(0).toISOString()
-
-    return {
-      id: defaultProjectId,
-      name: defaultProjectName,
-      repo_url: defaultProjectRepo,
-      workspace_path: defaultWorkspace,
-      base_branch: factoryRaw?.base_branch ?? process.env.ORQ_LITE_BASE_BRANCH ?? "main",
-      watch: { prs: false, issues: false },
-      state: running ? "running" : needsHuman ? "needs_human" : "idle",
-      description: "Live state from orq-lite serve.",
-      language: process.env.ORQ_LITE_LANGUAGE ?? "Go",
-      tasks,
-      features,
-      events: [],
-      cost_usd: costRaw.available ? (costRaw.total_usd ?? 0) : features.reduce((sum, f) => sum + f.cost_usd, 0),
-      last_run: lastRun,
-      source: "orq-lite",
-    }
-  } catch {
-    return undefined
-  }
-}
-
 async function fetchJSON<T>(url: string, fallback: T): Promise<T> {
   try {
-    const res = await fetch(url, { cache: "no-store" })
+    // Server Components fetch the control plane directly (not through the
+    // /api/control-plane proxy), so the token has to be attached here too —
+    // server-side only, ORQUESTA_API_TOKEN is never a NEXT_PUBLIC_* var.
+    const token = process.env.ORQUESTA_API_TOKEN
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
     if (!res.ok) return fallback
     return (await res.json()) as T
   } catch {
     return fallback
   }
-}
-
-function normalizeTasks(raw: RawTasks): Task[] {
-  return (raw.tasks ?? []).map((task, index) => ({
-    id: task.id ?? `T${String(index + 1).padStart(3, "0")}`,
-    status: task.status ?? "pending",
-    verify_state: task.verify_state || "pending",
-    attempts: task.attempts ?? 0,
-    last_agent: task.last_agent ?? "",
-    title: task.title ?? task.description ?? "Untitled task",
-    failure_reason: task.failure_reason,
-  }))
-}
-
-function normalizeFeatures(raw: RawFactory): Feature[] {
-  return (raw?.features ?? []).map((feature, index) => ({
-    id: feature.id ?? `F${String(index + 1).padStart(3, "0")}`,
-    status: feature.status ?? "pending",
-    branch: feature.branch ?? "",
-    tasks_done: feature.tasks_done ?? 0,
-    tasks_failed: feature.tasks_failed ?? 0,
-    cost_usd: feature.cost_usd ?? 0,
-    title: feature.title ?? "Untitled feature",
-    pr_url: feature.pr_url,
-  }))
 }
 
 function normalizeFlows(raw: unknown): FlowDefinition[] {
@@ -172,23 +104,32 @@ function normalizeFlows(raw: unknown): FlowDefinition[] {
     return {
       id,
       name: rawFlow.name ?? id,
-      description: rawFlow.description ?? "Configured orq-lite flow.",
-      team_id: rawFlow.team_id ?? rawFlow.team ?? "default",
+      description: rawFlow.description ?? "",
       entrypoint: rawFlow.entrypoint ?? `orq-lite flow run ${id}`,
-      variables: rawFlow.variables ?? {},
-      steps: (rawFlow.steps ?? []).map((step, stepIndex) => ({
-        id: step.id ?? `step-${stepIndex + 1}`,
-        label: step.label ?? step.id ?? `Step ${stepIndex + 1}`,
-        command: step.command ?? rawFlow.command ?? "orq-lite",
-        args: step.args ?? rawFlow.args ?? [],
-        role: step.role,
-        depends_on: step.depends_on ?? [],
-        description: step.description,
-      })),
-      tags: rawFlow.tags ?? [],
+      inputs: rawFlow.inputs ?? {},
+      steps: (rawFlow.steps ?? []).map(normalizeFlowStep),
       source: rawFlow.source ?? "orquesta-api",
     }
   })
+}
+
+function normalizeFlowStep(step: RawFlowStep): FlowStep {
+  return {
+    type: step.type ?? "command",
+    agent: step.agent,
+    command: step.command,
+    args: step.args,
+    action: step.action,
+    inputs: step.inputs,
+    outputs: step.outputs,
+    iterator: step.iterator,
+    as: step.as,
+    body: step.body?.map(normalizeFlowStep),
+    condition: step.condition,
+    max_retries: step.max_retries,
+    expression: step.expression,
+    on_failure: step.on_failure,
+  }
 }
 
 function normalizeTeams(raw: unknown): TeamDefinition[] {
@@ -247,17 +188,6 @@ function normalizeRoles(raw: RawTeam["roles"]): TeamRoleDefinition[] {
     mode: value.mode,
     cycle_prompt: value.cycle_prompt,
   }))
-}
-
-function latestTimestamp(features: RawFeature[]) {
-  const times = features
-    .flatMap((f) => [f.finished_at, f.started_at])
-    .filter((value): value is string => Boolean(value))
-    .map((value) => new Date(value).getTime())
-    .filter(Number.isFinite)
-
-  if (times.length === 0) return undefined
-  return new Date(Math.max(...times)).toISOString()
 }
 
 function slug(value: string) {

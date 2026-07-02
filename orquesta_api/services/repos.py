@@ -85,7 +85,7 @@ class RepoManager:
         workspace = Path(repo_row.root)
 
         state = git.status(workspace)
-        if state["dirty"] and not force:
+        if state.dirty and not force:
             raise WorkspaceDirtyError(
                 f"Workspace for project '{project_id}' has uncommitted changes;"
                 " pass force=True to override"
@@ -141,9 +141,9 @@ class RepoManager:
         return row
 
 
-def _apply_git_state(row: RepoRow, state: dict[str, str | bool | None]) -> None:
-    row.head_sha = state["head_sha"]  # type: ignore[assignment]
-    row.current_branch = state["current_branch"]  # type: ignore[assignment]
-    row.dirty = bool(state["dirty"])
-    if state.get("remote_url") is not None:
-        row.remote_url = state["remote_url"]  # type: ignore[assignment]
+def _apply_git_state(row: RepoRow, state: git.GitStatus) -> None:
+    row.head_sha = state.head_sha
+    row.current_branch = state.current_branch
+    row.dirty = state.dirty
+    if state.remote_url is not None:
+        row.remote_url = state.remote_url

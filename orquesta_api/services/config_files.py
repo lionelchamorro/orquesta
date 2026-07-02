@@ -1,27 +1,31 @@
-"""Read and write orq-lite config files exposed by the control-plane API."""
+"""Read and write orq-lite config files exposed by the control-plane API.
+
+Both stores use a raw-dict read-modify-write strategy on the write path so that
+fields the Python model does not know about (e.g. ``rate_limit_backoff``,
+``limits.preflight_enabled``) are preserved when a partial patch is saved.
+"""
+
+from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any
 
-from orquesta_api.config import settings
 from orquesta_api.meta.models import (
     AgentDefinition,
     FlowDefinition,
+    FlowInputSpec,
     FlowStep,
+    StepType,
     TeamDefinition,
     TeamLimits,
     TeamRoleDefinition,
 )
 
-
-def _config_path(value: str) -> Path:
-    path = Path(value).expanduser()
-    if path.is_absolute():
-        return path
-    return Path.cwd() / path
+_KNOWN_STEP_TYPES = {member.value for member in StepType}
 
 
+# ast-grep-ignore: no-dict-return-annotation
 def _read_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
         return fallback
@@ -37,11 +41,68 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
 
 
-class FlowConfigStore:
-    """Store backed by flows.json, the file consumed by `orq-lite flow run`."""
+# ast-grep-ignore: no-dict-return-annotation
+def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Merge *patch* onto *base*, returning a new dict.
 
-    def __init__(self, path: str | None = None) -> None:
-        self.path = _config_path(path or settings.flows_path)
+    Rules:
+    - Keys in *base* that are absent from *patch* are preserved unchanged.
+    - If both ``base[key]`` and ``patch[key]`` are plain :class:`dict` instances
+      the merge recurses into them.
+    - For all other types (including :class:`list`) the patch value wins
+      outright — lists are replaced wholesale, never merged element-wise.
+    """
+    result = dict(base)
+    for key, patch_value in patch.items():
+        if key in result and isinstance(result[key], dict) and isinstance(patch_value, dict):
+            result[key] = _deep_merge(result[key], patch_value)
+        else:
+            result[key] = patch_value
+    return result
+
+
+# Module-level (not a FlowConfigStore method): the store's public `list()`
+# method shadows builtins.list inside the class body, breaking `list[...]`
+# annotations there.
+def _normalise_steps(steps: list[Any]) -> list[FlowStep]:
+    normalised: list[FlowStep] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_type = step.get("type")
+        if step_type not in _KNOWN_STEP_TYPES:
+            # Legacy shape (Task 5 and earlier) had no `type`; every step was
+            # an implicit CLI command invocation.
+            step_type = StepType.command.value
+        body = step.get("body")
+        normalised.append(
+            FlowStep(
+                type=StepType(step_type),
+                agent=step.get("agent"),
+                command=step.get("command"),
+                args=[str(arg) for arg in step["args"]]
+                if isinstance(step.get("args"), list)
+                else None,
+                action=step.get("action"),
+                inputs=step.get("inputs") if isinstance(step.get("inputs"), dict) else None,
+                outputs=step.get("outputs") if isinstance(step.get("outputs"), dict) else None,
+                iterator=step.get("iterator"),
+                **{"as": step.get("as")},
+                body=_normalise_steps(body) if isinstance(body, list) else None,
+                condition=step.get("condition"),
+                max_retries=step.get("max_retries"),
+                expression=step.get("expression"),
+                on_failure=step.get("on_failure") or None,
+            )
+        )
+    return normalised
+
+
+class FlowConfigStore:
+    """Store backed by ``flows.json``, the file consumed by ``orq-lite flow run``."""
+
+    def __init__(self, workspace: Path) -> None:
+        self.path = workspace / "flows.json"
 
     def list(self) -> list[FlowDefinition]:
         document = _read_json(self.path, {"flows": {}})
@@ -52,18 +113,28 @@ class FlowConfigStore:
             items = list(raw_flows.items())
         else:
             items = []
-        return [self._normalise_flow(flow_id, raw) for flow_id, raw in items if isinstance(raw, dict)]
+        return [
+            self._normalise_flow(flow_id, raw) for flow_id, raw in items if isinstance(raw, dict)
+        ]
 
-    def upsert(self, flow_id: str, flow: FlowDefinition) -> FlowDefinition:
+    def upsert(self, flow_id: str, patch: dict[str, Any]) -> FlowDefinition:
+        """Deep-merge *patch* onto the existing flow entry and write back.
+
+        The top-level ``flows`` document is preserved; only the entry for
+        *flow_id* is updated.  Unknown fields within that entry survive the
+        merge.
+        """
         document = _read_json(self.path, {"flows": {}})
         flows = document.setdefault("flows", {})
         if not isinstance(flows, dict):
             flows = {}
             document["flows"] = flows
-        saved = flow.model_copy(update={"id": flow_id, "source": "orquesta-api"})
-        flows[flow_id] = self._dump_flow(saved)
+
+        existing = flows.get(flow_id, {}) if isinstance(flows.get(flow_id), dict) else {}
+        merged = _deep_merge(existing, patch)
+        flows[flow_id] = merged
         _write_json(self.path, document)
-        return saved
+        return self._normalise_flow(flow_id, merged)
 
     def delete(self, flow_id: str) -> None:
         document = _read_json(self.path, {"flows": {}})
@@ -74,45 +145,29 @@ class FlowConfigStore:
 
     def _normalise_flow(self, flow_id: str, raw: dict[str, Any]) -> FlowDefinition:
         steps = raw.get("steps", [])
-        normalised_steps = []
-        if isinstance(steps, list):
-            for index, step in enumerate(steps):
-                if not isinstance(step, dict):
-                    continue
-                normalised_steps.append(
-                    FlowStep(
-                        id=str(step.get("id") or f"step-{index + 1}"),
-                        label=str(step.get("label") or step.get("id") or f"Step {index + 1}"),
-                        command=str(step.get("command") or raw.get("command") or "orq-lite"),
-                        args=[str(arg) for arg in step.get("args", raw.get("args", []))],
-                        role=step.get("role"),
-                        depends_on=[str(dep) for dep in step.get("depends_on", [])],
-                        description=step.get("description"),
-                    )
-                )
-        variables = raw.get("variables", {}) if isinstance(raw.get("variables", {}), dict) else {}
-        tags = raw.get("tags", []) if isinstance(raw.get("tags", []), list) else []
+        normalised_steps = _normalise_steps(steps) if isinstance(steps, list) else []
+        inputs_raw = raw.get("inputs", {}) if isinstance(raw.get("inputs", {}), dict) else {}
+        inputs = {
+            str(name): FlowInputSpec(type=spec.get("type"), default=spec.get("default"))
+            for name, spec in inputs_raw.items()
+            if isinstance(spec, dict)
+        }
         return FlowDefinition(
-            id=str(raw.get("id") or flow_id),
+            id=flow_id,
             name=str(raw.get("name") or flow_id),
-            description=str(raw.get("description") or "Configured orq-lite flow"),
-            team_id=str(raw.get("team_id") or raw.get("team") or "default"),
-            entrypoint=str(raw.get("entrypoint") or f"orq-lite flow run {flow_id}"),
-            variables={str(key): str(value) for key, value in variables.items()},
+            description=str(raw.get("description") or ""),
+            entrypoint=f"orq-lite flow run {flow_id}",
+            inputs=inputs,
             steps=normalised_steps,
-            tags=[str(tag) for tag in tags],
             source="orquesta-api",
         )
 
-    def _dump_flow(self, flow: FlowDefinition) -> dict[str, Any]:
-        return flow.model_dump(exclude={"source"}, exclude_none=True)
-
 
 class TeamConfigStore:
-    """Store backed by team.json, the roster consumed by orq-lite."""
+    """Store backed by ``team.json``, the roster consumed by orq-lite."""
 
-    def __init__(self, path: str | None = None) -> None:
-        self.path = _config_path(path or settings.team_path)
+    def __init__(self, workspace: Path) -> None:
+        self.path = workspace / "team.json"
 
     def list(self) -> list[TeamDefinition]:
         return [self.get("default")]
@@ -123,12 +178,17 @@ class TeamConfigStore:
         raw = _read_json(self.path, {})
         return self._normalise_team(raw)
 
-    def update(self, team_id: str, team: TeamDefinition) -> TeamDefinition:
-        if team_id != "default":
-            raise ValueError("orq-lite currently reads a single team.json; use team id 'default'")
-        saved = team.model_copy(update={"id": "default", "source": "orquesta-api"})
-        _write_json(self.path, self._dump_team(saved))
-        return saved
+    def update(self, patch: dict[str, Any]) -> TeamDefinition:
+        """Deep-merge *patch* onto the raw ``team.json`` dict and write back.
+
+        Fields present in the file but absent from *patch* (such as
+        ``rate_limit_backoff``) are preserved verbatim.  The merged raw dict is
+        then normalised into a :class:`TeamDefinition` for the API response.
+        """
+        raw = _read_json(self.path, {})
+        merged = _deep_merge(raw, patch)
+        _write_json(self.path, merged)
+        return self._normalise_team(merged)
 
     def _normalise_team(self, raw: dict[str, Any]) -> TeamDefinition:
         agents_raw = raw.get("agents", {}) if isinstance(raw.get("agents", {}), dict) else {}
@@ -167,27 +227,11 @@ class TeamConfigStore:
             description=str(raw.get("description") or "orq-lite team.json roster"),
             agents=agents,
             roles=roles,
-            limits=TeamLimits(**raw.get("limits", {})) if isinstance(raw.get("limits", {}), dict) else TeamLimits(),
+            limits=TeamLimits(**raw.get("limits", {}))
+            if isinstance(raw.get("limits", {}), dict)
+            else TeamLimits(),
             full_test_command=str(raw.get("full_test_command") or ""),
             lint_command=raw.get("lint_command") or "",
             conventions_file=raw.get("conventions_file"),
             source="orquesta-api",
         )
-
-    def _dump_team(self, team: TeamDefinition) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "agents": {},
-            "roles": {},
-            "limits": team.limits.model_dump(exclude_none=True),
-            "full_test_command": team.full_test_command,
-            "lint_command": team.lint_command or "",
-        }
-        if team.conventions_file:
-            payload["conventions_file"] = team.conventions_file
-        for agent in team.agents:
-            data = agent.model_dump(exclude={"id"}, exclude_none=True)
-            payload["agents"][agent.id] = data
-        for role in team.roles:
-            data = role.model_dump(exclude={"role"}, exclude_none=True)
-            payload["roles"][role.role] = data
-        return payload

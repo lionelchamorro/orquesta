@@ -1,39 +1,28 @@
 "use client"
 
 import { useMemo, useState, type FormEvent } from "react"
-import { Braces, Copy, GitBranch, ListPlus, Play, Save, Workflow, X } from "lucide-react"
+import { Braces, Copy, ListPlus, Play, Save, Workflow, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
-import type { FlowDefinition, FlowStep, Project, TeamDefinition } from "@/lib/types"
+import type { FlowDefinition, FlowStep, FlowStepType, Project } from "@/lib/types"
 
-function emptyStep(index: number): FlowStep {
-  return {
-    id: `step-${index}`,
-    label: `Step ${index}`,
-    command: "orq-lite",
-    args: [],
-    depends_on: [],
-  }
+const stepTypes: FlowStepType[] = ["command", "agent", "action", "loop", "retry_until", "eval"]
+
+function emptyStep(): FlowStep {
+  return { type: "command", command: "" }
 }
 
+// Exactly what the engine parses: {description?, inputs?, steps}. FlowStep
+// carries only engine fields, so the step objects serialize as-is
+// (JSON.stringify drops undefined keys).
 function flowExport(flow: FlowDefinition) {
   return {
     flows: {
       [flow.id]: {
-        name: flow.name,
         description: flow.description,
-        team_id: flow.team_id,
-        variables: flow.variables,
-        steps: flow.steps.map(({ id, label, command, args, role, depends_on, description }) => ({
-          id,
-          label,
-          command,
-          args,
-          role,
-          depends_on,
-          description,
-        })),
+        ...(flow.inputs && Object.keys(flow.inputs).length > 0 ? { inputs: flow.inputs } : {}),
+        steps: flow.steps,
       },
     },
   }
@@ -41,46 +30,59 @@ function flowExport(flow: FlowDefinition) {
 
 export function FlowManager({
   initialFlows,
-  teams,
   projects,
+  initialProjectId,
 }: {
   initialFlows: FlowDefinition[]
-  teams: TeamDefinition[]
   projects: Project[]
+  initialProjectId?: string
 }) {
   const [flows, setFlows] = useState(initialFlows)
+  const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "")
   const [selectedId, setSelectedId] = useState(initialFlows[0]?.id ?? "")
   const [adding, setAdding] = useState(false)
   const [message, setMessage] = useState("")
   const selected = flows.find((flow) => flow.id === selectedId) ?? flows[0]
   const selectedJson = useMemo(() => JSON.stringify(selected ? flowExport(selected) : {}, null, 2), [selected])
 
+  async function switchProject(nextProjectId: string) {
+    setProjectId(nextProjectId)
+    setMessage("Loading flows...")
+    const res = await fetch(`/api/control-plane/projects/${nextProjectId}/flows`, { cache: "no-store" })
+    if (!res.ok) {
+      setMessage(`Could not load flows for ${nextProjectId}`)
+      return
+    }
+    const next: FlowDefinition[] = await res.json()
+    setFlows(next)
+    setSelectedId(next[0]?.id ?? "")
+    setMessage("")
+  }
+
   function updateSelected(patch: Partial<FlowDefinition>) {
     if (!selected) return
     setFlows((prev) => prev.map((flow) => (flow.id === selected.id ? { ...flow, ...patch } : flow)))
   }
 
-  function updateStep(stepId: string, patch: Partial<FlowStep>) {
+  function updateStep(index: number, patch: Partial<FlowStep>) {
     if (!selected) return
     updateSelected({
-      steps: selected.steps.map((step) => (step.id === stepId ? { ...step, ...patch } : step)),
+      steps: selected.steps.map((step, i) => (i === index ? { ...step, ...patch } : step)),
     })
   }
 
   function addFlow(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
-    const id = String(data.get("id") ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")
+    const id = String(data.get("id") ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_")
     if (!id || flows.some((flow) => flow.id === id)) return
     const next: FlowDefinition = {
       id,
-      name: String(data.get("name") ?? id).trim() || id,
-      description: String(data.get("description") ?? "").trim() || "Configured orq-lite flow.",
-      team_id: String(data.get("team_id") ?? "default"),
+      name: id,
+      description: String(data.get("description") ?? "").trim(),
       entrypoint: `orq-lite flow run ${id}`,
-      variables: {},
-      steps: [emptyStep(1)],
-      tags: [],
+      inputs: {},
+      steps: [emptyStep()],
       source: "mock",
     }
     setFlows((prev) => [...prev, next])
@@ -91,9 +93,9 @@ export function FlowManager({
   }
 
   async function saveSelected() {
-    if (!selected) return
+    if (!selected || !projectId) return
     setMessage("Saving flow...")
-    const res = await fetch(`/api/control-plane/flows/${selected.id}`, {
+    const res = await fetch(`/api/control-plane/projects/${projectId}/flows/${selected.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(selected),
@@ -102,7 +104,23 @@ export function FlowManager({
   }
 
   if (!selected) {
-    return <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">No flows configured.</div>
+    return (
+      <div className="space-y-4">
+        {projects.length > 0 && (
+          <label className="flex max-w-xs flex-col gap-1">
+            <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Project</span>
+            <select
+              value={projectId}
+              onChange={(event) => switchProject(event.target.value)}
+              className="rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+            >
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+          </label>
+        )}
+        <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">No flows configured for this project.</div>
+      </div>
+    )
   }
 
   return (
@@ -137,18 +155,21 @@ export function FlowManager({
 
         {adding && (
           <form onSubmit={addFlow} className="space-y-3 rounded-xl border border-border bg-card p-3">
-            <input name="id" placeholder="release-train" className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-            <input name="name" placeholder="Release train" className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-            <select name="team_id" className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50">
-              {teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
-            </select>
+            <input name="id" placeholder="release_train" className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
             <textarea name="description" placeholder="What this flow runs" className="min-h-20 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" />
             <Button type="submit" size="sm" className="font-mono text-xs"><ListPlus />Add flow</Button>
           </form>
         )}
 
         <div className="rounded-xl border border-border bg-card p-4">
-          <p className="font-mono text-xs uppercase tracking-wide text-muted-foreground">Run target</p>
+          <p className="font-mono text-xs uppercase tracking-wide text-muted-foreground">Editing project</p>
+          <select
+            value={projectId}
+            onChange={(event) => switchProject(event.target.value)}
+            className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+          >
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+          </select>
           <div className="mt-3 space-y-2">
             {projects.slice(0, 5).map((project) => (
               <div key={project.id} className="flex items-center justify-between gap-2 font-mono text-xs">
@@ -164,11 +185,7 @@ export function FlowManager({
         <div className="rounded-xl border border-border bg-card p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <input
-                value={selected.name}
-                onChange={(event) => updateSelected({ name: event.target.value })}
-                className="w-full bg-transparent font-mono text-xl font-semibold outline-none"
-              />
+              <h1 className="font-mono text-xl font-semibold">{selected.id}</h1>
               <p className="mt-1 font-mono text-xs text-muted-foreground">{selected.entrypoint}</p>
             </div>
             <div className="flex items-center gap-2">
@@ -183,55 +200,126 @@ export function FlowManager({
           <textarea
             value={selected.description}
             onChange={(event) => updateSelected({ description: event.target.value })}
+            placeholder="Flow description"
             className="mt-4 min-h-20 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm leading-relaxed outline-none focus:border-primary/50"
           />
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <label className="flex flex-col gap-1">
-              <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Team</span>
-              <select value={selected.team_id} onChange={(event) => updateSelected({ team_id: event.target.value })} className="rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50">
-                {teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 md:col-span-2">
-              <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Tags</span>
-              <input value={selected.tags.join(", ")} onChange={(event) => updateSelected({ tags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean) })} className="rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-            </label>
-          </div>
+          {selected.inputs && Object.keys(selected.inputs).length > 0 && (
+            <div className="mt-4">
+              <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Inputs</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {Object.entries(selected.inputs).map(([name, spec]) => (
+                  <span key={name} className="rounded-full border border-border px-2.5 py-1 font-mono text-[11px] text-muted-foreground">
+                    {name}
+                    {spec.default !== undefined && <span className="opacity-60"> = {String(spec.default)}</span>}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="rounded-xl border border-border bg-card p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-mono text-sm font-semibold uppercase tracking-wide text-muted-foreground">Steps</h2>
-            <Button size="sm" variant="outline" className="font-mono text-xs" onClick={() => updateSelected({ steps: [...selected.steps, emptyStep(selected.steps.length + 1)] })}>
+            <Button size="sm" variant="outline" className="font-mono text-xs" onClick={() => updateSelected({ steps: [...selected.steps, emptyStep()] })}>
               <ListPlus />Step
             </Button>
           </div>
           <div className="space-y-3">
             {selected.steps.map((step, index) => (
-              <div key={step.id} className="rounded-lg border border-border bg-background p-4">
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px]">
+              <div key={index} className="rounded-lg border border-border bg-background p-4">
+                <div className="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)_140px]">
                   <label className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Label</span>
-                    <input value={step.label} onChange={(event) => updateStep(step.id, { label: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Type</span>
+                    <select
+                      value={step.type}
+                      onChange={(event) => updateStep(index, { type: event.target.value as FlowStepType })}
+                      className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+                    >
+                      {stepTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                    </select>
                   </label>
+                  <div className="flex items-end font-mono text-[11px] text-muted-foreground">
+                    step {index + 1} of {selected.steps.length}
+                  </div>
                   <label className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Role</span>
-                    <input value={step.role ?? ""} onChange={(event) => updateStep(step.id, { role: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">On failure</span>
+                    <select value={step.on_failure ?? ""} onChange={(event) => updateStep(index, { on_failure: event.target.value as "" | "continue" })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50">
+                      <option value="">stop</option>
+                      <option value="continue">continue</option>
+                    </select>
                   </label>
                 </div>
-                <div className="mt-3 grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
-                  <label className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Command</span>
-                    <input value={step.command} onChange={(event) => updateStep(step.id, { command: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+
+                {step.type === "command" && (
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Command (shell string)</span>
+                      <input value={step.command ?? ""} onChange={(event) => { const value = event.target.value; updateStep(index, { command: value || undefined, args: value ? undefined : step.args }) }} placeholder="go test ./..." className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Args (argv, alternative to command)</span>
+                      <input value={(step.args ?? []).join(" ")} onChange={(event) => { const args = event.target.value.split(" ").filter(Boolean); updateStep(index, { args: args.length > 0 ? args : undefined, command: args.length > 0 ? undefined : step.command }) }} placeholder="git push -u origin branch" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                    <p className="col-span-full font-mono text-[11px] text-muted-foreground">The engine requires exactly one of command / args — filling one clears the other.</p>
+                  </div>
+                )}
+
+                {step.type === "agent" && (
+                  <label className="mt-3 flex flex-col gap-1">
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Agent role</span>
+                    <input value={step.agent ?? ""} onChange={(event) => updateStep(index, { agent: event.target.value })} placeholder="coder" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
                   </label>
-                  <label className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Args</span>
-                    <input value={step.args.join(" ")} onChange={(event) => updateStep(step.id, { args: event.target.value.split(" ").filter(Boolean) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                )}
+
+                {step.type === "action" && (
+                  <label className="mt-3 flex flex-col gap-1">
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Action</span>
+                    <input value={step.action ?? ""} onChange={(event) => updateStep(index, { action: event.target.value })} placeholder="factory_extract_features" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
                   </label>
-                </div>
-                <div className="mt-3 flex items-center justify-between gap-3 font-mono text-[11px] text-muted-foreground">
-                  <span className="inline-flex items-center gap-1"><GitBranch className="h-3 w-3" />{step.depends_on.length ? step.depends_on.join(", ") : index === 0 ? "entry" : "linear"}</span>
-                  <Button size="icon-xs" variant="ghost" title="Remove step" onClick={() => updateSelected({ steps: selected.steps.filter((candidate) => candidate.id !== step.id) })}><X /></Button>
+                )}
+
+                {step.type === "loop" && (
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Iterator</span>
+                      <input value={step.iterator ?? ""} onChange={(event) => updateStep(index, { iterator: event.target.value })} placeholder="{features_queue}" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">As</span>
+                      <input value={step.as ?? ""} onChange={(event) => updateStep(index, { as: event.target.value })} placeholder="feature" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                  </div>
+                )}
+
+                {step.type === "retry_until" && (
+                  <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_120px]">
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Condition</span>
+                      <input value={step.condition ?? ""} onChange={(event) => updateStep(index, { condition: event.target.value })} placeholder="{task_verified} == true" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Max retries</span>
+                      <input type="number" value={step.max_retries ?? 1} onChange={(event) => updateStep(index, { max_retries: Number(event.target.value) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    </label>
+                  </div>
+                )}
+
+                {step.type === "eval" && (
+                  <label className="mt-3 flex flex-col gap-1">
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Expression</span>
+                    <input value={step.expression ?? ""} onChange={(event) => updateStep(index, { expression: event.target.value })} placeholder="{lint_res.pass} && {tester_res.pass}" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                  </label>
+                )}
+
+                {(step.type === "loop" || step.type === "retry_until") && step.body && step.body.length > 0 && (
+                  <p className="mt-3 font-mono text-[11px] text-muted-foreground">
+                    {step.body.length} nested step{step.body.length === 1 ? "" : "s"} — edit the body via the JSON export below.
+                  </p>
+                )}
+
+                <div className="mt-3 flex justify-end">
+                  <Button size="icon-xs" variant="ghost" title="Remove step" onClick={() => updateSelected({ steps: selected.steps.filter((_, i) => i !== index) })}><X /></Button>
                 </div>
               </div>
             ))}

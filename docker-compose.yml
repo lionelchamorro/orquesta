@@ -1,0 +1,51 @@
+services:
+  api:
+    build:
+      context: .
+      target: api
+    ports:
+      - "8000:8000"
+    environment:
+      ENV: production
+      DATABASE_URL: sqlite+aiosqlite:////data/orquesta_api.db
+      WORKSPACES_DIR: /data/workspaces
+      RUN_EXECUTOR: ${RUN_EXECUTOR:-local}
+      AUTH_TOKEN: ${AUTH_TOKEN:?set a real bearer token before running in production}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CHAT_MODEL: ${CHAT_MODEL:-claude-sonnet-5}
+      CREDS_MOUNTS: ${CREDS_MOUNTS:-~/.claude,~/.codex,~/.gemini}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - orquesta-data:/data
+      # Credentials for the agent CLIs orq-lite shells out to (claude/codex/
+      # gemini). Read-only: the control plane never needs to write here.
+      - ${HOME}/.claude:/home/orquesta/.claude:ro
+      - ${HOME}/.codex:/home/orquesta/.codex:ro
+      - ${HOME}/.gemini:/home/orquesta/.gemini:ro
+      # Uncomment when RUN_EXECUTOR=docker (Task 14): lets the control plane
+      # supervise sibling orq-lite containers instead of local subprocesses.
+      # - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      target: web
+    ports:
+      - "3000:3000"
+    environment:
+      ORQUESTA_API_URL: http://api:8000
+      ORQUESTA_API_TOKEN: ${AUTH_TOKEN:?set a real bearer token before running in production}
+      ORQUESTA_UI_PASSWORD: ${ORQUESTA_UI_PASSWORD:-}
+      ORQUESTA_DEMO: ${ORQUESTA_DEMO:-}
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  orquesta-data:

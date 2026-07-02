@@ -1,0 +1,45 @@
+# Example external reverse proxy for Orquesta (TLS-terminating, by IP/host).
+# The container exposes only the Next.js frontend on <host-ip>:3000.
+#
+# The two things that matter here:
+#   1. Everything is same-origin — you proxy ONE upstream (the frontend). The
+#      frontend itself proxies to the api/opencode internally. No CORS, no IP
+#      baked into the browser.
+#   2. Server-Sent Events (live events / run logs) MUST NOT be buffered.
+
+upstream orquesta_web {
+    server 127.0.0.1:3000;   # or the docker host IP if nginx runs elsewhere
+}
+
+server {
+    listen 443 ssl;
+    server_name orquesta.example.com;   # or the bare IP
+
+    ssl_certificate     /etc/ssl/certs/orquesta.crt;
+    ssl_certificate_key /etc/ssl/private/orquesta.key;
+
+    # SSE endpoints: disable buffering, keep connections open.
+    location ~ ^/api/(orq-lite/events|control-plane/runs/.*/logs) {
+        proxy_pass http://orquesta_web;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 24h;
+        chunked_transfer_encoding on;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        proxy_pass http://orquesta_web;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+    }
+}

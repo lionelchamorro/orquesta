@@ -5,26 +5,74 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from sqlalchemy import select
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from orquesta_api.db.session import engine
-from orquesta_api.db.tables import Base
+from orquesta_api.core.auth import bearer_auth_middleware, startup_check
+from orquesta_api.db.migrations import ensure_schema_current
+from orquesta_api.db.session import SessionLocal, engine
+from orquesta_api.db.tables import ProjectRow
 from orquesta_api.logger import get_logger
+from orquesta_api.routers.chat import router as chat_router
+from orquesta_api.routers.containers import images_router
+from orquesta_api.routers.containers import router as containers_router
+from orquesta_api.routers.events import router as events_router
 from orquesta_api.routers.flows import router as flows_router
+from orquesta_api.routers.history import router as history_router
 from orquesta_api.routers.projects import router as projects_router
 from orquesta_api.routers.repos import router as repos_router
 from orquesta_api.routers.runs import router as runs_router
 from orquesta_api.routers.teams import router as teams_router
+from orquesta_api.routers.webhooks import router as webhooks_router
+from orquesta_api.services.correlation import RunCorrelator
+from orquesta_api.services.events import EventIngestManager, get_event_bus
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
+from orquesta_api.services.runs import RunSupervisor, _make_executor
+from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
 
 
+class HealthResponse(BaseModel):
+    """Response body for GET /health."""
+
+    status: str = "ok"
+
+
 @asynccontextmanager
-async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables created => startup complete")
-    yield
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    await ensure_schema_current(engine)
+    logger.info("Database schema check complete => startup continuing")
+
+    # Reconcile any runs that were active when the API last shut down.
+    # Must run before serving requests so stale "running" rows are cleaned up.
+    async with SessionLocal() as session:
+        supervisor = RunSupervisor(session, executor=_make_executor())
+        await supervisor.reconcile()
+
+    serves = ServeManager()
+    app.state.serves = serves
+    events = get_event_bus()
+    app.state.events = events
+    ingest = EventIngestManager(events, serves.port)
+    app.state.ingest = ingest
+    correlator = RunCorrelator(events, SessionLocal)
+    correlator.start()
+
+    async with SessionLocal() as session:
+        await serves.start_all(session)
+        projects = await session.execute(select(ProjectRow))
+        for row in projects.scalars():
+            if row.workspace_path:
+                ingest.start(row.id)
+
+    try:
+        yield
+    finally:
+        await correlator.shutdown()
+        await ingest.shutdown()
+        await serves.shutdown()
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
@@ -67,17 +115,26 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 def create_app() -> FastAPI:
     """Return a configured FastAPI instance."""
+    startup_check()
+
     app = FastAPI(lifespan=_lifespan)
+    app.add_middleware(BaseHTTPMiddleware, dispatch=bearer_auth_middleware)
 
     app.include_router(projects_router)
     app.include_router(flows_router)
     app.include_router(teams_router)
     app.include_router(repos_router)
     app.include_router(runs_router)
+    app.include_router(events_router)
+    app.include_router(chat_router)
+    app.include_router(webhooks_router)
+    app.include_router(containers_router)
+    app.include_router(images_router)
+    app.include_router(history_router)
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> HealthResponse:
+        return HealthResponse()
 
     _register_exception_handlers(app)
 

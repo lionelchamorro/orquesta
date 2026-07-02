@@ -28,6 +28,7 @@ class ProjectRow(Base):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     last_run: Mapped[datetime | None] = mapped_column(DateTime)
     source: Mapped[str | None] = mapped_column(String)
+    serve_port: Mapped[int | None] = mapped_column(Integer)
 
 
 class RunRow(Base):
@@ -49,6 +50,9 @@ class RunRow(Base):
     base_sha: Mapped[str | None] = mapped_column(String)
     head_sha: Mapped[str | None] = mapped_column(String)
     error: Mapped[str | None] = mapped_column(Text)
+    # orq-lite's own run_id, captured from the run_start SSE event (Task 9) —
+    # the 1:1 link between this launch record and the serve's query API.
+    orq_run_id: Mapped[str | None] = mapped_column(String)
 
 
 class RepoRow(Base):
@@ -74,3 +78,37 @@ class EventCursorRow(Base):
 
     run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), primary_key=True)
     offset: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class ConversationRow(Base):
+    """A chat thread. Single-user v1: one implicit conversation is reused."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class ChatMessageRow(Base):
+    """A single message (user, assistant, or tool-result) within a conversation."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String, ForeignKey("conversations.id"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    project: Mapped[str | None] = mapped_column(String)
+    action: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class WebhookDeliveryRow(Base):
+    """Records a processed GitHub webhook delivery id, for dedup on retry."""
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

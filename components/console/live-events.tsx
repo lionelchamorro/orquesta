@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { StatusBadge } from "@/components/status-badge"
-import { liveEventFor } from "@/lib/mock-data"
 import type { RunEvent } from "@/lib/types"
 
 function parseRunEvent(data: string): RunEvent | undefined {
@@ -80,6 +79,22 @@ const borderColor: Record<string, string> = {
   cycle_end: "border-l-run",
 }
 
+type ConnectionState = "idle" | "connecting" | "streaming" | "error"
+
+const connectionLabel: Record<ConnectionState, string> = {
+  idle: "idle",
+  connecting: "connecting…",
+  streaming: "streaming · live",
+  error: "connection error · retrying",
+}
+
+const connectionDot: Record<ConnectionState, string> = {
+  idle: "bg-muted-foreground",
+  connecting: "animate-pulse bg-run",
+  streaming: "animate-pulse bg-ok",
+  error: "bg-err",
+}
+
 export function LiveEvents({
   projectId,
   initial,
@@ -90,32 +105,29 @@ export function LiveEvents({
   live: boolean
 }) {
   const [events, setEvents] = useState<RunEvent[]>(initial)
+  // Only EventSource callbacks (async) write this; the displayed state is
+  // derived below with the `live` gate, so the effect never sets state
+  // synchronously (react-hooks set-state-in-effect).
+  const [esState, setEsState] = useState<Exclude<ConnectionState, "idle">>("connecting")
   const listRef = useRef<HTMLUListElement>(null)
 
   useEffect(() => {
     if (!live) return
-    const es = new EventSource("/api/orq-lite/events")
+    const es = new EventSource(`/api/control-plane/projects/${projectId}/events`)
+    es.onopen = () => setEsState("streaming")
     es.onmessage = (message) => {
       const event = parseRunEvent(message.data)
       if (!event) return
+      setEsState("streaming")
       setEvents((prev) => [...prev, event].slice(-200))
     }
     es.onerror = () => {
-      es.close()
+      setEsState("error")
     }
     return () => es.close()
-  }, [live])
+  }, [live, projectId])
 
-  useEffect(() => {
-    if (!live || initial.length === 0) return
-    const id = setInterval(() => {
-      setEvents((prev) => {
-        const next = [...prev, liveEventFor(projectId)]
-        return next.slice(-200)
-      })
-    }, 4000)
-    return () => clearInterval(id)
-  }, [initial.length, live, projectId])
+  const connection: ConnectionState = live ? esState : "idle"
 
   useEffect(() => {
     const el = listRef.current
@@ -125,15 +137,10 @@ export function LiveEvents({
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <span
-          className={cn(
-            "h-2 w-2 rounded-full",
-            live ? "animate-pulse bg-ok" : "bg-muted-foreground",
-          )}
-        />
+        <span className={cn("h-2 w-2 rounded-full", connectionDot[connection])} />
         <span className="font-mono text-sm font-semibold">Live events</span>
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-          {live ? "streaming · run.log" : "idle"}
+          {connectionLabel[connection]}
         </span>
       </div>
       <ul ref={listRef} className="flex-1 space-y-0.5 overflow-y-auto py-2 font-mono text-xs">
