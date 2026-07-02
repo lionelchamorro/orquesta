@@ -280,6 +280,47 @@ async def test_orq_lite_client_accepts_transport() -> None:
     assert result == {"tasks": []}
 
 
+async def test_orq_lite_client_maps_http_status_error_to_runtime_error() -> None:
+    """A non-2xx response (orq-lite 404s an unknown role) maps to RuntimeError, not a raw 500."""
+    from orquesta_api.core.integrations.orq_lite_client import OrqLiteClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    client = OrqLiteClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(RuntimeError, match="404"):
+        await client.get_tasks("http://localhost:9999")
+
+
+async def test_orq_lite_client_maps_connection_error_to_runtime_error() -> None:
+    """A transport-level failure (server unreachable) also maps to RuntimeError."""
+    from orquesta_api.core.integrations.orq_lite_client import OrqLiteClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = OrqLiteClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(RuntimeError, match="request failed"):
+        await client.get_tasks("http://localhost:9999")
+
+
+async def test_orq_lite_client_reuses_the_same_underlying_client() -> None:
+    """The httpx.AsyncClient is created once and reused across calls, not per-request."""
+    from orquesta_api.core.integrations.orq_lite_client import OrqLiteClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"tasks": []})
+
+    client = OrqLiteClient(transport=httpx.MockTransport(handler))
+    await client.get_tasks("http://localhost:9999")
+    first = client._client
+    await client.get_factory("http://localhost:9999")
+    assert client._client is first
+
+    await client.aclose()
+    assert client._client.is_closed
+
+
 # ---------------------------------------------------------------------------
 # Internal helper: fake alive process
 # ---------------------------------------------------------------------------
