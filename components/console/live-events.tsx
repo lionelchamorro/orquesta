@@ -105,28 +105,29 @@ export function LiveEvents({
   live: boolean
 }) {
   const [events, setEvents] = useState<RunEvent[]>(initial)
-  const [connection, setConnection] = useState<ConnectionState>("idle")
+  // Only EventSource callbacks (async) write this; the displayed state is
+  // derived below with the `live` gate, so the effect never sets state
+  // synchronously (react-hooks set-state-in-effect).
+  const [esState, setEsState] = useState<Exclude<ConnectionState, "idle">>("connecting")
   const listRef = useRef<HTMLUListElement>(null)
 
   useEffect(() => {
-    if (!live) {
-      setConnection("idle")
-      return
-    }
-    setConnection("connecting")
+    if (!live) return
     const es = new EventSource(`/api/control-plane/projects/${projectId}/events`)
-    es.onopen = () => setConnection("streaming")
+    es.onopen = () => setEsState("streaming")
     es.onmessage = (message) => {
       const event = parseRunEvent(message.data)
       if (!event) return
-      setConnection("streaming")
+      setEsState("streaming")
       setEvents((prev) => [...prev, event].slice(-200))
     }
     es.onerror = () => {
-      setConnection("error")
+      setEsState("error")
     }
     return () => es.close()
   }, [live, projectId])
+
+  const connection: ConnectionState = live ? esState : "idle"
 
   useEffect(() => {
     const el = listRef.current

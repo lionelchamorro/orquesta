@@ -52,7 +52,9 @@ export function useOfficeData(initialProject: Project): OfficeData {
   }, [])
 
   useEffect(() => {
-    setConnection("connecting")
+    // Only EventSource callbacks (async) set connection; the initial
+    // "connecting" is the state's default value, never set synchronously
+    // here (react-hooks set-state-in-effect).
     const es = new EventSource(`/api/control-plane/projects/${project.id}/events`)
     es.onopen = () => setConnection("live")
     es.onmessage = (message) => {
@@ -63,7 +65,6 @@ export function useOfficeData(initialProject: Project): OfficeData {
     }
     es.onerror = () => setConnection("error")
     return () => es.close()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id])
 
   useEffect(() => {

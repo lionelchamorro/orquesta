@@ -29,7 +29,9 @@ export function FlowLauncher({ projectId, disabled }: { projectId: string; disab
   const [catalog, setCatalog] = useState<FlowCatalogEntry[] | null | "unavailable">(null)
   const [doctor, setDoctor] = useState<DoctorReport | null>(null)
   const [flowName, setFlowName] = useState("")
-  const [inputs, setInputs] = useState<Record<string, string>>({})
+  // User-typed overrides keyed by flow name; effective inputs are derived by
+  // merging over the flow's declared defaults at render (no reset effect).
+  const [edits, setEdits] = useState<Record<string, Record<string, string>>>({})
   const [launching, setLaunching] = useState(false)
   const [message, setMessage] = useState("")
 
@@ -58,17 +60,13 @@ export function FlowLauncher({ projectId, disabled }: { projectId: string; disab
     [catalog, flowName],
   )
 
-  useEffect(() => {
-    if (!selectedFlow) {
-      setInputs({})
-      return
-    }
+  const inputs = useMemo(() => {
     const defaults: Record<string, string> = {}
-    for (const [name, spec] of Object.entries(selectedFlow.inputs)) {
+    for (const [name, spec] of Object.entries(selectedFlow?.inputs ?? {})) {
       if (spec.default !== null && spec.default !== undefined) defaults[name] = String(spec.default)
     }
-    setInputs(defaults)
-  }, [selectedFlow])
+    return { ...defaults, ...(edits[flowName] ?? {}) }
+  }, [selectedFlow, edits, flowName])
 
   const missingRequired = selectedFlow
     ? Object.entries(selectedFlow.inputs)
@@ -131,7 +129,12 @@ export function FlowLauncher({ projectId, disabled }: { projectId: string; disab
           <input
             key={name}
             value={inputs[name] ?? ""}
-            onChange={(e) => setInputs((prev) => ({ ...prev, [name]: e.target.value }))}
+            onChange={(e) =>
+              setEdits((prev) => ({
+                ...prev,
+                [flowName]: { ...prev[flowName], [name]: e.target.value },
+              }))
+            }
             placeholder={`${name}${spec.required ? " *" : ""}`}
             title={`${name} (${spec.type})${spec.required ? " — required" : ""}`}
             disabled={disabled || launching}

@@ -5,7 +5,7 @@ import { Send, Sparkles, Loader2, CornerDownLeft, Wrench } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
-import type { ChatMessage, Project } from "@/lib/types"
+import type { ChatMessage } from "@/lib/types"
 
 const suggestions = [
   "What projects need attention?",
@@ -35,13 +35,7 @@ function parseSseLines(chunk: string): ChatEvent[] {
   return events
 }
 
-export function GlobalChat({
-  compact = false,
-  projects: _projects,
-}: {
-  compact?: boolean
-  projects: Project[]
-}) {
+export function GlobalChat({ compact = false }: { compact?: boolean }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [toolCalls, setToolCalls] = useState<string[]>([])
   const [input, setInput] = useState("")
@@ -79,7 +73,6 @@ export function GlobalChat({
     setToolCalls([])
 
     const assistantId = crypto.randomUUID()
-    let assistantText = ""
 
     try {
       const res = await fetch("/api/control-plane/chat", {
@@ -102,10 +95,13 @@ export function GlobalChat({
 
         for (const event of events) {
           if (event.type === "text") {
-            assistantText += event.text
+            // Accumulate inside the updater so there's no mutable closure
+            // variable (react-compiler immutability rule).
             setMessages((prev) => {
+              const draft = prev.find((m) => m.id === assistantId)
+              const content = (draft?.content ?? "") + event.text
               const withoutDraft = prev.filter((m) => m.id !== assistantId)
-              return [...withoutDraft, { id: assistantId, role: "assistant", content: assistantText }]
+              return [...withoutDraft, { id: assistantId, role: "assistant", content }]
             })
           } else if (event.type === "tool_call") {
             setToolCalls((prev) => [...prev, event.name])

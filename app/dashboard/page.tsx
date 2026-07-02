@@ -67,7 +67,7 @@ export default async function DashboardPage() {
 
         <div className="hidden border-l border-border xl:block">
           <div className="sticky top-16 h-[calc(100dvh-4rem)]">
-            <GlobalChat projects={projects} />
+            <GlobalChat />
           </div>
         </div>
       </div>

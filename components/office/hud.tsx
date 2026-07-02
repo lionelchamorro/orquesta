@@ -43,10 +43,7 @@ export function OfficeHud({
   const activeFeature = project.features.find((f) => f.status === "in_progress")
 
   useEffect(() => {
-    if (!isRunning) {
-      setActiveRunId(null)
-      return
-    }
+    if (!isRunning) return
     let cancelled = false
     fetch(`/api/control-plane/runs?project=${project.id}&state=running`, { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : []))
@@ -60,6 +57,10 @@ export function OfficeHud({
       cancelled = true
     }
   }, [isRunning, project.id])
+
+  // A stale id from a previous run is harmless: everything that uses it is
+  // gated on isRunning, so it is derived here instead of reset in the effect.
+  const effectiveRunId = isRunning ? activeRunId : null
 
   async function launch() {
     setLaunching(true)
@@ -75,10 +76,10 @@ export function OfficeHud({
   }
 
   async function stop() {
-    if (!activeRunId) return
+    if (!effectiveRunId) return
     setStopping(true)
     try {
-      await fetch(`/api/control-plane/runs/${activeRunId}/stop`, { method: "POST" })
+      await fetch(`/api/control-plane/runs/${effectiveRunId}/stop`, { method: "POST" })
     } finally {
       setStopping(false)
     }
@@ -129,7 +130,7 @@ export function OfficeHud({
           variant="outline"
           className="font-mono text-xs"
           onClick={stop}
-          disabled={stopping || !activeRunId}
+          disabled={stopping || !effectiveRunId}
         >
           <Square className="h-3.5 w-3.5" />
           {stopping ? "stopping…" : "Stop"}

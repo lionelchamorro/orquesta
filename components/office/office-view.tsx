@@ -43,9 +43,6 @@ export function OfficeView({ project: initialProject, roles }: { project: Projec
       map[desk.role] = deskStatus(desk.role, events, runActive)
     }
     return map
-    // `tick` forces recompute purely for the "workin…" pulse cadence display;
-    // deskStatus itself only depends on events/runActive.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [desks, events, runActive])
 
   const currentTask = project.tasks.find((t) => t.status === "in_progress")

@@ -79,7 +79,7 @@ export function ProjectView({ project }: { project: Project }) {
           {tab === "Runs" && <RunHistory projectId={project.id} />}
           {tab === "Chat" && (
             <div className="h-[60vh] overflow-hidden rounded-xl border border-border bg-card">
-              <GlobalChat compact projects={[project]} />
+              <GlobalChat compact />
             </div>
           )}
         </div>
