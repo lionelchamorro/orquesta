@@ -1,7 +1,6 @@
 """Local subprocess executor backend."""
 
 import asyncio
-import socket
 from collections.abc import AsyncGenerator, AsyncIterator
 
 from orquesta_api.config import settings
@@ -12,10 +11,30 @@ from orquesta_api.meta.models import Container, RunHandle, RunKind, RunSpec, Run
 logger = get_logger(__name__)
 
 
-def _find_free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def build_argv(bin_path: str, spec: RunSpec) -> list[str]:
+    """Map a RunSpec to the exact orq-lite CLI invocation (subcommand first).
+
+    orq-lite reads os.Args[1] as the subcommand; all flags must follow it.
+    Runs are headless — the per-project serve (Task 2) owns the dashboard.
+    """
+    match spec.kind:
+        case RunKind.run:
+            argv = [bin_path, "run"]
+        case RunKind.factory:
+            # The per-project serve (Task 2) owns the dashboard; keep runs headless.
+            argv = [bin_path, "factory", "--serve=false"]
+            if spec.plan_path:
+                argv.append(spec.plan_path)
+        case RunKind.plan:
+            if not spec.plan_path:
+                raise ValueError("plan runs require plan_path")
+            argv = [bin_path, "plan", spec.plan_path]
+        case RunKind.flow:
+            if not spec.flow:
+                raise ValueError("flow runs require a flow name")
+            argv = [bin_path, "flow", "run", spec.flow]
+            argv.extend(f"{k}={v}" for k, v in spec.inputs.items())
+    return [*argv, *spec.args]
 
 
 class LocalExecutor(ExecutorInterface):
@@ -27,28 +46,9 @@ class LocalExecutor(ExecutorInterface):
         self._log_cache: dict[int, list[str]] = {}
         self._reader_tasks: dict[int, asyncio.Task[None]] = {}
 
-    def _build_command(self, spec: RunSpec, port: int) -> list[str]:
-        """Assemble a well-formed orq-lite invocation for the run.
-
-        orq-lite reads os.Args[1] as the subcommand and parses the rest with
-        Go's flag package, which stops at the first positional argument. So the
-        subcommand comes first and any flags (including --addr) must precede the
-        positional (features.md / plan.md) carried in spec.args. Only factory
-        and run host the dashboard the aggregator proxies; run does not serve by
-        default so it needs an explicit --serve, and plan has neither.
-        """
-        cmd = [self._bin, spec.kind.value]
-        if spec.serve and spec.kind in (RunKind.factory, RunKind.run):
-            cmd += ["--addr", f"127.0.0.1:{port}"]
-            if spec.kind is RunKind.run:
-                cmd.append("--serve")
-        cmd += spec.args
-        return cmd
-
     async def start(self, spec: RunSpec) -> RunHandle:
-        """Spawn orq-lite in the project workspace; return a handle with pid and port."""
-        port = _find_free_port()
-        cmd = self._build_command(spec, port)
+        """Spawn orq-lite in the project workspace; return a handle with pid."""
+        cmd = build_argv(self._bin, spec)
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -59,8 +59,10 @@ class LocalExecutor(ExecutorInterface):
         self._processes[pid] = process
         self._log_cache[pid] = []
         self._reader_tasks[pid] = asyncio.create_task(self._collect_output(pid))
-        logger.info("Started process => pid=%s port=%s cwd=%s cmd=%s", pid, port, spec.workspace_path, " ".join(cmd))
-        return RunHandle(pid=pid, api_port=port)
+        logger.info(
+            "Started process => pid=%s cwd=%s cmd=%s", pid, spec.workspace_path, " ".join(cmd)
+        )
+        return RunHandle(pid=pid)
 
     async def stop(self, handle: RunHandle, grace_s: int = 10) -> None:
         """SIGTERM the process; escalate to SIGKILL after grace_s seconds."""

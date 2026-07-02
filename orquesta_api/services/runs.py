@@ -1,7 +1,9 @@
 """Run lifecycle service: launch, stop, inspect, and list runs."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,6 +64,31 @@ def _make_executor() -> ExecutorInterface:
     raise ValueError(f"Unknown executor '{settings.run_executor}'")
 
 
+async def ensure_workspace_ready(workspace: str, bin_path: str) -> None:
+    """Run ``orq-lite init`` in *workspace* if ``team.json`` is absent.
+
+    A fresh clone has no ``team.json`` / ``flows.json`` / ``prompts/`` and every
+    orq-lite command would fail at ``config.Load``.  ``init`` is non-destructive
+    (it does not overwrite existing config), so it is safe to call idempotently.
+
+    Raises:
+        RuntimeError: if ``orq-lite init`` exits with a non-zero code (→502).
+    """
+    if (Path(workspace) / "team.json").exists():
+        return
+    logger.info("Initialising workspace => path=%s", workspace)
+    proc = await asyncio.create_subprocess_exec(
+        bin_path,
+        "init",
+        cwd=workspace,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    exit_code = await proc.wait()
+    if exit_code != 0:
+        raise RuntimeError(f"orq-lite init failed (exit {exit_code}) in workspace {workspace!r}")
+
+
 class RunSupervisor:
     """Run lifecycle operations for registered projects."""
 
@@ -79,13 +106,33 @@ class RunSupervisor:
         project_id: str,
         kind: RunKind,
         plan_path: str | None = None,
-        serve: bool = True,
+        flow: str | None = None,
+        inputs: dict[str, str] | None = None,
         args: list[str] | None = None,
     ) -> Run:
-        """Start a new run for the project and return a Run in the running state."""
+        """Start a new run for the project and return a Run in the running state.
+
+        Raises:
+            ValueError: if *project_id* is not registered (→404).
+            FileExistsError: if the project already has an active run (→409).
+            RuntimeError: if workspace initialisation fails (→502).
+        """
         project = await self._session.get(ProjectRow, project_id)
         if project is None:
             raise ValueError(f"Project '{project_id}' not found")
+
+        # Reject concurrent launches for the same project.
+        existing = await self._session.execute(
+            select(RunRow).where(
+                RunRow.project_id == project_id,
+                RunRow.state.in_([s.value for s in _ACTIVE_RUN_STATES]),
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise FileExistsError(f"Project '{project_id}' already has an active run")
+
+        workspace = project.workspace_path or ""
+        await ensure_workspace_ready(workspace, settings.orq_lite_bin)
 
         run_id = str(uuid.uuid4())
         row = RunRow(
@@ -102,10 +149,11 @@ class RunSupervisor:
 
         spec = RunSpec(
             project_id=project_id,
-            workspace_path=project.workspace_path or "",
+            workspace_path=workspace,
             kind=kind,
-            serve=serve,
             plan_path=plan_path,
+            flow=flow,
+            inputs=inputs or {},
             args=args or [],
         )
 

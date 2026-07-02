@@ -33,7 +33,8 @@ class RunCreate(BaseModel):
 
     kind: RunKind
     plan_path: str | None = None
-    serve: bool = True
+    flow: str | None = None
+    inputs: dict[str, str] = Field(default_factory=dict)
     args: list[str] = Field(default_factory=list)
 
 
@@ -68,7 +69,8 @@ async def launch_run(
         project_id,
         kind=body.kind,
         plan_path=body.plan_path,
-        serve=body.serve,
+        flow=body.flow,
+        inputs=body.inputs,
         args=body.args,
     )
 

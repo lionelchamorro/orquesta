@@ -92,6 +92,8 @@ export interface ProjectWatch {
   issues: boolean
 }
 
+export type RunKind = "run" | "factory" | "plan" | "flow"
+
 export type ProjectState = "running" | "idle" | "needs_human" | "paused"
 
 // projects.json entry plus derived in-memory state for the UI.

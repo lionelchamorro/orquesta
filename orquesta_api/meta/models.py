@@ -72,6 +72,7 @@ class RunKind(str, Enum):
     run = "run"
     factory = "factory"
     plan = "plan"
+    flow = "flow"
 
 
 class ContainerState(str, Enum):
@@ -189,8 +190,9 @@ class RunSpec(BaseModel):
     project_id: str
     workspace_path: str
     kind: RunKind
-    serve: bool = True
     plan_path: str | None = None
+    flow: str | None = None
+    inputs: dict[str, str] = Field(default_factory=dict)
     args: list[str] = Field(default_factory=list)
 
 
