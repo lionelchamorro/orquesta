@@ -1,18 +1,15 @@
-import { FlatCompat } from "@eslint/eslintrc"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
-
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-})
+// eslint-config-next@16 ships native flat-config arrays (Linter.Config[]);
+// wrapping them in @eslint/eslintrc's FlatCompat (the Next 15 pattern)
+// crashes eslint's config validator.
+import nextCoreWebVitals from "eslint-config-next/core-web-vitals"
+import nextTypescript from "eslint-config-next/typescript"
 
 const eslintConfig = [
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
     ignores: [".next/**", "node_modules/**", "out/**"],
   },
+  ...nextCoreWebVitals,
+  ...nextTypescript,
 ]
 
 export default eslintConfig

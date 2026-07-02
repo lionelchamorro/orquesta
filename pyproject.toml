@@ -17,7 +17,11 @@ dependencies = [
     "docker>=7.1.0",
 ]
 
-[project.optional-dependencies]
+# PEP 735 dependency group (not an extra): `uv sync` installs the dev group by
+# default, which is what the tests.yml workflow's bare `uv sync --frozen`
+# relies on — an [project.optional-dependencies] extra would NOT be installed
+# there and pytest would be missing at CI time.
+[dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.25",
