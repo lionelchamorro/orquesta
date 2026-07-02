@@ -12,9 +12,20 @@ if [ ! -f /data/team.json ] && [ -f /srv/api/team.json ]; then
   cp /srv/api/team.json /data/team.json
 fi
 
-# Seed default flows (real orq-lite verbs: factory / run / plan) the first time.
+# Seed the default flow-engine flows.json (factory, factory_fast) the first time.
 if [ ! -f /data/flows.json ] && [ -f /srv/api/flows.json ]; then
   cp /srv/api/flows.json /data/flows.json
+fi
+
+# --- keep orq-lite current ---------------------------------------------------
+# Self-update to the latest release on every start. Best-effort and time-boxed
+# so an offline start or a slow download can't block boot; needs root (sudo) to
+# overwrite /usr/local/bin/orq-lite.
+echo "orq-lite: $(orq-lite version 2>/dev/null) — checking for updates…"
+if timeout 90 sudo -n orq-lite update 2>&1 | sed 's/^/  orq-lite update: /'; then
+  echo "orq-lite: now $(orq-lite version 2>/dev/null)"
+else
+  echo "  orq-lite update: skipped (offline, already latest, or timed out)"
 fi
 
 # --- git auth for cloning private repos --------------------------------------
