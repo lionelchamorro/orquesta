@@ -62,18 +62,31 @@ export interface Feature {
   pr_url?: string
 }
 
+// Mirrors orquesta_api.meta.models.EventKind. run_start/run_end are
+// orq-lite's own internal lifecycle (its run.log); run_started/run_finished
+// are orquesta's control-plane process-launch lifecycle — both exist and
+// are distinct.
 export type EventKind =
   | "agent_run"
+  | "agent_diff"
   | "task_start"
   | "task_done"
+  | "task_done_no_commit"
   | "task_failed"
   | "cycle_start"
   | "cycle_end"
+  | "cycle_verification"
+  | "cycle_verification_error"
   | "tester_verification_failed"
   | "full_suite_failed"
+  | "run_start"
+  | "run_end"
+  | "plan_written"
+  | "rate_limit_wait"
+  | "handoff_written"
+  | "task_routed"
   | "run_started"
   | "run_finished"
-  | "task_routed"
 
 export interface RunEvent {
   ts: string

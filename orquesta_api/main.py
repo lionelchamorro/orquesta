@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 
 from orquesta_api.db.session import SessionLocal, engine
-from orquesta_api.db.tables import Base
+from orquesta_api.db.tables import Base, ProjectRow
 from orquesta_api.logger import get_logger
 from orquesta_api.routers.events import router as events_router
 from orquesta_api.routers.flows import router as flows_router
@@ -15,7 +16,7 @@ from orquesta_api.routers.projects import router as projects_router
 from orquesta_api.routers.repos import router as repos_router
 from orquesta_api.routers.runs import router as runs_router
 from orquesta_api.routers.teams import router as teams_router
-from orquesta_api.services.events import get_event_bus
+from orquesta_api.services.events import EventIngestManager, get_event_bus
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
 from orquesta_api.services.runs import RunSupervisor, _make_executor
 from orquesta_api.services.serves import ServeManager
@@ -37,14 +38,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     serves = ServeManager()
     app.state.serves = serves
-    app.state.events = get_event_bus()
+    events = get_event_bus()
+    app.state.events = events
+    ingest = EventIngestManager(events, serves.port)
+    app.state.ingest = ingest
 
     async with SessionLocal() as session:
         await serves.start_all(session)
+        projects = await session.execute(select(ProjectRow))
+        for row in projects.scalars():
+            if row.workspace_path:
+                ingest.start(row.id)
 
     try:
         yield
     finally:
+        await ingest.shutdown()
         await serves.shutdown()
 
 

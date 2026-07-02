@@ -53,17 +53,32 @@ class FeatureStatus(str, Enum):
 
 
 class EventKind(str, Enum):
+    # Emitted by orq-lite itself in run.log / GET /api/events (verified against
+    # orquesta-lite/internal/web/server.go + eventlog — real wire vocabulary,
+    # not the earlier-guessed set).
     agent_run = "agent_run"
+    agent_diff = "agent_diff"
     task_start = "task_start"
     task_done = "task_done"
+    task_done_no_commit = "task_done_no_commit"
     task_failed = "task_failed"
     cycle_start = "cycle_start"
     cycle_end = "cycle_end"
+    cycle_verification = "cycle_verification"
+    cycle_verification_error = "cycle_verification_error"
     tester_verification_failed = "tester_verification_failed"
     full_suite_failed = "full_suite_failed"
+    run_start = "run_start"
+    run_end = "run_end"
+    plan_written = "plan_written"
+    rate_limit_wait = "rate_limit_wait"
+    handoff_written = "handoff_written"
+    task_routed = "task_routed"
+    # Emitted by orquesta's own RunSupervisor (services/runs.py) — the
+    # control-plane's process-launch lifecycle, distinct from orq-lite's own
+    # internal run_start/run_end above.
     run_started = "run_started"
     run_finished = "run_finished"
-    task_routed = "task_routed"
 
 
 class RunState(str, Enum):

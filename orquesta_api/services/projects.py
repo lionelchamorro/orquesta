@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orquesta_api.core.integrations import git
 from orquesta_api.db.tables import ProjectRow, RepoRow
 from orquesta_api.logger import get_logger
+from orquesta_api.services.events import EventIngestManager
 from orquesta_api.services.repos import CloneTargetError, RepoManager, WorkspaceDirtyError
 from orquesta_api.services.serves import ServeManager
 
@@ -31,9 +32,11 @@ class ProjectService:
         self,
         session: AsyncSession,
         serves: ServeManager | None = None,
+        ingest: EventIngestManager | None = None,
     ) -> None:
         self._session = session
         self._serves = serves
+        self._ingest = ingest
 
     async def create(
         self,
@@ -138,6 +141,9 @@ class ProjectService:
                 project_id,
                 exc,
             )
+            return
+        if self._ingest is not None:
+            self._ingest.start(project_id)
 
     async def list(self) -> list[ProjectRow]:
         """Return all registered projects."""
@@ -196,5 +202,8 @@ class ProjectService:
                     id,
                     exc,
                 )
+
+        if self._ingest is not None:
+            await self._ingest.stop(id)
 
         logger.info("Deleted project => %s", id)

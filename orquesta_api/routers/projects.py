@@ -12,6 +12,7 @@ from orquesta_api.db.session import get_session
 from orquesta_api.db.tables import ProjectRow
 from orquesta_api.meta.models import Feature, Project, ProjectState, ProjectWatch, Task
 from orquesta_api.services.aggregator import Aggregator, CostSnapshot
+from orquesta_api.services.events import EventIngestManager
 from orquesta_api.services.projects import ProjectService
 from orquesta_api.services.serves import ServeManager
 
@@ -30,7 +31,13 @@ def _get_serves(request: Request) -> ServeManager:
     return request.app.state.serves  # type: ignore[no-any-return]
 
 
+def _get_ingest(request: Request) -> EventIngestManager:
+    """FastAPI dependency: read EventIngestManager from app.state.ingest."""
+    return request.app.state.ingest  # type: ignore[no-any-return]
+
+
 ServesDep = Annotated[ServeManager, Depends(_get_serves)]
+IngestDep = Annotated[EventIngestManager, Depends(_get_ingest)]
 
 
 class TasksResponse(BaseModel):
@@ -91,9 +98,11 @@ async def list_projects(session: SessionDep) -> list[Project]:
 
 
 @router.post("", status_code=201)
-async def create_project(body: ProjectCreate, session: SessionDep, serves: ServesDep) -> Project:
+async def create_project(
+    body: ProjectCreate, session: SessionDep, serves: ServesDep, ingest: IngestDep
+) -> Project:
     """Register a new project."""
-    svc = ProjectService(session, serves=serves)
+    svc = ProjectService(session, serves=serves, ingest=ingest)
     row = await svc.create(
         name=body.name,
         repo_url=body.repo_url,
@@ -136,10 +145,11 @@ async def delete_project(
     project_id: str,
     session: SessionDep,
     serves: ServesDep,
+    ingest: IngestDep,
     prune: Annotated[bool, Query()] = False,
 ) -> None:
     """Remove a project from the registry."""
-    svc = ProjectService(session, serves=serves)
+    svc = ProjectService(session, serves=serves, ingest=ingest)
     await svc.delete(project_id, prune=prune)
 
 
