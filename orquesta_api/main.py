@@ -15,6 +15,7 @@ from orquesta_api.routers.repos import router as repos_router
 from orquesta_api.routers.runs import router as runs_router
 from orquesta_api.routers.teams import router as teams_router
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
+from orquesta_api.services.runs import RunSupervisor, _make_executor
 from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
@@ -25,6 +26,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created => startup complete")
+
+    # Reconcile any runs that were active when the API last shut down.
+    # Must run before serving requests so stale "running" rows are cleaned up.
+    async with SessionLocal() as session:
+        supervisor = RunSupervisor(session, executor=_make_executor())
+        await supervisor.reconcile()
 
     serves = ServeManager()
     app.state.serves = serves

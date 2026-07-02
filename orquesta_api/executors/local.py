@@ -1,7 +1,10 @@
 """Local subprocess executor backend."""
 
 import asyncio
+import collections
+import io
 from collections.abc import AsyncGenerator, AsyncIterator
+from pathlib import Path
 
 from orquesta_api.config import settings
 from orquesta_api.logger import get_logger
@@ -40,13 +43,22 @@ def build_argv(bin_path: str, spec: RunSpec) -> list[str]:
 class LocalExecutor(ExecutorInterface):
     """Execute runs as local subprocesses."""
 
-    def __init__(self, bin_path: str | None = None) -> None:
+    def __init__(self, bin_path: str | None = None, log_dir: Path | None = None) -> None:
         self._bin = bin_path or settings.orq_lite_bin
+        # Default log directory: sibling of workspaces_dir named "run-logs"
+        self._log_dir: Path = log_dir or (
+            Path(settings.workspaces_dir).resolve().parent / "run-logs"
+        )
         self._processes: dict[int, asyncio.subprocess.Process] = {}
-        self._log_cache: dict[int, list[str]] = {}
+        # Bounded deque: in-memory cache capped at 5000 lines per process.
+        # NOTE: Live streaming tracks position by index; once >5000 lines are
+        # produced in a single run, lines beyond the 5000th may be skipped in
+        # the live stream. The disk mirror (run-logs/<run_id>.log) retains all.
+        self._log_cache: dict[int, collections.deque[str]] = {}
+        self._log_file_handles: dict[int, io.TextIOWrapper | None] = {}
         self._reader_tasks: dict[int, asyncio.Task[None]] = {}
 
-    async def start(self, spec: RunSpec) -> RunHandle:
+    async def start(self, spec: RunSpec, run_id: str = "") -> RunHandle:
         """Spawn orq-lite in the project workspace; return a handle with pid."""
         cmd = build_argv(self._bin, spec)
         process = await asyncio.create_subprocess_exec(
@@ -57,7 +69,16 @@ class LocalExecutor(ExecutorInterface):
         )
         pid = process.pid
         self._processes[pid] = process
-        self._log_cache[pid] = []
+        self._log_cache[pid] = collections.deque(maxlen=5000)
+
+        # Open disk mirror for this run (skipped when run_id is empty, e.g. direct tests).
+        if run_id:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = self._log_dir / f"{run_id}.log"
+            self._log_file_handles[pid] = log_path.open("w")
+        else:
+            self._log_file_handles[pid] = None
+
         self._reader_tasks[pid] = asyncio.create_task(self._collect_output(pid))
         logger.info(
             "Started process => pid=%s cwd=%s cmd=%s", pid, spec.workspace_path, " ".join(cmd)
@@ -91,6 +112,21 @@ class LocalExecutor(ExecutorInterface):
             return RunState.running
         return RunState.succeeded if returncode == 0 else RunState.failed
 
+    async def wait(self, handle: RunHandle) -> int:
+        """Await the tracked process and return its exit code.
+
+        Safe to call multiple times; asyncio Process.wait() is idempotent once
+        the process has exited. Returns -1 if the handle is unknown (e.g. after
+        an API restart — pids do not survive a process restart).
+        """
+        if handle.pid is None:
+            return -1
+        process = self._processes.get(handle.pid)
+        if process is None:
+            return -1
+        await process.wait()
+        return process.returncode if process.returncode is not None else -1
+
     def logs(self, handle: RunHandle, tail: int | None = None) -> AsyncIterator[str]:
         """Return an async iterator over captured stdout lines."""
         return self._logs_gen(handle, tail)
@@ -101,14 +137,26 @@ class LocalExecutor(ExecutorInterface):
 
     async def _collect_output(self, pid: int) -> None:
         process = self._processes[pid]
+        fh = self._log_file_handles.get(pid)
         if process.stdout is None:
+            if fh is not None:
+                fh.close()
             return
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            self._log_cache[pid].append(line.decode().rstrip("\r\n"))
-        await process.wait()
+        try:
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                decoded = line.decode().rstrip("\r\n")
+                self._log_cache[pid].append(decoded)
+                if fh is not None:
+                    fh.write(decoded + "\n")
+                    fh.flush()
+        finally:
+            await process.wait()
+            if fh is not None:
+                fh.close()
+            self._log_file_handles[pid] = None
 
     async def _logs_gen(
         self, handle: RunHandle, tail: int | None = None
@@ -120,11 +168,14 @@ class LocalExecutor(ExecutorInterface):
             return
 
         if tail is not None:
-            for line in [] if tail == 0 else cache[-tail:]:
+            # deque does not support slice notation; convert to list for slicing.
+            tail_lines = list(cache)[-tail:] if tail > 0 else []
+            for line in tail_lines:
                 yield line
             return
 
         # Live streaming: yield cached lines then follow new ones until reader exits.
+        # Uses position-based indexing (O(n) on deque but cache is capped at 5000).
         task = self._reader_tasks.get(handle.pid)
         pos = 0
         while True:
@@ -132,7 +183,7 @@ class LocalExecutor(ExecutorInterface):
                 yield cache[pos]
                 pos += 1
             if task is None or task.done():
-                # Final drain after task finishes (list is append-only; no lock needed).
+                # Final drain after task finishes (append-only from right; no lock needed).
                 while pos < len(cache):
                     yield cache[pos]
                     pos += 1

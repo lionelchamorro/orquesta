@@ -6,9 +6,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from orquesta_api.config import settings
+from orquesta_api.db.session import SessionLocal
 from orquesta_api.db.tables import ProjectRow, RunRow
 from orquesta_api.logger import get_logger
 from orquesta_api.meta.executor import ExecutorInterface
@@ -89,12 +90,34 @@ async def ensure_workspace_ready(workspace: str, bin_path: str) -> None:
         raise RuntimeError(f"orq-lite init failed (exit {exit_code}) in workspace {workspace!r}")
 
 
+# ---------------------------------------------------------------------------
+# Background task registry — prevents garbage-collection of in-flight tasks.
+# asyncio.create_task() result must be held by a strong reference for the life
+# of the task, or it can be GC'd mid-flight (documented asyncio gotcha).
+# ---------------------------------------------------------------------------
+
+_SUPERVISOR_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _track(task: asyncio.Task[None]) -> None:
+    """Register a task so it is not garbage-collected before it completes."""
+    _SUPERVISOR_TASKS.add(task)
+    task.add_done_callback(_SUPERVISOR_TASKS.discard)
+
+
 class RunSupervisor:
     """Run lifecycle operations for registered projects."""
 
-    def __init__(self, session: AsyncSession, executor: ExecutorInterface | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        executor: ExecutorInterface | None = None,
+        session_maker: async_sessionmaker[AsyncSession] | None = None,
+    ) -> None:
         self._session = session
         self._executor = executor if executor is not None else _make_executor()
+        # session_maker used by background _supervise tasks (never the request session).
+        self._session_maker = session_maker if session_maker is not None else SessionLocal
 
     @property
     def executor(self) -> ExecutorInterface:
@@ -157,7 +180,7 @@ class RunSupervisor:
             args=args or [],
         )
 
-        handle: RunHandle = await self._executor.start(spec)
+        handle: RunHandle = await self._executor.start(spec, run_id=run_id)
 
         row.pid = handle.pid
         row.api_port = handle.api_port
@@ -166,8 +189,55 @@ class RunSupervisor:
         row.state = RunState.running.value
 
         await self._session.commit()
+
+        # Launch background supervision task; hold a strong reference so it
+        # is not garbage-collected before it writes the terminal state.
+        if handle.pid is not None:
+            task = asyncio.create_task(self._supervise(run_id, handle.pid))
+            _track(task)
+
         self._emit_event(run_id, "launched")
         return _row_to_model(row)
+
+    async def _supervise(self, run_id: str, pid: int) -> None:
+        """Await process exit and persist the real terminal state.
+
+        Uses its own session — never ``self._session``, which is request-scoped
+        and may be closed by the time the process exits.
+        """
+        handle = RunHandle(pid=pid)
+        exit_code = await self._executor.wait(handle)
+
+        async with self._session_maker() as session:
+            row = await session.get(RunRow, run_id)
+            if row is None:
+                logger.warning("_supervise: RunRow %s not found; skipping", run_id)
+                return
+
+            # Don't clobber a state already written by stop() or a prior call.
+            if RunState(row.state) not in _ACTIVE_RUN_STATES:
+                logger.info(
+                    "_supervise: run %s already terminal (state=%s); skipping",
+                    run_id,
+                    row.state,
+                )
+                return
+
+            now = datetime.now(tz=UTC)
+            row.exit_code = exit_code
+            row.finished_at = now
+            row.state = RunState.succeeded.value if exit_code == 0 else RunState.failed.value
+
+            project = await session.get(ProjectRow, row.project_id)
+            if project is not None:
+                project.last_run = now
+                project.state = "idle" if exit_code == 0 else "needs_human"
+
+            await session.commit()
+
+        final_state = RunState.succeeded.value if exit_code == 0 else RunState.failed.value
+        self._emit_event(run_id, final_state)
+        logger.info("_supervise: run %s finished => exit_code=%s", run_id, exit_code)
 
     async def get_stream_context(self, run_id: str) -> tuple[Run, RunHandle]:
         """Return (run_model, handle) for log streaming; raises ValueError if not found."""
@@ -175,24 +245,45 @@ class RunSupervisor:
         return _row_to_model(row), _build_handle(row)
 
     async def stop(self, run_id: str) -> Run:
-        """Stop a running process and persist the terminal state."""
+        """Stop a running process and persist the terminal state.
+
+        Uses the real exit code rather than hardcoding exit_code=1.  Sets state
+        to ``cancelled`` only when stop() is what actually terminated the process;
+        if the process had already exited naturally, uses the real outcome.
+        """
         row = await self._get_row(run_id)
+
+        # If _supervise already finalized the row, return current state.
+        if RunState(row.state) not in _ACTIVE_RUN_STATES:
+            return _row_to_model(row)
+
         handle = _build_handle(row)
+
+        # Snapshot liveness BEFORE we attempt to stop — determines cancelled vs real.
+        live_state_before = await self._executor.status(handle)
+        was_running = live_state_before not in (RunState.succeeded, RunState.failed)
 
         row.state = RunState.stopping.value
         await self._session.flush()
 
         await self._executor.stop(handle)
-        live_state = await self._executor.status(handle)
 
-        if live_state == RunState.succeeded:
-            row.state = RunState.succeeded.value
-            row.exit_code = 0
-        else:
-            # Process exited non-zero (or before our stop arrived) — treat as cancelled.
+        # Re-read from DB: _supervise may have committed a terminal state concurrently.
+        await self._session.refresh(row)
+        if RunState(row.state) not in _ACTIVE_RUN_STATES:
+            # _supervise beat us to it — respect its write.
+            return _row_to_model(row)
+
+        exit_code = await self._executor.wait(handle)
+
+        if was_running:
+            # We initiated the termination → cancelled.
             row.state = RunState.cancelled.value
-            row.exit_code = 1
+        else:
+            # Process had already exited before stop() was called → real outcome.
+            row.state = RunState.succeeded.value if exit_code == 0 else RunState.failed.value
 
+        row.exit_code = exit_code
         row.finished_at = datetime.now(tz=UTC)
         await self._session.commit()
         self._emit_event(run_id, "stopped")
@@ -220,6 +311,44 @@ class RunSupervisor:
             row.finished_at = datetime.now(tz=UTC)
             await self._session.commit()
             self._emit_event(row.id, live.value)
+
+    async def reconcile(self) -> None:
+        """Mark all active RunRows as failed if the executor has no live process for them.
+
+        Called at API startup.  Since LocalExecutor starts with an empty
+        ``_processes`` dict (pids do not survive an API restart), every
+        previously-active run is definitionally orphaned.  Future executor
+        implementations that CAN restore state will return a non-failed status
+        from ``executor.status()`` and are left untouched.
+        """
+        result = await self._session.execute(
+            select(RunRow).where(RunRow.state.in_([s.value for s in _ACTIVE_RUN_STATES]))
+        )
+        rows = result.scalars().all()
+        if not rows:
+            return
+
+        now = datetime.now(tz=UTC)
+        count = 0
+        for row in rows:
+            live = await self._executor.status(_build_handle(row))
+            if live not in (RunState.succeeded, RunState.failed):
+                # Executor claims still running; leave it alone.
+                continue
+
+            row.state = RunState.failed.value
+            row.error = "orphaned by control-plane restart"
+            row.finished_at = now
+
+            project = await self._session.get(ProjectRow, row.project_id)
+            if project is not None:
+                project.state = "needs_human"
+                project.last_run = now
+            count += 1
+
+        if count:
+            await self._session.commit()
+        logger.info("Startup reconciliation: %d orphaned run(s) marked failed", count)
 
     async def list(
         self,
