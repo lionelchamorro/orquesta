@@ -32,11 +32,16 @@ class VerifyState(str, Enum):
 
 
 class AgentRole(str, Enum):
+    planner = "planner"
     parser = "parser"
     coder = "coder"
     tester = "tester"
     critic = "critic"
     reviewer = "reviewer"
+    verifier = "verifier"
+    compactor = "compactor"
+    generalist = "generalist"
+    intake = "intake"
 
 
 class FeatureStatus(str, Enum):
@@ -93,9 +98,9 @@ class ProjectState(str, Enum):
 class Task(BaseModel):
     id: str
     status: TaskStatus
-    verify_state: VerifyState
+    verify_state: VerifyState = VerifyState.empty
     attempts: int
-    last_agent: AgentRole | Literal[""]
+    last_agent: str = ""
     title: str
     failure_reason: str | None = None
 
@@ -103,10 +108,10 @@ class Task(BaseModel):
 class Feature(BaseModel):
     id: str
     status: FeatureStatus
-    branch: str
-    tasks_done: int
-    tasks_failed: int
-    cost_usd: float
+    branch: str = ""
+    tasks_done: int = 0
+    tasks_failed: int = 0
+    cost_usd: float = 0.0
     title: str
     pr_url: str | None = None
 

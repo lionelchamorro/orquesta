@@ -32,13 +32,14 @@ export type AgentRole =
   | "verifier"
   | "reviewer"
   | "generalist"
+  | "intake"
 
 export interface Task {
   id: string
   status: TaskStatus
   verify_state: VerifyState
   attempts: number
-  last_agent: AgentRole | ""
+  last_agent: string
   title: string
   failure_reason?: string
 }
