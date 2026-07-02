@@ -47,24 +47,28 @@ export async function getProject(id: string): Promise<Project | undefined> {
   return undefined
 }
 
-export async function getFlows(): Promise<FlowDefinition[]> {
+export async function getFlows(projectId?: string): Promise<FlowDefinition[]> {
   const baseURL = orquestaApiBaseURL()
   if (!baseURL) return mockFlows
+  if (!projectId) return []
 
-  const raw = await fetchJSON<unknown>(`${baseURL}/flows`, undefined)
-  const flows = normalizeFlows(raw)
+  const raw = await fetchJSON<unknown>(`${baseURL}/projects/${projectId}/flows`, undefined)
   // Backend is the source of truth once configured (flows.json is seeded with
   // real defaults); reflect an empty list as empty instead of masking it with
   // mock flows.
-  return flows
+  return normalizeFlows(raw)
 }
 
-export async function getTeams(): Promise<TeamDefinition[]> {
+export async function getTeams(projectId?: string): Promise<TeamDefinition[]> {
   const baseURL = orquestaApiBaseURL()
   if (!baseURL) return mockTeams
+  if (!projectId) return mockTeams
 
-  const raw = await fetchJSON<unknown>(`${baseURL}/teams`, undefined)
-  const teams = normalizeTeams(raw)
+  // GET /projects/{projectId}/team returns a single TeamDefinition, not an array.
+  const raw = await fetchJSON<unknown>(`${baseURL}/projects/${projectId}/team`, undefined)
+  if (!raw) return mockTeams
+  // Wrap in array for backward-compatibility with callers that expect TeamDefinition[].
+  const teams = normalizeTeams(Array.isArray(raw) ? raw : [raw])
   return teams.length > 0 ? teams : mockTeams
 }
 

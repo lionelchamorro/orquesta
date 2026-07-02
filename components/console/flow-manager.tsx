@@ -43,17 +43,34 @@ export function FlowManager({
   initialFlows,
   teams,
   projects,
+  initialProjectId,
 }: {
   initialFlows: FlowDefinition[]
   teams: TeamDefinition[]
   projects: Project[]
+  initialProjectId?: string
 }) {
   const [flows, setFlows] = useState(initialFlows)
+  const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "")
   const [selectedId, setSelectedId] = useState(initialFlows[0]?.id ?? "")
   const [adding, setAdding] = useState(false)
   const [message, setMessage] = useState("")
   const selected = flows.find((flow) => flow.id === selectedId) ?? flows[0]
   const selectedJson = useMemo(() => JSON.stringify(selected ? flowExport(selected) : {}, null, 2), [selected])
+
+  async function switchProject(nextProjectId: string) {
+    setProjectId(nextProjectId)
+    setMessage("Loading flows...")
+    const res = await fetch(`/api/control-plane/projects/${nextProjectId}/flows`, { cache: "no-store" })
+    if (!res.ok) {
+      setMessage(`Could not load flows for ${nextProjectId}`)
+      return
+    }
+    const next: FlowDefinition[] = await res.json()
+    setFlows(next)
+    setSelectedId(next[0]?.id ?? "")
+    setMessage("")
+  }
 
   function updateSelected(patch: Partial<FlowDefinition>) {
     if (!selected) return
@@ -91,9 +108,9 @@ export function FlowManager({
   }
 
   async function saveSelected() {
-    if (!selected) return
+    if (!selected || !projectId) return
     setMessage("Saving flow...")
-    const res = await fetch(`/api/control-plane/flows/${selected.id}`, {
+    const res = await fetch(`/api/control-plane/projects/${projectId}/flows/${selected.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(selected),
@@ -102,7 +119,23 @@ export function FlowManager({
   }
 
   if (!selected) {
-    return <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">No flows configured.</div>
+    return (
+      <div className="space-y-4">
+        {projects.length > 0 && (
+          <label className="flex max-w-xs flex-col gap-1">
+            <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Project</span>
+            <select
+              value={projectId}
+              onChange={(event) => switchProject(event.target.value)}
+              className="rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+            >
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+          </label>
+        )}
+        <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">No flows configured for this project.</div>
+      </div>
+    )
   }
 
   return (
@@ -148,7 +181,14 @@ export function FlowManager({
         )}
 
         <div className="rounded-xl border border-border bg-card p-4">
-          <p className="font-mono text-xs uppercase tracking-wide text-muted-foreground">Run target</p>
+          <p className="font-mono text-xs uppercase tracking-wide text-muted-foreground">Editing project</p>
+          <select
+            value={projectId}
+            onChange={(event) => switchProject(event.target.value)}
+            className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+          >
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+          </select>
           <div className="mt-3 space-y-2">
             {projects.slice(0, 5).map((project) => (
               <div key={project.id} className="flex items-center justify-between gap-2 font-mono text-xs">
