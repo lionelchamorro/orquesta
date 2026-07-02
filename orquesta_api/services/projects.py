@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orquesta_api.core.integrations import git
 from orquesta_api.db.tables import ProjectRow, RepoRow
 from orquesta_api.logger import get_logger
-from orquesta_api.services.repos import RepoManager
+from orquesta_api.services.repos import CloneTargetError, RepoManager, WorkspaceDirtyError
 
 logger = get_logger(__name__)
 
@@ -88,7 +88,23 @@ class ProjectService:
 
         workspace_obj = Path(effective_workspace)
         if repo_url is not None or (workspace_obj.exists() and git.is_git_repo(workspace_obj)):
-            await RepoManager(self._session).ensure(project)
+            try:
+                await RepoManager(self._session).ensure(project)
+            except Exception as exc:
+                # ensure() runs after the project/repo rows were committed above.
+                # If the clone/adopt fails, roll the registration back instead of
+                # leaving an orphaned project with an empty workspace (this path
+                # previously surfaced to the client as an opaque 502).
+                await self._session.delete(repo)
+                await self._session.delete(project)
+                await self._session.commit()
+                if managed:
+                    shutil.rmtree(effective_workspace, ignore_errors=True)
+                if isinstance(exc, CloneTargetError | WorkspaceDirtyError | ValueError):
+                    raise
+                raise CloneTargetError(
+                    f"Could not initialise workspace for '{slug}': {exc}"
+                ) from exc
 
         logger.info("Created project => %s", slug)
         return project

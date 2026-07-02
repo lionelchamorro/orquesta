@@ -1,4 +1,4 @@
-import { flows as mockFlows, projects as mockProjects, teams as mockTeams } from "./mock-data"
+import { flows as mockFlows, teams as mockTeams } from "./mock-data"
 import type { AgentDefinition, Feature, FlowDefinition, Project, Task, TeamDefinition, TeamRoleDefinition } from "./types"
 
 type RawTask = Partial<Task> & { description?: string }
@@ -32,7 +32,7 @@ export async function getProjects(): Promise<Project[]> {
   if (controlPlaneProjects.length > 0) return controlPlaneProjects
 
   const live = await getLiveProject()
-  return live ? [live] : mockProjects
+  return live ? [live] : []
 }
 
 export async function getProject(id: string): Promise<Project | undefined> {
@@ -44,7 +44,7 @@ export async function getProject(id: string): Promise<Project | undefined> {
 
   const live = await getLiveProject()
   if (live) return live.id === id ? live : undefined
-  return mockProjects.find((p) => p.id === id)
+  return undefined
 }
 
 export async function getFlows(): Promise<FlowDefinition[]> {
@@ -53,7 +53,10 @@ export async function getFlows(): Promise<FlowDefinition[]> {
 
   const raw = await fetchJSON<unknown>(`${baseURL}/flows`, undefined)
   const flows = normalizeFlows(raw)
-  return flows.length > 0 ? flows : mockFlows
+  // Backend is the source of truth once configured (flows.json is seeded with
+  // real defaults); reflect an empty list as empty instead of masking it with
+  // mock flows.
+  return flows
 }
 
 export async function getTeams(): Promise<TeamDefinition[]> {

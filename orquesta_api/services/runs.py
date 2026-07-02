@@ -38,11 +38,27 @@ def _build_handle(row: RunRow) -> RunHandle:
     return RunHandle(pid=row.pid, api_port=row.api_port, container_id=row.container_id)
 
 
+# States for which the executor is still the source of truth about liveness.
+_ACTIVE_RUN_STATES = frozenset(
+    {RunState.queued, RunState.starting, RunState.running, RunState.stopping}
+)
+
+
+_LOCAL_EXECUTOR: ExecutorInterface | None = None
+
+
 def _make_executor() -> ExecutorInterface:
+    # The local executor keeps live process + log-buffer state in memory, so it
+    # must be a process-wide singleton: /logs and /stop run in later requests
+    # and need the same instance that launched the process. (Assumes a single
+    # uvicorn worker, which is how the container runs it.)
+    global _LOCAL_EXECUTOR
     if settings.run_executor == "local":
         from orquesta_api.executors.local import LocalExecutor
 
-        return LocalExecutor()
+        if _LOCAL_EXECUTOR is None:
+            _LOCAL_EXECUTOR = LocalExecutor()
+        return _LOCAL_EXECUTOR
     raise ValueError(f"Unknown executor '{settings.run_executor}'")
 
 
@@ -135,9 +151,27 @@ class RunSupervisor:
         return _row_to_model(row)
 
     async def get(self, run_id: str) -> Run:
-        """Return the persisted run by id; raise ValueError if absent."""
+        """Return the run by id, reconciling a stale active state with the executor."""
         row = await self._get_row(run_id)
+        await self._reconcile(row)
         return _row_to_model(row)
+
+    async def _reconcile(self, row: RunRow) -> None:
+        """Transition a row the DB still calls active to its terminal state.
+
+        The executor holds live process state; nothing pushes a run to
+        succeeded/failed when the process exits, so runs would otherwise stay
+        'running' forever. Ask the executor and persist a terminal outcome.
+        """
+        if RunState(row.state) not in _ACTIVE_RUN_STATES or row.pid is None:
+            return
+        live = await self._executor.status(_build_handle(row))
+        if live in (RunState.succeeded, RunState.failed):
+            row.state = live.value
+            row.exit_code = 0 if live is RunState.succeeded else 1
+            row.finished_at = datetime.now(tz=UTC)
+            await self._session.commit()
+            self._emit_event(row.id, live.value)
 
     async def list(
         self,

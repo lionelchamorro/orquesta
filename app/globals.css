@@ -2,6 +2,14 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 
+/* Explicit source globs (paths relative to this file). Tailwind v4's automatic
+   content detection relies on git-root heuristics that miss the sources in a
+   production build inside the container (no .git in context), producing an
+   almost-empty stylesheet. These make the scan deterministic. */
+@source '../app';
+@source '../components';
+@source '../lib';
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

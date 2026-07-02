@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from orquesta_api.config import settings
 from orquesta_api.logger import get_logger
 from orquesta_api.meta.executor import ExecutorInterface
-from orquesta_api.meta.models import Container, RunHandle, RunSpec, RunState
+from orquesta_api.meta.models import Container, RunHandle, RunKind, RunSpec, RunState
 
 logger = get_logger(__name__)
 
@@ -27,20 +27,39 @@ class LocalExecutor(ExecutorInterface):
         self._log_cache: dict[int, list[str]] = {}
         self._reader_tasks: dict[int, asyncio.Task[None]] = {}
 
+    def _build_command(self, spec: RunSpec, port: int) -> list[str]:
+        """Assemble a well-formed orq-lite invocation for the run.
+
+        orq-lite reads os.Args[1] as the subcommand and parses the rest with
+        Go's flag package, which stops at the first positional argument. So the
+        subcommand comes first and any flags (including --addr) must precede the
+        positional (features.md / plan.md) carried in spec.args. Only factory
+        and run host the dashboard the aggregator proxies; run does not serve by
+        default so it needs an explicit --serve, and plan has neither.
+        """
+        cmd = [self._bin, spec.kind.value]
+        if spec.serve and spec.kind in (RunKind.factory, RunKind.run):
+            cmd += ["--addr", f"127.0.0.1:{port}"]
+            if spec.kind is RunKind.run:
+                cmd.append("--serve")
+        cmd += spec.args
+        return cmd
+
     async def start(self, spec: RunSpec) -> RunHandle:
-        """Spawn orq-lite and return a handle with pid and api_port."""
+        """Spawn orq-lite in the project workspace; return a handle with pid and port."""
         port = _find_free_port()
-        cmd = [self._bin, "--addr", f"127.0.0.1:{port}", *spec.args]
+        cmd = self._build_command(spec, port)
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            cwd=spec.workspace_path or None,
         )
         pid = process.pid
         self._processes[pid] = process
         self._log_cache[pid] = []
         self._reader_tasks[pid] = asyncio.create_task(self._collect_output(pid))
-        logger.info("Started process => pid=%s port=%s", pid, port)
+        logger.info("Started process => pid=%s port=%s cwd=%s cmd=%s", pid, port, spec.workspace_path, " ".join(cmd))
         return RunHandle(pid=pid, api_port=port)
 
     async def stop(self, handle: RunHandle, grace_s: int = 10) -> None:

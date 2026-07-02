@@ -1,0 +1,61 @@
+# Orquesta all-in-one deploy.
+#
+#   cd deploy && docker compose up -d --build
+#
+# Credentials come from the HOST: log in once on the host with each CLI
+#   claude        (writes ~/.claude + ~/.claude.json)
+#   codex login   (writes ~/.codex)
+#   gemini        (writes ~/.gemini)
+#   opencode auth login  (writes ~/.local/share/opencode + ~/.config/opencode)
+# The mounts below expose those dirs read-write (the CLIs rotate OAuth tokens
+# in place), so the container is already logged in.
+#
+# The container exposes ONLY the frontend on :3000. Point your external reverse
+# proxy (nginx/caddy/traefik, TLS-terminating) at http://<host-ip>:3000.
+# See deploy/nginx.conf.example — SSE needs proxy buffering OFF.
+
+services:
+  orquesta:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: orquesta:local
+    restart: unless-stopped
+    ports:
+      # host:container — the proxy targets host ${WEB_PORT:-3000}.
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      # Server-side upstream resolution (never reaches the browser).
+      ORQUESTA_API_URL: "http://127.0.0.1:8000"
+      OPENCODE_SERVER_URL: "http://127.0.0.1:4096"
+      # Legacy single-project live-events panel is OFF by default (multi-project
+      # events flow through the api per run). Uncomment + run one `orq-lite serve`
+      # if you want the legacy global panel.
+      # ORQ_LITE_API_URL: "http://127.0.0.1:4173"
+      #
+      # Do NOT set NEXT_PUBLIC_*_URL — it would bake a URL into the browser
+      # bundle and break the proxy model.
+      #
+      # GitHub token so the api can clone PRIVATE repos over HTTPS. Put it in
+      # deploy/.env (GITHUB_TOKEN=ghp_...). Leave empty for public repos only.
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      GH_TOKEN: "${GH_TOKEN:-}"
+    volumes:
+      # Host subscription credentials (read-write: tokens refresh in place).
+      - ~/.claude:/home/ubuntu/.claude
+      - ~/.claude.json:/home/ubuntu/.claude.json
+      - ~/.codex:/home/ubuntu/.codex
+      - ~/.gemini:/home/ubuntu/.gemini
+      - ~/.config/opencode:/home/ubuntu/.config/opencode
+      - ~/.local/share/opencode:/home/ubuntu/.local/share/opencode
+      # Optional: SSH keys for cloning private repos via git@github.com: URLs.
+      # (For https:// URLs use GITHUB_TOKEN above instead.)
+      # - ~/.ssh:/home/ubuntu/.ssh:ro
+      # Persistent app state: sqlite db, editable team.json, cloned workspaces.
+      - orquesta-data:/data
+    # Optional: if you later switch the api to a container/docker executor,
+    # mount the host docker socket here and add the user to the docker group.
+    # - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  orquesta-data:
