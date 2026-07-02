@@ -83,7 +83,7 @@ class LocalExecutor(ExecutorInterface):
         logger.info(
             "Started process => pid=%s cwd=%s cmd=%s", pid, spec.workspace_path, " ".join(cmd)
         )
-        return RunHandle(pid=pid)
+        return RunHandle(pid=pid, run_id=run_id or None)
 
     async def stop(self, handle: RunHandle, grace_s: int = 10) -> None:
         """SIGTERM the process; escalate to SIGKILL after grace_s seconds."""
@@ -161,12 +161,25 @@ class LocalExecutor(ExecutorInterface):
     async def _logs_gen(
         self, handle: RunHandle, tail: int | None = None
     ) -> AsyncGenerator[str, None]:
-        if handle.pid is None:
-            return
-        cache = self._log_cache.get(handle.pid)
-        if cache is None:
-            return
+        # Try in-memory cache first (process was started in this executor instance).
+        cache = None
+        if handle.pid is not None:
+            cache = self._log_cache.get(handle.pid)
 
+        if cache is not None:
+            async for line in self._logs_from_cache(handle, cache, tail):
+                yield line
+        else:
+            async for line in self._logs_from_disk(handle, tail):
+                yield line
+
+    async def _logs_from_cache(
+        self,
+        handle: RunHandle,
+        cache: collections.deque[str],
+        tail: int | None,
+    ) -> AsyncGenerator[str, None]:
+        """Yield lines from the in-memory log cache (live or tail)."""
         if tail is not None:
             # deque does not support slice notation; convert to list for slicing.
             tail_lines = list(cache)[-tail:] if tail > 0 else []
@@ -189,3 +202,25 @@ class LocalExecutor(ExecutorInterface):
                     pos += 1
                 break
             await asyncio.sleep(0.05)
+
+    async def _logs_from_disk(
+        self, handle: RunHandle, tail: int | None
+    ) -> AsyncGenerator[str, None]:
+        """Disk fallback: used after a control-plane restart when _log_cache is empty.
+
+        A process that left no in-memory cache has already exited; read the disk
+        mirror once and stop — no busy-loop needed.
+        """
+        if handle.run_id is None:
+            return
+        log_file = self._log_dir / f"{handle.run_id}.log"
+        if not log_file.exists():
+            return
+        lines = log_file.read_text().splitlines()
+        if tail is not None:
+            for line in lines[-tail:] if tail > 0 else []:
+                yield line
+        else:
+            # live-follow with disk fallback: yield all lines once and terminate.
+            for line in lines:
+                yield line

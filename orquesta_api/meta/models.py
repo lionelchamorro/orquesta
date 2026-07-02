@@ -205,6 +205,7 @@ class RunHandle(BaseModel):
     container_id: str | None = None
     pid: int | None = None
     api_port: int | None = None
+    run_id: str | None = None
 
 
 class Container(BaseModel):

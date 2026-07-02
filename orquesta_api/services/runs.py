@@ -38,7 +38,9 @@ def _row_to_model(row: RunRow) -> Run:
 
 
 def _build_handle(row: RunRow) -> RunHandle:
-    return RunHandle(pid=row.pid, api_port=row.api_port, container_id=row.container_id)
+    return RunHandle(
+        pid=row.pid, api_port=row.api_port, container_id=row.container_id, run_id=row.id
+    )
 
 
 # States for which the executor is still the source of truth about liveness.
@@ -205,7 +207,7 @@ class RunSupervisor:
         Uses its own session — never ``self._session``, which is request-scoped
         and may be closed by the time the process exits.
         """
-        handle = RunHandle(pid=pid)
+        handle = RunHandle(pid=pid, run_id=run_id)
         exit_code = await self._executor.wait(handle)
 
         async with self._session_maker() as session:

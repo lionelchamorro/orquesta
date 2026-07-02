@@ -213,6 +213,85 @@ async def test_log_mirroring_writes_disk_file(
 
 
 # ---------------------------------------------------------------------------
+# Extra: disk fallback for logs after control-plane restart
+# ---------------------------------------------------------------------------
+
+
+async def test_disk_fallback_tail_after_restart(
+    db, project: str, fake_bin: str, tmp_path: Path
+) -> None:
+    """After restart, tail=N reads the last N lines from the disk log file."""
+    log_dir = tmp_path / "run-logs"
+    executor = LocalExecutor(bin_path=fake_bin, log_dir=log_dir)
+
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        run = await svc.launch(project, kind=RunKind.run)
+
+    run_id = run.id
+    await _wait_for_supervisor_tasks()
+
+    log_file = log_dir / f"{run_id}.log"
+    assert log_file.exists(), "disk log must exist before testing fallback"
+    expected_lines = log_file.read_text().splitlines()
+    assert expected_lines, "fake binary should have produced at least one line"
+
+    # Simulate control-plane restart: fresh executor with same log_dir, empty _log_cache.
+    from orquesta_api.meta.models import RunHandle
+
+    fresh_executor = LocalExecutor(bin_path=fake_bin, log_dir=log_dir)
+    handle = RunHandle(run_id=run_id)  # pid=None — no in-memory state
+
+    # tail=5: last 5 lines from disk (only 1 line exists, so returns all of them).
+    lines = [line async for line in fresh_executor.logs(handle, tail=5)]
+    assert lines == expected_lines[-5:], f"tail=5: expected {expected_lines[-5:]!r}, got {lines!r}"
+
+    # tail=0: empty, matching in-memory semantics.
+    empty = [line async for line in fresh_executor.logs(handle, tail=0)]
+    assert empty == [], f"tail=0 should return nothing, got {empty!r}"
+
+
+async def test_disk_fallback_full_stream_after_restart(
+    db, project: str, fake_bin: str, tmp_path: Path
+) -> None:
+    """After restart, tail=None yields the full disk file once and terminates (no hang)."""
+    log_dir = tmp_path / "run-logs"
+    executor = LocalExecutor(bin_path=fake_bin, log_dir=log_dir)
+
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        run = await svc.launch(project, kind=RunKind.run)
+
+    run_id = run.id
+    await _wait_for_supervisor_tasks()
+
+    log_file = log_dir / f"{run_id}.log"
+    assert log_file.exists()
+    expected_lines = log_file.read_text().splitlines()
+
+    # Simulate restart: fresh executor, no in-memory state.
+    from orquesta_api.meta.models import RunHandle
+
+    fresh_executor = LocalExecutor(bin_path=fake_bin, log_dir=log_dir)
+    handle = RunHandle(run_id=run_id)
+
+    lines = [line async for line in fresh_executor.logs(handle, tail=None)]
+    assert lines == expected_lines, f"full stream: expected {expected_lines!r}, got {lines!r}"
+
+
+async def test_disk_fallback_missing_file_returns_empty(tmp_path: Path) -> None:
+    """Missing log file returns an empty iterator — no exception raised."""
+    log_dir = tmp_path / "run-logs"
+    log_dir.mkdir()
+    fresh_executor = LocalExecutor(log_dir=log_dir)
+    from orquesta_api.meta.models import RunHandle
+
+    handle = RunHandle(run_id="nonexistent-run-id")
+    lines = [line async for line in fresh_executor.logs(handle, tail=5)]
+    assert lines == []
+
+
+# ---------------------------------------------------------------------------
 # Extra: stop() uses real exit code, not hardcoded 1
 # ---------------------------------------------------------------------------
 
