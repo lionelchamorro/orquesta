@@ -60,6 +60,7 @@ max-complexity = 10
 "test/test_repo_manager.py" = ["S603", "S607"]
 "test/test_repos.py" = ["S603", "S607"]
 "test/test_projects.py" = ["S603", "S607"]
+"test/test_orqlite_smoke.py" = ["S603", "S607"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -67,6 +68,9 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["test"]
 asyncio_mode = "auto"
+markers = [
+    "orqlite: requires the real orq-lite binary on PATH (skipped otherwise)",
+]
 
 [tool.pyrefly]
 python-version = "3.12"
