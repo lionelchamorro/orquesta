@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Central config for orquesta_api; all fields can be overridden via env vars."""
 
+    env: str = "development"
     database_url: str = "sqlite+aiosqlite:///./orquesta_api.db"
     run_executor: str = "local"
     workspaces_dir: str = "./workspaces"

@@ -76,7 +76,14 @@ async function getControlPlaneProjects(): Promise<Project[]> {
 
 async function fetchJSON<T>(url: string, fallback: T): Promise<T> {
   try {
-    const res = await fetch(url, { cache: "no-store" })
+    // Server Components fetch the control plane directly (not through the
+    // /api/control-plane proxy), so the token has to be attached here too —
+    // server-side only, ORQUESTA_API_TOKEN is never a NEXT_PUBLIC_* var.
+    const token = process.env.ORQUESTA_API_TOKEN
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
     if (!res.ok) return fallback
     return (await res.json()) as T
   } catch {

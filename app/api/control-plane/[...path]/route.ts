@@ -19,6 +19,14 @@ async function proxy(req: NextRequest, context: Context) {
   headers.delete("host")
   headers.delete("connection")
 
+  // Server-side only: the token never reaches the browser. NEXT_PUBLIC_* env
+  // vars are inlined into the client bundle, so this must stay a plain
+  // (non-NEXT_PUBLIC_) var.
+  const token = process.env.ORQUESTA_API_TOKEN
+  if (token) {
+    headers.set("authorization", `Bearer ${token}`)
+  }
+
   const upstream = await fetch(upstreamURL, {
     method: req.method,
     headers,

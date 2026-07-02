@@ -6,7 +6,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from orquesta_api.core.auth import bearer_auth_middleware, startup_check
 from orquesta_api.db.session import SessionLocal, engine
 from orquesta_api.db.tables import Base, ProjectRow
 from orquesta_api.logger import get_logger
@@ -97,7 +99,10 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 def create_app() -> FastAPI:
     """Return a configured FastAPI instance."""
+    startup_check()
+
     app = FastAPI(lifespan=_lifespan)
+    app.add_middleware(BaseHTTPMiddleware, dispatch=bearer_auth_middleware)
 
     app.include_router(projects_router)
     app.include_router(flows_router)

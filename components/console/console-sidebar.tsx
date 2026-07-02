@@ -2,11 +2,12 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, Boxes, MessagesSquare, Users, Settings, Workflow, Gamepad2 } from "lucide-react"
+import { LayoutDashboard, Boxes, MessagesSquare, Users, Settings, Workflow, Gamepad2, LogOut } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { BrandWordmark } from "@/components/brand-mark"
 import type { Project } from "@/lib/types"
 import { StateDot } from "@/components/status-badge"
+import { logout } from "@/app/login/actions"
 
 const nav = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
@@ -95,6 +96,15 @@ export function ConsoleSidebar({ projects }: { projects: Project[] }) {
           <Settings className="h-4 w-4" />
           Settings
         </Link>
+        <form action={logout}>
+          <button
+            type="submit"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-mono text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-foreground"
+          >
+            <LogOut className="h-4 w-4" />
+            Sign out
+          </button>
+        </form>
       </div>
     </aside>
   )
