@@ -187,6 +187,13 @@ class ProjectService:
         await self._session.commit()
 
         if self._serves is not None:
-            await self._serves.stop(id)
+            try:
+                await self._serves.stop(id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not stop serve after project delete => project_id=%s error=%s",
+                    id,
+                    exc,
+                )
 
         logger.info("Deleted project => %s", id)
