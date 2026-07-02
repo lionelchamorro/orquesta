@@ -12,7 +12,13 @@ reverse proxy reached by IP.
 | Next.js front  | `0.0.0.0:3000`   | **yes**  | the only public port; the proxy targets it |
 | FastAPI api    | `127.0.0.1:8000` | no       | `ORQUESTA_API_URL`; spawns orq-lite per run |
 | opencode serve | `127.0.0.1:4096` | no       | `OPENCODE_SERVER_URL`; backs the global chat |
-| orq-lite       | ephemeral loopback | no     | one process **per run**, launched by the api |
+| orq-lite       | ephemeral loopback | no     | real upstream release (v0.2.0); one process **per run**, launched by the api |
+
+The container ships the real `orq-lite` release binary (github.com/lionelchamorro/
+orquesta-lite) and **self-updates on every start** via `sudo orq-lite update`
+(best-effort, time-boxed — a slow/offline start never blocks boot). Default
+flows.json / team.json / prompts are scaffolded from that binary and seeded into
+`/data` on first boot.
 
 Managed by `supervisord`; all logs go to `docker logs`.
 
