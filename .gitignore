@@ -28,3 +28,9 @@ __pycache__/
 *.zip
 workspaces/
 .orquestalite/
+.env
+!.env.schema
+.tmp/
+.scratch/
+.worktrees/
+.journals/
