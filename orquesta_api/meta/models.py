@@ -61,6 +61,9 @@ class EventKind(str, Enum):
     cycle_end = "cycle_end"
     tester_verification_failed = "tester_verification_failed"
     full_suite_failed = "full_suite_failed"
+    run_started = "run_started"
+    run_finished = "run_finished"
+    task_routed = "task_routed"
 
 
 class RunState(str, Enum):
@@ -117,9 +120,13 @@ class Feature(BaseModel):
 
 
 class RunEvent(BaseModel):
+    # extra="allow" lets future orq-lite fields (e.g. run_id) and control-plane
+    # lifecycle stamping pass through without a model change on every rev.
+    model_config = ConfigDict(extra="allow")
+
     ts: str
     event: EventKind
-    role: AgentRole | None = None
+    role: str | None = None
     agent: str | None = None
     status: str | None = None
     task_id: str | None = None

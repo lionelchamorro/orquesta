@@ -71,11 +71,16 @@ export type EventKind =
   | "cycle_end"
   | "tester_verification_failed"
   | "full_suite_failed"
+  | "run_started"
+  | "run_finished"
+  | "task_routed"
 
 export interface RunEvent {
   ts: string
   event: EventKind
-  role?: AgentRole
+  // Real orq-lite roles are opaque strings (planner|verifier|generalist|...),
+  // not the closed AgentRole enum — mirrors orquesta_api.meta.models.RunEvent.role.
+  role?: string
   agent?: string
   status?: string
   task_id?: string
@@ -86,6 +91,8 @@ export interface RunEvent {
   command?: string
   commit_sha?: string
   project?: string
+  run_id?: string
+  [key: string]: unknown
 }
 
 export interface ProjectWatch {

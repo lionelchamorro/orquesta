@@ -1,5 +1,6 @@
 """Projects router: CRUD endpoints for the project registry."""
 
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -9,12 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.db.session import get_session
 from orquesta_api.db.tables import ProjectRow
-from orquesta_api.meta.models import AgentRole, Feature, Project, ProjectState, ProjectWatch, Task
+from orquesta_api.meta.models import Feature, Project, ProjectState, ProjectWatch, Task
 from orquesta_api.services.aggregator import Aggregator, CostSnapshot
 from orquesta_api.services.projects import ProjectService
 from orquesta_api.services.serves import ServeManager
 
-_VALID_ROLES = {role.value for role in AgentRole}
+# Role names are opaque strings owned by team.json, not a closed enum (orq-lite
+# accepts arbitrary role names and returns null for unknown ones itself,
+# web/server.go:95-104). This only guards against path-traversal-shaped input.
+_VALID_ROLE_PATTERN = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -182,7 +186,7 @@ async def get_project_result(
     project_id: str, role: str, session: SessionDep, serves: ServesDep
 ) -> dict:
     """Return result JSON for role from the active orq-lite serve; 400 for invalid roles."""
-    if role not in _VALID_ROLES:
+    if not _VALID_ROLE_PATTERN.match(role):
         raise ValueError(f"invalid role {role!r}")
     agg = Aggregator(serves=serves)
     return await agg.get_result(project_id, role)

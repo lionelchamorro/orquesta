@@ -9,11 +9,13 @@ from fastapi.responses import JSONResponse
 from orquesta_api.db.session import SessionLocal, engine
 from orquesta_api.db.tables import Base
 from orquesta_api.logger import get_logger
+from orquesta_api.routers.events import router as events_router
 from orquesta_api.routers.flows import router as flows_router
 from orquesta_api.routers.projects import router as projects_router
 from orquesta_api.routers.repos import router as repos_router
 from orquesta_api.routers.runs import router as runs_router
 from orquesta_api.routers.teams import router as teams_router
+from orquesta_api.services.events import get_event_bus
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
 from orquesta_api.services.runs import RunSupervisor, _make_executor
 from orquesta_api.services.serves import ServeManager
@@ -35,6 +37,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     serves = ServeManager()
     app.state.serves = serves
+    app.state.events = get_event_bus()
 
     async with SessionLocal() as session:
         await serves.start_all(session)
@@ -92,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(teams_router)
     app.include_router(repos_router)
     app.include_router(runs_router)
+    app.include_router(events_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

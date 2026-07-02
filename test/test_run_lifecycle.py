@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from orquesta_api.db.tables import Base, ProjectRow, RunRow
 from orquesta_api.executors.local import LocalExecutor
-from orquesta_api.meta.models import RunKind, RunState
+from orquesta_api.meta.models import EventKind, RunKind, RunState
 from orquesta_api.services import runs as runs_module
+from orquesta_api.services.events import EventBus
 from orquesta_api.services.runs import RunSupervisor
 
 # ---------------------------------------------------------------------------
@@ -319,3 +320,34 @@ async def test_stop_uses_real_exit_code(
     # Already succeeded — stop() must not clobber with cancelled/exit_code=1.
     assert stopped.state == RunState.succeeded
     assert stopped.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Extra: run_started/run_finished lifecycle events reach the EventBus
+# ---------------------------------------------------------------------------
+
+
+async def test_launch_and_finish_publish_lifecycle_events(
+    db, project: str, fake_bin: str, tmp_path: Path
+) -> None:
+    """launch() emits run_started and _supervise() emits run_finished, both project-stamped."""
+    log_dir = tmp_path / "run-logs"
+    executor = LocalExecutor(bin_path=fake_bin, log_dir=log_dir)
+    bus = EventBus()
+
+    async with bus.subscribe(project_id=project) as queue:
+        async with db() as session:
+            svc = RunSupervisor(session, executor=executor, session_maker=db, events=bus)
+            run = await svc.launch(project, kind=RunKind.run)
+
+        started = await asyncio.wait_for(queue.get(), timeout=2.0)
+        assert started.event == EventKind.run_started
+        assert started.project == project
+        assert started.run_id == run.id  # type: ignore[attr-defined]
+
+        await _wait_for_supervisor_tasks()
+
+        finished = await asyncio.wait_for(queue.get(), timeout=2.0)
+        assert finished.event == EventKind.run_finished
+        assert finished.project == project
+        assert finished.status == RunState.succeeded.value

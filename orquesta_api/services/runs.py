@@ -13,7 +13,8 @@ from orquesta_api.db.session import SessionLocal
 from orquesta_api.db.tables import ProjectRow, RunRow
 from orquesta_api.logger import get_logger
 from orquesta_api.meta.executor import ExecutorInterface
-from orquesta_api.meta.models import Run, RunHandle, RunKind, RunSpec, RunState
+from orquesta_api.meta.models import EventKind, Run, RunEvent, RunHandle, RunKind, RunSpec, RunState
+from orquesta_api.services.events import EventBus, get_event_bus
 
 logger = get_logger(__name__)
 
@@ -115,11 +116,13 @@ class RunSupervisor:
         session: AsyncSession,
         executor: ExecutorInterface | None = None,
         session_maker: async_sessionmaker[AsyncSession] | None = None,
+        events: EventBus | None = None,
     ) -> None:
         self._session = session
         self._executor = executor if executor is not None else _make_executor()
         # session_maker used by background _supervise tasks (never the request session).
         self._session_maker = session_maker if session_maker is not None else SessionLocal
+        self._events = events if events is not None else get_event_bus()
 
     @property
     def executor(self) -> ExecutorInterface:
@@ -198,7 +201,7 @@ class RunSupervisor:
             task = asyncio.create_task(self._supervise(run_id, handle.pid))
             _track(task)
 
-        self._emit_event(run_id, "launched")
+        await self._emit_lifecycle(row, EventKind.run_started, status=kind.value)
         return _row_to_model(row)
 
     async def _supervise(self, run_id: str, pid: int) -> None:
@@ -238,7 +241,7 @@ class RunSupervisor:
             await session.commit()
 
         final_state = RunState.succeeded.value if exit_code == 0 else RunState.failed.value
-        self._emit_event(run_id, final_state)
+        await self._emit_lifecycle(row, EventKind.run_finished, status=final_state)
         logger.info("_supervise: run %s finished => exit_code=%s", run_id, exit_code)
 
     async def get_stream_context(self, run_id: str) -> tuple[Run, RunHandle]:
@@ -288,7 +291,7 @@ class RunSupervisor:
         row.exit_code = exit_code
         row.finished_at = datetime.now(tz=UTC)
         await self._session.commit()
-        self._emit_event(run_id, "stopped")
+        await self._emit_lifecycle(row, EventKind.run_finished, status=row.state)
         return _row_to_model(row)
 
     async def get(self, run_id: str) -> Run:
@@ -312,7 +315,7 @@ class RunSupervisor:
             row.exit_code = 0 if live is RunState.succeeded else 1
             row.finished_at = datetime.now(tz=UTC)
             await self._session.commit()
-            self._emit_event(row.id, live.value)
+            await self._emit_lifecycle(row, EventKind.run_finished, status=live.value)
 
     async def reconcile(self) -> None:
         """Mark all active RunRows as failed if the executor has no live process for them.
@@ -372,5 +375,14 @@ class RunSupervisor:
             raise ValueError(f"Run '{run_id}' not found")
         return row
 
-    def _emit_event(self, run_id: str, event: str) -> None:
-        logger.info("Run event => run_id=%s event=%s (stubbed until EventBus slice)", run_id, event)
+    async def _emit_lifecycle(self, row: RunRow, kind: EventKind, **extra: object) -> None:
+        """Publish a run_started/run_finished event stamped with the run's project."""
+        await self._events.publish(
+            RunEvent(
+                ts=datetime.now(tz=UTC).isoformat(),
+                event=kind,
+                project=row.project_id,
+                run_id=row.id,
+                **extra,
+            )
+        )
