@@ -40,6 +40,10 @@ services:
       # deploy/.env (GITHUB_TOKEN=ghp_...). Leave empty for public repos only.
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       GH_TOKEN: "${GH_TOKEN:-}"
+      # Anthropic API key for the built-in chat (main's chat service uses the
+      # Anthropic SDK, which needs a real API key — the Claude OAuth/subscription
+      # in ~/.claude does NOT work for it). Put it in deploy/.env.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:
       # Host subscription credentials (read-write: tokens refresh in place).
       - ~/.claude:/home/ubuntu/.claude
@@ -48,9 +52,12 @@ services:
       - ~/.gemini:/home/ubuntu/.gemini
       - ~/.config/opencode:/home/ubuntu/.config/opencode
       - ~/.local/share/opencode:/home/ubuntu/.local/share/opencode
+      # gh CLI auth (host `gh auth login`) so orq-lite watch/review + factory --pr
+      # can call the GitHub API. Comment out if you drive gh via GITHUB_TOKEN.
+      - ~/.config/gh:/home/ubuntu/.config/gh:ro
       # Optional: SSH keys for cloning private repos via git@github.com: URLs.
       # (For https:// URLs use GITHUB_TOKEN above instead.)
-      # - ~/.ssh:/home/ubuntu/.ssh:ro
+      - ~/.ssh:/home/ubuntu/.ssh:ro
       # Persistent app state: sqlite db, editable team.json, cloned workspaces.
       - orquesta-data:/data
     # Optional: if you later switch the api to a container/docker executor,

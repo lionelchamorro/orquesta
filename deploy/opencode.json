@@ -1,0 +1,32 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "orquesta": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8765/mcp",
+      "enabled": true
+    }
+  },
+  "agent": {
+    "orquesta": {
+      "description": "Orquesta control-plane operator — registers projects, launches flows, manages watchers.",
+      "mode": "primary",
+      "model": "opencode/deepseek-v4-flash-free",
+      "prompt": "{file:./orquesta-agent.md}",
+      "tools": {
+        "orquesta_list_projects": true,
+        "orquesta_get_project": true,
+        "orquesta_register_project": true,
+        "orquesta_list_flows": true,
+        "orquesta_launch_flow": true,
+        "orquesta_set_watchers": true,
+        "orquesta_start_watch_daemon": true,
+        "orquesta_list_runs": true,
+        "orquesta_stop_run": true
+      }
+    }
+  },
+  "permission": {
+    "orquesta_*": "allow"
+  }
+}
