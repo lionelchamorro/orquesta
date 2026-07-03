@@ -99,7 +99,9 @@ async def ensure_workspace_ready(workspace: str, bin_path: str) -> None:
         )
         exit_code = await proc.wait()
         if exit_code != 0:
-            raise RuntimeError(f"orq-lite init failed (exit {exit_code}) in workspace {workspace!r}")
+            raise RuntimeError(
+                f"orq-lite init failed (exit {exit_code}) in workspace {workspace!r}"
+            )
 
     # Add the shipped example flows (factory_governed, pr_review, issue_fix) and
     # their roles/prompts on top of the base config. Idempotent.
