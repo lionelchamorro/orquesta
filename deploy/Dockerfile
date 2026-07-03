@@ -137,6 +137,10 @@ COPY --from=web --chown=ubuntu:ubuntu /app /app
 WORKDIR /srv/api
 COPY pyproject.toml uv.lock ./
 COPY orquesta_api ./orquesta_api
+# Alembic config + migrations: main gates startup on the schema being at the
+# Alembic head (replaced blind create_all), so these must ship in the image.
+COPY alembic.ini ./
+COPY alembic ./alembic
 RUN uv sync --frozen --no-dev
 # Version-matched default configs scaffolded by the release binary (not this
 # repo's old fork); seeded into /data on first boot. Prompts + schemas back the

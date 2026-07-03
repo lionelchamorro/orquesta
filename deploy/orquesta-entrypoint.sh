@@ -44,4 +44,15 @@ if [ -n "$GIT_TOKEN" ]; then
   echo "git: HTTPS GitHub clones authenticated via token"
 fi
 
+# --- database schema ---------------------------------------------------------
+# main gates startup on the schema being at the Alembic head (ensure_schema_current
+# raises otherwise). Upgrade an existing DB, or create a fresh one from the
+# migrations, before the API starts.
+export DATABASE_URL="${DATABASE_URL:-sqlite+aiosqlite:////data/orquesta_api.db}"
+if ( cd /srv/api && /srv/api/.venv/bin/alembic upgrade head ) 2>&1 | sed 's/^/  alembic: /'; then
+  echo "  alembic: schema at head"
+else
+  echo "  alembic: upgrade failed — the API will report schema status on start"
+fi
+
 exec supervisord -c /etc/orquesta/supervisord.conf
