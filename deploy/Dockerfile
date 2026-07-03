@@ -39,12 +39,28 @@ RUN curl -fsSL -o orq.tgz \
     && mv "orq-lite-${ORQ_LITE_VERSION}-linux-amd64/orq-lite" /out/orq-lite \
     && chmod +x /out/orq-lite \
     && rm -rf orq.tgz "orq-lite-${ORQ_LITE_VERSION}-linux-amd64"
+# GitHub CLI (gh): orq-lite's `watch`/`review` commands and the factory `--pr`
+# step shell out to it (gh issue list, gh pr create/diff/checkout). Without it
+# `orq-lite watch` errors every tick with "gh: executable file not found".
+ARG GH_VERSION=2.96.0
+RUN curl -fsSL -o gh.tgz \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+    && tar xzf gh.tgz \
+    && mv "gh_${GH_VERSION}_linux_amd64/bin/gh" /out/gh \
+    && rm -rf gh.tgz "gh_${GH_VERSION}_linux_amd64"
 # Version-matched default configs. As of v0.2.0 the defaults are embedded in the
 # binary (no root flows.json/team.json to fetch), and `orq-lite init` scaffolds
 # flows.json (factory, factory_fast) + team.json + prompts/ + schemas/. The
 # flow engine loads flows.json + prompts/<role>.md from the run's working dir.
 RUN mkdir -p /out/scaffold && cd /out/scaffold && git init -q \
     && /out/orq-lite init >/dev/null 2>&1 || true
+# Shipped example configs (factory_governed / pr_review / issue_fix + their
+# roles and prompts). Overlaid onto every project workspace at runtime by
+# services/examples_overlay.py so the flows/teams are available by default.
+RUN git clone --depth 1 --branch "${ORQ_LITE_VERSION}" \
+      https://github.com/lionelchamorro/orquesta-lite /tmp/ol \
+    && cp -r /tmp/ol/examples /out/examples \
+    && rm -rf /tmp/ol
 
 ############################################################
 # Stage 2 — build the Next.js frontend
@@ -129,6 +145,7 @@ RUN mkdir -p /home/ubuntu/.local/share /home/ubuntu/.local/state \
 # --- application artifacts --------------------------------------------------
 # orq-lite binary (spawned per-run by the api's local executor).
 COPY --from=orqlite /out/orq-lite /usr/local/bin/orq-lite
+COPY --from=orqlite /out/gh /usr/local/bin/gh
 
 # Built frontend (ships its own node_modules so `next start` needs no install).
 COPY --from=web --chown=ubuntu:ubuntu /app /app
@@ -149,6 +166,7 @@ COPY --from=orqlite /out/scaffold/team.json /srv/api/team.json
 COPY --from=orqlite /out/scaffold/flows.json /srv/api/flows.json
 COPY --from=orqlite /out/scaffold/prompts /srv/api/orq-defaults/prompts
 COPY --from=orqlite /out/scaffold/schemas /srv/api/orq-defaults/schemas
+COPY --from=orqlite /out/examples /srv/api/orq-examples
 
 # Persistent state: sqlite db, editable team.json, cloned workspaces. Owned by
 # ubuntu so a fresh named volume inherits that ownership on first mount.
@@ -156,6 +174,9 @@ RUN mkdir -p /data/workspaces && chown -R ubuntu:ubuntu /data
 
 # Process supervisor + entrypoint.
 COPY deploy/supervisord.conf /etc/orquesta/supervisord.conf
+# opencode chat agent config (MCP bridge + the `orquesta` agent + its prompt).
+COPY deploy/opencode.json /etc/orquesta/opencode.json
+COPY deploy/orquesta-agent.md /etc/orquesta/orquesta-agent.md
 COPY deploy/orquesta-entrypoint.sh /usr/local/bin/orquesta-entrypoint
 RUN chmod +x /usr/local/bin/orquesta-entrypoint
 

@@ -10,7 +10,9 @@ import type { FlowDefinition, FlowStep, FlowStepType, Project } from "@/lib/type
 const stepTypes: FlowStepType[] = ["command", "agent", "action", "loop", "retry_until", "eval"]
 
 function emptyStep(): FlowStep {
-  return { type: "command", command: "" }
+  // A valid placeholder so a brand-new draft saves; the engine rejects an empty
+  // command ("command steps require exactly one of command/args").
+  return { type: "command", command: "echo configure this step" }
 }
 
 // Exactly what the engine parses: {description?, inputs?, steps}. FlowStep
@@ -93,14 +95,34 @@ export function FlowManager({
   }
 
   async function saveSelected() {
-    if (!selected || !projectId) return
+    if (!selected) return
+    if (!projectId) {
+      setMessage("Select a project first — flows are saved per project.")
+      return
+    }
     setMessage("Saving flow...")
-    const res = await fetch(`/api/control-plane/projects/${projectId}/flows/${selected.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(selected),
-    })
-    setMessage(res.ok ? "Saved to flows.json" : "Local draft only; control plane is not available")
+    try {
+      const res = await fetch(`/api/control-plane/projects/${projectId}/flows/${selected.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selected),
+      })
+      if (res.ok) {
+        setMessage("Saved to flows.json")
+        return
+      }
+      // Surface the real validation error (e.g. an invalid step) instead of a
+      // generic "control plane is not available".
+      const detail = await res.json().catch(() => null)
+      const problems = Array.isArray(detail?.detail)
+        ? detail.detail
+            .map((d: { error?: string; msg?: string }) => d.error ?? d.msg ?? JSON.stringify(d))
+            .join("; ")
+        : (detail?.detail ?? `HTTP ${res.status}`)
+      setMessage(`Save failed: ${problems}`)
+    } catch (err) {
+      setMessage(`Save failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   if (!selected) {
