@@ -54,6 +54,13 @@ RUN curl -fsSL -o gh.tgz \
 # flow engine loads flows.json + prompts/<role>.md from the run's working dir.
 RUN mkdir -p /out/scaffold && cd /out/scaffold && git init -q \
     && /out/orq-lite init >/dev/null 2>&1 || true
+# Shipped example configs (factory_governed / pr_review / issue_fix + their
+# roles and prompts). Overlaid onto every project workspace at runtime by
+# services/examples_overlay.py so the flows/teams are available by default.
+RUN git clone --depth 1 --branch "${ORQ_LITE_VERSION}" \
+      https://github.com/lionelchamorro/orquesta-lite /tmp/ol \
+    && cp -r /tmp/ol/examples /out/examples \
+    && rm -rf /tmp/ol
 
 ############################################################
 # Stage 2 — build the Next.js frontend
@@ -159,6 +166,7 @@ COPY --from=orqlite /out/scaffold/team.json /srv/api/team.json
 COPY --from=orqlite /out/scaffold/flows.json /srv/api/flows.json
 COPY --from=orqlite /out/scaffold/prompts /srv/api/orq-defaults/prompts
 COPY --from=orqlite /out/scaffold/schemas /srv/api/orq-defaults/schemas
+COPY --from=orqlite /out/examples /srv/api/orq-examples
 
 # Persistent state: sqlite db, editable team.json, cloned workspaces. Owned by
 # ubuntu so a fresh named volume inherits that ownership on first mount.

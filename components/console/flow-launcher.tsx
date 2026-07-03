@@ -8,7 +8,10 @@ import type { DoctorReport, FlowCatalog, FlowCatalogEntry } from "@/lib/types"
 
 // Fallback when the project's serve predates GET /api/flows (I1): the static
 // selector this launcher replaces (Task 4 behavior).
-const FALLBACK_OPTIONS = ["factory", "factory_fast_governed", "pr_review", "issue_fix"] as const
+// Shown only when the project's serve can't report its flow catalog. These are
+// the flows `orq-lite init` seeds by default; a real catalog (once the serve is
+// up) replaces them with the project's actual flows.json entries.
+const FALLBACK_OPTIONS = ["factory", "factory_fast"] as const
 
 async function fetchJSON<T>(url: string): Promise<T | null> {
   try {
