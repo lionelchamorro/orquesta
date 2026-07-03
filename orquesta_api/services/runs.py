@@ -15,6 +15,7 @@ from orquesta_api.logger import get_logger
 from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import EventKind, Run, RunEvent, RunHandle, RunKind, RunSpec, RunState
 from orquesta_api.services.events import EventBus, get_event_bus
+from orquesta_api.services.examples_overlay import overlay_examples
 
 logger = get_logger(__name__)
 
@@ -87,19 +88,22 @@ async def ensure_workspace_ready(workspace: str, bin_path: str) -> None:
     Raises:
         RuntimeError: if ``orq-lite init`` exits with a non-zero code (→502).
     """
-    if (Path(workspace) / "team.json").exists():
-        return
-    logger.info("Initialising workspace => path=%s", workspace)
-    proc = await asyncio.create_subprocess_exec(
-        bin_path,
-        "init",
-        cwd=workspace,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    exit_code = await proc.wait()
-    if exit_code != 0:
-        raise RuntimeError(f"orq-lite init failed (exit {exit_code}) in workspace {workspace!r}")
+    if not (Path(workspace) / "team.json").exists():
+        logger.info("Initialising workspace => path=%s", workspace)
+        proc = await asyncio.create_subprocess_exec(
+            bin_path,
+            "init",
+            cwd=workspace,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        exit_code = await proc.wait()
+        if exit_code != 0:
+            raise RuntimeError(f"orq-lite init failed (exit {exit_code}) in workspace {workspace!r}")
+
+    # Add the shipped example flows (factory_governed, pr_review, issue_fix) and
+    # their roles/prompts on top of the base config. Idempotent.
+    overlay_examples(workspace)
 
 
 # ---------------------------------------------------------------------------

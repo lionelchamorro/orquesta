@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orquesta_api.config import settings
 from orquesta_api.db.tables import ProjectRow
 from orquesta_api.logger import get_logger
+from orquesta_api.services.examples_overlay import overlay_examples
 
 logger = get_logger(__name__)
 
@@ -78,6 +79,10 @@ class ServeManager:
                 port = self._ports[project_id]
                 logger.info("Serve already running => project_id=%s port=%d", project_id, port)
                 return port
+
+            # Overlay the example flows/teams before serving so they show up in
+            # the flow catalog without launching a run first. Idempotent.
+            overlay_examples(workspace)
 
             port = _find_free_port()
             addr = f"127.0.0.1:{port}"
