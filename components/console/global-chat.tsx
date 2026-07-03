@@ -1,38 +1,35 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
+import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/client"
 import { Send, Sparkles, Loader2, CornerDownLeft, Wrench } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { StatusBadge } from "@/components/status-badge"
 import type { ChatMessage } from "@/lib/types"
 
 const suggestions = [
   "What projects need attention?",
   "List my projects",
-  "Enable the PR watcher on atlas-api",
-  "Queue a caching feature for orquestalite",
+  "Enable the PR watcher on prm",
+  "Launch factory_fast on prm",
 ]
 
-type ChatEvent =
-  | { type: "text"; text: string }
-  | { type: "tool_call"; name: string; input: Record<string, unknown> }
-  | { type: "done"; action?: string; project?: string }
+// The browser talks to the loopback opencode server through the same-origin
+// /opencode proxy (app/opencode/[...path]/route.ts). The `orquesta` agent
+// (deploy/opencode.json) drives the control plane via its MCP tools.
+const AGENT = "orquesta"
 
-function parseSseLines(chunk: string): ChatEvent[] {
-  const events: ChatEvent[] = []
-  for (const block of chunk.split("\n\n")) {
-    const line = block.trim()
-    if (!line.startsWith("data:")) continue
-    const payload = line.slice("data:".length).trim()
-    if (!payload) continue
-    try {
-      events.push(JSON.parse(payload) as ChatEvent)
-    } catch {
-      // ignore malformed chunk boundary; the next read will complete it
-    }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractParts(data: any): { text: string; tools: string[] } {
+  const parts: unknown[] = data?.parts ?? data?.info?.parts ?? []
+  let text = ""
+  const tools: string[] = []
+  for (const p of parts) {
+    const part = p as { type?: string; text?: string; tool?: string; state?: { title?: string } }
+    if (part.type === "text" && part.text) text += part.text
+    else if (part.type === "tool") tools.push(part.tool ?? part.state?.title ?? "tool")
   }
-  return events
+  return { text: text.trim(), tools }
 }
 
 export function GlobalChat({ compact = false }: { compact?: boolean }) {
@@ -40,92 +37,58 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
   const [toolCalls, setToolCalls] = useState<string[]>([])
   const [input, setInput] = useState("")
   const [loading, setLoading] = useState(false)
-  const [historyLoaded, setHistoryLoaded] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    fetch("/api/control-plane/chat/history", { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : []))
-      .then((history: ChatMessage[]) => {
-        if (!cancelled) setMessages(history)
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setHistoryLoaded(true)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const clientRef = useRef<OpencodeClient | null>(null)
+  const sessionRef = useRef<string | null>(null)
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
   }, [messages, loading, toolCalls])
 
+  async function ensureSession(): Promise<{ client: OpencodeClient; sessionID: string }> {
+    if (!clientRef.current) clientRef.current = createOpencodeClient({ baseUrl: "/opencode" })
+    const client = clientRef.current
+    if (!sessionRef.current) {
+      const created = await client.session.create({ body: {} })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sessionRef.current = (created.data as any)?.id
+      if (!sessionRef.current) throw new Error("could not create an opencode session")
+    }
+    return { client, sessionID: sessionRef.current }
+  }
+
   async function send(text: string) {
     const content = text.trim()
     if (!content || loading) return
-    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: "user", content }
-    setMessages((prev) => [...prev, userMsg])
+    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "user", content }])
     setInput("")
     setLoading(true)
     setToolCalls([])
 
-    const assistantId = crypto.randomUUID()
-
     try {
-      const res = await fetch("/api/control-plane/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: content }),
+      const { client, sessionID } = await ensureSession()
+      const result = await client.session.prompt({
+        path: { id: sessionID },
+        body: { agent: AGENT, parts: [{ type: "text", text: content }] },
       })
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ""
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const events = parseSseLines(buffer)
-        buffer = buffer.slice(buffer.lastIndexOf("\n\n") + 2)
-
-        for (const event of events) {
-          if (event.type === "text") {
-            // Accumulate inside the updater so there's no mutable closure
-            // variable (react-compiler immutability rule).
-            setMessages((prev) => {
-              const draft = prev.find((m) => m.id === assistantId)
-              const content = (draft?.content ?? "") + event.text
-              const withoutDraft = prev.filter((m) => m.id !== assistantId)
-              return [...withoutDraft, { id: assistantId, role: "assistant", content }]
-            })
-          } else if (event.type === "tool_call") {
-            setToolCalls((prev) => [...prev, event.name])
-          } else if (event.type === "done") {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId ? { ...m, action: event.action, project: event.project } : m,
-              ),
-            )
-          }
-        }
-      }
-    } catch {
+      if (result.error) throw new Error(JSON.stringify(result.error))
+      const { text: reply, tools } = extractParts(result.data)
+      if (tools.length) setToolCalls(tools)
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "assistant", content: reply || "(the agent returned no text)" },
+      ])
+    } catch (err) {
       setMessages((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "Could not reach the admin agent. Try again in a moment.",
+          content: `Could not reach the agent: ${err instanceof Error ? err.message : String(err)}`,
         },
       ])
     } finally {
       setLoading(false)
-      setToolCalls([])
     }
   }
 
@@ -134,17 +97,14 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
       {!compact && (
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <Sparkles className="h-4 w-4 text-primary" />
-          <span className="font-mono text-sm font-semibold">Admin agent</span>
-          <span className="ml-auto font-mono text-[11px] text-muted-foreground">orquesta chat</span>
+          <span className="font-mono text-sm font-semibold">Orquesta agent</span>
+          <span className="ml-auto font-mono text-[11px] text-muted-foreground">opencode · {AGENT}</span>
         </div>
       )}
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
         {messages.map((m) => (
-          <div
-            key={m.id}
-            className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}
-          >
+          <div key={m.id} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
             <div
               className={cn(
                 "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
@@ -153,16 +113,6 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
                   : "rounded-bl-sm bg-secondary text-secondary-foreground",
               )}
             >
-              {(m.project || m.action) && (
-                <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                  {m.action && <StatusBadge status={m.action} />}
-                  {m.project && (
-                    <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
-                      {m.project}
-                    </span>
-                  )}
-                </div>
-              )}
               <p className="whitespace-pre-wrap text-pretty">{m.content}</p>
             </div>
           </div>
@@ -175,7 +125,7 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
             </div>
           </div>
         ))}
-        {loading && toolCalls.length === 0 && (
+        {loading && (
           <div className="flex justify-start">
             <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-secondary px-4 py-2.5 text-sm text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -185,7 +135,7 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
         )}
       </div>
 
-      {historyLoaded && messages.length === 0 && (
+      {messages.length === 0 && (
         <div className="flex flex-wrap gap-2 px-4 pb-2">
           {suggestions.map((s) => (
             <button
@@ -217,7 +167,7 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
               }
             }}
             rows={1}
-            placeholder="Ask for something: register a project, launch a run, queue a feature…"
+            placeholder="Ask for something: register a project, launch a flow, toggle a watcher…"
             className="max-h-32 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
           />
           <Button type="submit" size="icon" disabled={loading || !input.trim()} className="shrink-0">
