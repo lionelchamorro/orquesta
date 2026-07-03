@@ -63,9 +63,13 @@ class Aggregator:
         base_url = f"http://127.0.0.1:{port}"
         logger.info("Fetching snapshot => project_id=%s base_url=%s", project_id, base_url)
 
-        tasks_resp = await self._client.get_tasks(base_url)
-        factory_resp = await self._client.get_factory(base_url)
-        cost_resp = await self._client.get_cost(base_url)
+        # orq-lite serves these files verbatim and returns JSON `null` when a
+        # file is absent (e.g. factory.json for a project that hasn't run a
+        # factory yet — i.e. every freshly-registered project), so coalesce to
+        # an empty dict before reading keys.
+        tasks_resp = await self._client.get_tasks(base_url) or {}
+        factory_resp = await self._client.get_factory(base_url) or {}
+        cost_resp = await self._client.get_cost(base_url) or {}
 
         return Snapshot(
             tasks=[Task(**t) for t in tasks_resp.get("tasks", [])],
