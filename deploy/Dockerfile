@@ -26,8 +26,8 @@
 # older fork with no `flow` command) plus its version-matched default configs.
 ############################################################
 FROM debian:bookworm-slim AS orqlite
-ARG ORQ_LITE_VERSION=v0.1.26
-ARG ORQ_LITE_SHA256=d69596f1625decda3ecf747df5e5cdde881a7bd4195fa282874ff5e7dd8ea1ec
+ARG ORQ_LITE_VERSION=v0.2.0
+ARG ORQ_LITE_SHA256=7677defca9cfe2e45baae50f12374282e343f415ae9a0d0945f33a83e1e2953a
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /out
@@ -39,12 +39,10 @@ RUN curl -fsSL -o orq.tgz \
     && mv "orq-lite-${ORQ_LITE_VERSION}-linux-amd64/orq-lite" /out/orq-lite \
     && chmod +x /out/orq-lite \
     && rm -rf orq.tgz "orq-lite-${ORQ_LITE_VERSION}-linux-amd64"
-# Real default configs, pinned to the same tag (the flow engine loads flows.json
-# from the working dir; the shipped flows are NOT embedded in the binary).
-RUN curl -fsSL -o /out/flows.json "https://raw.githubusercontent.com/lionelchamorro/orquesta-lite/${ORQ_LITE_VERSION}/flows.json" \
-    && curl -fsSL -o /out/team.json "https://raw.githubusercontent.com/lionelchamorro/orquesta-lite/${ORQ_LITE_VERSION}/team.json"
-# Version-matched prompts + result schemas from the binary's own scaffolder
-# (embedded); a flow's agent steps read prompts/<role>.md relative to the cwd.
+# Version-matched default configs. As of v0.2.0 the defaults are embedded in the
+# binary (no root flows.json/team.json to fetch), and `orq-lite init` scaffolds
+# flows.json (factory, factory_fast) + team.json + prompts/ + schemas/. The
+# flow engine loads flows.json + prompts/<role>.md from the run's working dir.
 RUN mkdir -p /out/scaffold && cd /out/scaffold && git init -q \
     && /out/orq-lite init >/dev/null 2>&1 || true
 
@@ -108,8 +106,11 @@ RUN npm install -g --omit=dev \
 
 # The `ubuntu` user ships at uid/gid 1000 on noble — matches the common host uid
 # so bind-mounted credential dirs stay writable (the CLIs rotate OAuth tokens in
-# place). Give it passwordless sudo for interactive convenience.
-RUN usermod -aG sudo ubuntu && passwd -d ubuntu && chsh -s /usr/bin/zsh ubuntu
+# place). Passwordless sudo (interactive convenience + the on-boot self-update,
+# which needs root to overwrite /usr/local/bin/orq-lite).
+RUN usermod -aG sudo ubuntu && passwd -d ubuntu && chsh -s /usr/bin/zsh ubuntu \
+    && printf 'ubuntu ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/90-ubuntu-nopasswd \
+    && chmod 0440 /etc/sudoers.d/90-ubuntu-nopasswd
 
 # opencode CLI + oh-my-zsh installed AS the ubuntu user (into its $HOME).
 RUN su ubuntu -c 'curl -fsSL https://opencode.ai/install | bash' \
@@ -136,12 +137,16 @@ COPY --from=web --chown=ubuntu:ubuntu /app /app
 WORKDIR /srv/api
 COPY pyproject.toml uv.lock ./
 COPY orquesta_api ./orquesta_api
+# Alembic config + migrations: main gates startup on the schema being at the
+# Alembic head (replaced blind create_all), so these must ship in the image.
+COPY alembic.ini ./
+COPY alembic ./alembic
 RUN uv sync --frozen --no-dev
-# Real, version-matched default configs (from the release, not this repo's old
-# fork); seeded into /data on first boot. Prompts + schemas back the flow
-# engine's agent steps.
-COPY --from=orqlite /out/team.json /srv/api/team.json
-COPY --from=orqlite /out/flows.json /srv/api/flows.json
+# Version-matched default configs scaffolded by the release binary (not this
+# repo's old fork); seeded into /data on first boot. Prompts + schemas back the
+# flow engine's agent steps.
+COPY --from=orqlite /out/scaffold/team.json /srv/api/team.json
+COPY --from=orqlite /out/scaffold/flows.json /srv/api/flows.json
 COPY --from=orqlite /out/scaffold/prompts /srv/api/orq-defaults/prompts
 COPY --from=orqlite /out/scaffold/schemas /srv/api/orq-defaults/schemas
 
