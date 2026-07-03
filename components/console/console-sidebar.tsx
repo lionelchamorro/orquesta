@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, Boxes, MessagesSquare, Users, Settings, Workflow, Gamepad2, LogOut } from "lucide-react"
+import { LayoutDashboard, Boxes, MessagesSquare, Users, Workflow, Gamepad2, LogOut } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { BrandWordmark } from "@/components/brand-mark"
 import type { Project } from "@/lib/types"
@@ -89,13 +89,6 @@ export function ConsoleSidebar({ projects }: { projects: Project[] }) {
         </div>
       </div>
       <div className="mt-auto border-t border-border p-3">
-        <Link
-          href="/dashboard/settings"
-          className="flex items-center gap-3 rounded-lg px-3 py-2 font-mono text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-foreground"
-        >
-          <Settings className="h-4 w-4" />
-          Settings
-        </Link>
         <form action={logout}>
           <button
             type="submit"
