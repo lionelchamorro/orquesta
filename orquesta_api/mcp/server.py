@@ -48,13 +48,13 @@ async def _request(method: str, path: str, json: dict[str, Any] | None = None) -
 
 
 @mcp.tool
-async def list_projects() -> list[dict[str, Any]]:  # ast-grep-ignore: no-dict-return-annotation
+async def list_projects() -> Any:
     """List every registered project with its id, state and PR/issue watchers."""
     return await _request("GET", "/projects")
 
 
 @mcp.tool
-async def get_project(project_id: str) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+async def get_project(project_id: str) -> Any:
     """Return one project's full state: tasks, factory features and cost."""
     return await _request("GET", f"/projects/{project_id}")
 
@@ -66,7 +66,7 @@ async def register_project(
     base_branch: str = "main",
     workspace_path: str | None = None,
     description: str | None = None,
-) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+) -> Any:
     """Register (and clone) a new project.
 
     Provide either repo_url (git@github.com:org/repo.git or https://...) — which
@@ -84,7 +84,7 @@ async def register_project(
 
 
 @mcp.tool
-async def list_flows(project_id: str) -> list[dict[str, Any]]:  # ast-grep-ignore: no-dict-return-annotation
+async def list_flows(project_id: str) -> Any:
     """List the flows defined in a project's flows.json (name, inputs, steps)."""
     return await _request("GET", f"/projects/{project_id}/flows")
 
@@ -94,7 +94,7 @@ async def launch_flow(
     project_id: str,
     flow: str,
     inputs: dict[str, str] | None = None,
-) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+) -> Any:
     """Launch a configured flow (e.g. factory, factory_fast) for a project.
 
     inputs override the flow's declared defaults (e.g. {"features_path":
@@ -105,14 +105,14 @@ async def launch_flow(
 
 
 @mcp.tool
-async def set_watchers(project_id: str, prs: bool, issues: bool) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+async def set_watchers(project_id: str, prs: bool, issues: bool) -> Any:
     """Enable or disable the per-project GitHub PR and issue watchers."""
     body: dict[str, Any] = {"watch": {"prs": prs, "issues": issues}}
     return await _request("PATCH", f"/projects/{project_id}", json=body)
 
 
 @mcp.tool
-async def start_watch_daemon(project_id: str) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+async def start_watch_daemon(project_id: str) -> Any:
     """Start the long-lived `orq-lite watch` daemon run for a project.
 
     Fallback for projects without a GitHub webhook: polls GitHub and triages
@@ -123,21 +123,23 @@ async def start_watch_daemon(project_id: str) -> dict[str, Any]:  # ast-grep-ign
 
 
 @mcp.tool
-async def list_runs(project_id: str | None = None) -> list[dict[str, Any]]:  # ast-grep-ignore: no-dict-return-annotation
+async def list_runs(project_id: str | None = None) -> Any:
     """List runs, optionally filtered to one project. Shows kind, state and id."""
     path = f"/runs?project={project_id}" if project_id else "/runs"
     return await _request("GET", path)
 
 
 @mcp.tool
-async def stop_run(run_id: str) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+async def stop_run(run_id: str) -> Any:
     """Stop an active run (agent loop or watch daemon) by its id."""
     return await _request("POST", f"/runs/{run_id}/stop")
 
 
 def main() -> None:
     """Serve the MCP tools over streamable HTTP for opencode to connect to."""
-    logger.info("Starting Orquesta MCP server => %s:%s/mcp (api=%s)", _MCP_HOST, _MCP_PORT, _API_BASE)
+    logger.info(
+        "Starting Orquesta MCP server => %s:%s/mcp (api=%s)", _MCP_HOST, _MCP_PORT, _API_BASE
+    )
     mcp.run(transport="http", host=_MCP_HOST, port=_MCP_PORT, path="/mcp")
 
 

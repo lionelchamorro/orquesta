@@ -29,6 +29,19 @@ def spec(**kw) -> RunSpec:
             ),
             ["orq-lite", "flow", "run", "pr_review", "pr_number=42", "publish=true"],
         ),
+        # Watch honours the per-project targets rather than hardcoding both.
+        (
+            spec(kind=RunKind.watch),
+            ["orq-lite", "watch", "--prs", "--issues"],
+        ),
+        (
+            spec(kind=RunKind.watch, watch_prs=True, watch_issues=False),
+            ["orq-lite", "watch", "--prs"],
+        ),
+        (
+            spec(kind=RunKind.watch, watch_prs=False, watch_issues=True),
+            ["orq-lite", "watch", "--issues"],
+        ),
     ],
 )
 def test_build_argv(s: RunSpec, expected: list[str]) -> None:
@@ -43,3 +56,11 @@ def test_flow_requires_name() -> None:
 def test_plan_requires_path() -> None:
     with pytest.raises(ValueError, match="plan_path"):
         build_argv("orq-lite", spec(kind=RunKind.plan))
+
+
+def test_watch_requires_a_target() -> None:
+    with pytest.raises(ValueError, match="watch_prs / watch_issues"):
+        build_argv(
+            "orq-lite",
+            spec(kind=RunKind.watch, watch_prs=False, watch_issues=False),
+        )

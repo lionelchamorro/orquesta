@@ -22,12 +22,32 @@ logger = get_logger(__name__)
 _EXAMPLES_DIR = os.environ.get("ORQ_EXAMPLES_DIR", "/srv/api/orq-examples")
 
 
-def _load(path: Path) -> dict[str, Any]:
+def _load(path: Path) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+    # JSON-deserialization boundary: flows.json / team.json are open-ended docs
+    # merged key-by-key (dynamic role/agent names), so a dict is the correct type.
     return json.loads(path.read_text()) if path.exists() else {}
 
 
 def _write(path: Path, doc: dict[str, Any]) -> None:
     path.write_text(json.dumps(doc, indent=2) + "\n")
+
+
+def _merge_missing(dest: dict[str, Any], src: dict[str, Any]) -> bool:
+    """Add keys from *src* not already in *dest*; return True if any were added."""
+    added = {k: v for k, v in src.items() if k not in dest}
+    dest.update(added)
+    return bool(added)
+
+
+def _copy_prompts(src_dir: Path, dest_dir: Path) -> None:
+    """Copy *.md prompts that don't already exist in the workspace."""
+    if not src_dir.is_dir():
+        return
+    dest_dir.mkdir(exist_ok=True)
+    for prompt in src_dir.glob("*.md"):
+        dest = dest_dir / prompt.name
+        if not dest.exists():
+            dest.write_text(prompt.read_text())
 
 
 def overlay_examples(workspace: str, examples_dir: str | None = None) -> None:
@@ -49,35 +69,18 @@ def overlay_examples(workspace: str, examples_dir: str | None = None) -> None:
     roles = team_doc.setdefault("roles", {})
     agents = team_doc.setdefault("agents", {})
     prompts_dir = ws / "prompts"
-    added: list[str] = []
     changed = False
 
     for example in sorted(p for p in root.iterdir() if p.is_dir()):
-        for name, flow in _load(example / "flows.json").get("flows", {}).items():
-            if name not in flows:
-                flows[name] = flow
-                added.append(name)
-                changed = True
         ex_team = _load(example / "team.json")
-        for name, role in ex_team.get("roles", {}).items():
-            if name not in roles:
-                roles[name] = role
-                changed = True
-        for name, agent in ex_team.get("agents", {}).items():
-            if name not in agents:
-                agents[name] = agent
-                changed = True
-        ex_prompts = example / "prompts"
-        if ex_prompts.is_dir():
-            prompts_dir.mkdir(exist_ok=True)
-            for prompt in ex_prompts.glob("*.md"):
-                dest = prompts_dir / prompt.name
-                if not dest.exists():
-                    dest.write_text(prompt.read_text())
+        changed |= _merge_missing(flows, _load(example / "flows.json").get("flows", {}))
+        changed |= _merge_missing(roles, ex_team.get("roles", {}))
+        changed |= _merge_missing(agents, ex_team.get("agents", {}))
+        _copy_prompts(example / "prompts", prompts_dir)
 
-    # Only rewrite the user-owned config when we actually added something, so we
-    # don't churn their formatting on every run.
+    # Only rewrite the user-owned config when we added something, so we don't
+    # churn their formatting on every run.
     if changed:
         _write(flows_path, flows_doc)
         _write(team_path, team_doc)
-        logger.info("Overlaid example flows => workspace=%s added=%s", workspace, added)
+        logger.info("Overlaid example flows/teams => workspace=%s", workspace)
