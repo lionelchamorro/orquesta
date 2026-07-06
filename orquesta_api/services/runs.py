@@ -164,6 +164,14 @@ class RunSupervisor:
         if project is None:
             raise ValueError(f"Project '{project_id}' not found")
 
+        # A watch run with neither target enabled would watch nothing, exit, and
+        # get the project flipped to needs_human. Reject before creating a row.
+        if kind is RunKind.watch and not (project.watch_prs or project.watch_issues):
+            raise ValueError(
+                f"Project '{project_id}' has no watch targets enabled "
+                "(set watch.prs and/or watch.issues)"
+            )
+
         # Reject concurrent launches for the same project.
         existing = await self._session.execute(
             select(RunRow).where(
@@ -198,6 +206,8 @@ class RunSupervisor:
             flow=flow,
             inputs=inputs or {},
             args=args or [],
+            watch_prs=project.watch_prs,
+            watch_issues=project.watch_issues,
         )
 
         handle: RunHandle = await self._executor.start(spec, run_id=run_id)

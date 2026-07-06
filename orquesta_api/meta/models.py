@@ -227,6 +227,11 @@ class RunSpec(BaseModel):
     flow: str | None = None
     inputs: dict[str, str] = Field(default_factory=dict)
     args: list[str] = Field(default_factory=list)
+    # Watch targets, mirrored from the project's watch settings. Only consulted
+    # for RunKind.watch; other kinds ignore them. Default True preserves the
+    # historical "watch everything" behaviour when a caller omits them.
+    watch_prs: bool = True
+    watch_issues: bool = True
 
 
 class RunHandle(BaseModel):
