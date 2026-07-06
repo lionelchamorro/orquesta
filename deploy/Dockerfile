@@ -101,6 +101,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && locale-gen \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub CLI (gh) from GitHub's official apt repo. Required by orq-lite's issue/PR
+# watcher (`gh issue list` / `gh pr ...`); without it every watch tick fails and
+# the project flips to needs_human. Not in the ubuntu default repos, so add the
+# signed source. Auth is provided at runtime (mounted ~/.config/gh or GH_TOKEN).
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+         -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+         > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # Node.js 22 system-wide (NodeSource) — reliable for supervised services and the
 # npm-installed agent CLIs (chosen over nvm so non-login shells resolve node).
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \

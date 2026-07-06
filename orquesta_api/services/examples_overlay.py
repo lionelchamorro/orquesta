@@ -22,7 +22,9 @@ logger = get_logger(__name__)
 _EXAMPLES_DIR = os.environ.get("ORQ_EXAMPLES_DIR", "/srv/api/orq-examples")
 
 
-def _load(path: Path) -> dict[str, Any]:
+def _load(path: Path) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+    # JSON-deserialization boundary: flows.json / team.json are open-ended docs
+    # merged key-by-key (dynamic role/agent names), so a dict is the correct type.
     return json.loads(path.read_text()) if path.exists() else {}
 
 

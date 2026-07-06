@@ -14,6 +14,23 @@ from orquesta_api.meta.models import Container, RunHandle, RunKind, RunSpec, Run
 logger = get_logger(__name__)
 
 
+def _watch_argv(bin_path: str, spec: RunSpec) -> list[str]:
+    """Build the `watch` invocation, honouring the project's watch targets.
+
+    Passes --prs/--issues only for the enabled targets rather than watching both
+    unconditionally. A watch with no targets is a no-op that would exit and (per
+    the run supervisor) flip the project to needs_human, so reject it up front.
+    """
+    if not (spec.watch_prs or spec.watch_issues):
+        raise ValueError("watch runs require at least one of watch_prs / watch_issues")
+    argv = [bin_path, "watch"]
+    if spec.watch_prs:
+        argv.append("--prs")
+    if spec.watch_issues:
+        argv.append("--issues")
+    return argv
+
+
 def build_argv(bin_path: str, spec: RunSpec) -> list[str]:
     """Map a RunSpec to the exact orq-lite CLI invocation (subcommand first).
 
@@ -38,7 +55,7 @@ def build_argv(bin_path: str, spec: RunSpec) -> list[str]:
             argv = [bin_path, "flow", "run", spec.flow]
             argv.extend(f"{k}={v}" for k, v in spec.inputs.items())
         case RunKind.watch:
-            argv = [bin_path, "watch", "--prs", "--issues"]
+            argv = _watch_argv(bin_path, spec)
     return [*argv, *spec.args]
 
 
