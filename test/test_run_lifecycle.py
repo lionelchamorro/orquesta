@@ -115,17 +115,26 @@ async def test_happy_path_succeeds(db, project: str, fake_bin: str, tmp_path: Pa
 
 
 # ---------------------------------------------------------------------------
-# Step 1b: Launch flips project.state to running (gates the live-events SSE)
+# Step 1b: project.state reflects an active *foreground* run (the "busy" gate
+# that disables the flow launcher). A watch daemon is a background supervisor
+# and must NOT flip it, or the launcher stays disabled for the daemon's life.
 # ---------------------------------------------------------------------------
+
+
+async def _enable_watch(db, project_id: str) -> None:
+    async with db() as session:
+        row = await session.get(ProjectRow, project_id)
+        row.watch_issues = True
+        await session.commit()
 
 
 async def test_launch_marks_project_running(
     monkeypatch, db, project: str, fake_bin: str, tmp_path: Path
 ) -> None:
-    """While a run is active, the project reports running.
+    """A foreground run (factory/flow/run) flips the project to running.
 
-    The frontend opens the live-events EventSource only when
-    ``project.state === "running"``; without this the SSE never connects.
+    The frontend disables the flow launcher while ``project.state === "running"``
+    so a second run can't be launched over an active one.
     """
     # Keep the process alive so the supervisor cannot finalize mid-assertion.
     monkeypatch.setenv("FAKE_SLEEP_S", "10")
@@ -149,6 +158,65 @@ async def test_launch_marks_project_running(
         svc = RunSupervisor(session, executor=executor, session_maker=db)
         await svc.stop(run.id)
     await _wait_for_supervisor_tasks()
+
+
+async def test_watch_launch_does_not_mark_project_running(
+    monkeypatch, db, project: str, fake_bin: str, tmp_path: Path
+) -> None:
+    """A watch daemon is a background supervisor — it must NOT flip the project
+    to running, otherwise the flow launcher stays disabled for its whole life."""
+    monkeypatch.setenv("FAKE_SLEEP_S", "10")
+    await _enable_watch(db, project)
+
+    log_dir = tmp_path / "run-logs"
+    executor = LocalExecutor(bin_path=fake_bin, log_dir=log_dir)
+
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        run = await svc.launch(project, kind=RunKind.watch)
+
+    assert run.state == RunState.running  # the RUN is running…
+
+    async with db() as session:
+        proj = await session.get(ProjectRow, project)
+        assert proj is not None
+        # …but the PROJECT stays idle so the launcher remains usable.
+        assert proj.state == "idle", f"expected idle, got {proj.state}"
+
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        await svc.stop(run.id)
+    await _wait_for_supervisor_tasks()
+
+
+async def test_stop_resets_project_state(
+    monkeypatch, db, project: str, fake_bin: str, tmp_path: Path
+) -> None:
+    """Stopping a run resets project.state — otherwise a stopped foreground run
+    leaves the project stuck 'running' and the launcher disabled forever."""
+    monkeypatch.setenv("FAKE_SLEEP_S", "30")
+
+    log_dir = tmp_path / "run-logs"
+    executor = LocalExecutor(bin_path=fake_bin, log_dir=log_dir)
+
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        run = await svc.launch(project, kind=RunKind.run)
+
+    # Precondition: launch set it running.
+    async with db() as session:
+        proj = await session.get(ProjectRow, project)
+        assert proj.state == "running"
+
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        await svc.stop(run.id)
+    await _wait_for_supervisor_tasks()
+
+    async with db() as session:
+        proj = await session.get(ProjectRow, project)
+        assert proj is not None
+        assert proj.state == "idle", f"expected idle after stop, got {proj.state}"
 
 
 # ---------------------------------------------------------------------------

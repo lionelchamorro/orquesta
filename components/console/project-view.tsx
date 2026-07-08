@@ -2,7 +2,6 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
 import { GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -20,7 +19,6 @@ type Tab = (typeof tabs)[number]
 
 export function ProjectView({ project }: { project: Project }) {
   const [tab, setTab] = useState<Tab>("Factory")
-  const live = project.state === "running"
 
   return (
     <div className="grid flex-1 xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -89,7 +87,7 @@ export function ProjectView({ project }: { project: Project }) {
       {/* right rail: live events */}
       <div className="hidden border-l border-border xl:block">
         <div className="sticky top-16 h-[calc(100dvh-4rem)]">
-          <LiveEvents projectId={project.id} initial={project.events} live={live} />
+          <LiveEvents projectId={project.id} initial={project.events} />
         </div>
       </div>
     </div>
@@ -97,7 +95,6 @@ export function ProjectView({ project }: { project: Project }) {
 }
 
 export function ProjectActions({ project }: { project: Project }) {
-  const router = useRouter()
   const [launchingWatch, setLaunchingWatch] = useState(false)
   const [watchMessage, setWatchMessage] = useState("")
 
@@ -123,9 +120,6 @@ export function ProjectActions({ project }: { project: Project }) {
         return
       }
       setWatchMessage("watch daemon started")
-      // Re-fetch the server component so project.state (now "running") flows
-      // back down and LiveEvents opens the SSE connection.
-      router.refresh()
     } catch (err) {
       setWatchMessage(`launch failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
