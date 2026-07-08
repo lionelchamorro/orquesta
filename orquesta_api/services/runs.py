@@ -217,6 +217,10 @@ class RunSupervisor:
         row.container_id = handle.container_id
         row.started_at = datetime.now(tz=UTC)
         row.state = RunState.running.value
+        # Flip the project to running so the frontend opens the live-events
+        # EventSource (gated on project.state === "running"). _supervise resets
+        # it to idle/needs_human when the run finishes.
+        project.state = "running"
 
         await self._session.commit()
 

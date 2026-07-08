@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -96,6 +97,7 @@ export function ProjectView({ project }: { project: Project }) {
 }
 
 export function ProjectActions({ project }: { project: Project }) {
+  const router = useRouter()
   const [launchingWatch, setLaunchingWatch] = useState(false)
   const [watchMessage, setWatchMessage] = useState("")
 
@@ -121,6 +123,9 @@ export function ProjectActions({ project }: { project: Project }) {
         return
       }
       setWatchMessage("watch daemon started")
+      // Re-fetch the server component so project.state (now "running") flows
+      // back down and LiveEvents opens the SSE connection.
+      router.refresh()
     } catch (err) {
       setWatchMessage(`launch failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {

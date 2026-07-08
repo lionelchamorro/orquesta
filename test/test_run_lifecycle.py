@@ -115,6 +115,43 @@ async def test_happy_path_succeeds(db, project: str, fake_bin: str, tmp_path: Pa
 
 
 # ---------------------------------------------------------------------------
+# Step 1b: Launch flips project.state to running (gates the live-events SSE)
+# ---------------------------------------------------------------------------
+
+
+async def test_launch_marks_project_running(
+    monkeypatch, db, project: str, fake_bin: str, tmp_path: Path
+) -> None:
+    """While a run is active, the project reports running.
+
+    The frontend opens the live-events EventSource only when
+    ``project.state === "running"``; without this the SSE never connects.
+    """
+    # Keep the process alive so the supervisor cannot finalize mid-assertion.
+    monkeypatch.setenv("FAKE_SLEEP_S", "10")
+
+    log_dir = tmp_path / "run-logs"
+    executor = LocalExecutor(bin_path=fake_bin, log_dir=log_dir)
+
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        run = await svc.launch(project, kind=RunKind.run)
+
+    assert run.state == RunState.running
+
+    async with db() as session:
+        proj = await session.get(ProjectRow, project)
+        assert proj is not None
+        assert proj.state == "running", f"expected running, got {proj.state}"
+
+    # Cleanup: stop the long-lived run so the supervisor task settles quickly.
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        await svc.stop(run.id)
+    await _wait_for_supervisor_tasks()
+
+
+# ---------------------------------------------------------------------------
 # Step 2: Failure path — exit 3 → failed, project.state = needs_human
 # ---------------------------------------------------------------------------
 
