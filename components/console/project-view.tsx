@@ -19,7 +19,6 @@ type Tab = (typeof tabs)[number]
 
 export function ProjectView({ project }: { project: Project }) {
   const [tab, setTab] = useState<Tab>("Factory")
-  const live = project.state === "running"
 
   return (
     <div className="grid flex-1 xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -88,7 +87,7 @@ export function ProjectView({ project }: { project: Project }) {
       {/* right rail: live events */}
       <div className="hidden border-l border-border xl:block">
         <div className="sticky top-16 h-[calc(100dvh-4rem)]">
-          <LiveEvents projectId={project.id} initial={project.events} live={live} />
+          <LiveEvents projectId={project.id} initial={project.events} />
         </div>
       </div>
     </div>

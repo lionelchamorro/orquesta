@@ -217,6 +217,12 @@ class RunSupervisor:
         row.container_id = handle.container_id
         row.started_at = datetime.now(tz=UTC)
         row.state = RunState.running.value
+        # A foreground run marks the project running so the UI disables the flow
+        # launcher while it executes. A watch daemon is a long-lived background
+        # supervisor — it must NOT, or the launcher would stay disabled for its
+        # whole life. stop()/_supervise reset the project when the run ends.
+        if kind is not RunKind.watch:
+            project.state = "running"
 
         await self._session.commit()
 
@@ -244,8 +250,13 @@ class RunSupervisor:
                 logger.warning("_supervise: RunRow %s not found; skipping", run_id)
                 return
 
-            # Don't clobber a state already written by stop() or a prior call.
-            if RunState(row.state) not in _ACTIVE_RUN_STATES:
+            # stop() marks the row stopping (then cancelled) before killing the
+            # process, so a SIGTERM exit is a user cancellation, not a failure.
+            stopped = RunState(row.state) in (RunState.stopping, RunState.cancelled)
+
+            # A natural terminal state (succeeded/failed) was already written by a
+            # prior call — respect it. A stop-in-progress still needs finalizing.
+            if RunState(row.state) not in _ACTIVE_RUN_STATES and not stopped:
                 logger.info(
                     "_supervise: run %s already terminal (state=%s); skipping",
                     run_id,
@@ -256,16 +267,21 @@ class RunSupervisor:
             now = datetime.now(tz=UTC)
             row.exit_code = exit_code
             row.finished_at = now
-            row.state = RunState.succeeded.value if exit_code == 0 else RunState.failed.value
+            if stopped:
+                row.state = RunState.cancelled.value
+                project_state = "idle"
+            else:
+                row.state = RunState.succeeded.value if exit_code == 0 else RunState.failed.value
+                project_state = "idle" if exit_code == 0 else "needs_human"
+            final_state = row.state
 
             project = await session.get(ProjectRow, row.project_id)
             if project is not None:
                 project.last_run = now
-                project.state = "idle" if exit_code == 0 else "needs_human"
+                project.state = project_state
 
             await session.commit()
 
-        final_state = RunState.succeeded.value if exit_code == 0 else RunState.failed.value
         await self._emit_lifecycle(row, EventKind.run_finished, status=final_state)
         logger.info("_supervise: run %s finished => exit_code=%s", run_id, exit_code)
 
@@ -294,7 +310,10 @@ class RunSupervisor:
         was_running = live_state_before not in (RunState.succeeded, RunState.failed)
 
         row.state = RunState.stopping.value
-        await self._session.flush()
+        # Commit (not just flush) so _supervise's separate session observes the
+        # stopping marker and treats the resulting SIGTERM exit as a user
+        # cancellation (→ project idle) rather than a failure (→ needs_human).
+        await self._session.commit()
 
         await self._executor.stop(handle)
 

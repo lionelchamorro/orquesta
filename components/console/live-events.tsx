@@ -98,21 +98,19 @@ const connectionDot: Record<ConnectionState, string> = {
 export function LiveEvents({
   projectId,
   initial,
-  live,
 }: {
   projectId: string
   initial: RunEvent[]
-  live: boolean
 }) {
   const [events, setEvents] = useState<RunEvent[]>(initial)
-  // Only EventSource callbacks (async) write this; the displayed state is
-  // derived below with the `live` gate, so the effect never sets state
-  // synchronously (react-hooks set-state-in-effect).
+  // Only EventSource callbacks (async) write this (react-hooks set-state-in-effect).
+  // The SSE stays open regardless of project.state — events flow whenever a run
+  // (factory OR the background watch daemon) is active, so the panel must not be
+  // gated on the project being "running".
   const [esState, setEsState] = useState<Exclude<ConnectionState, "idle">>("connecting")
   const listRef = useRef<HTMLUListElement>(null)
 
   useEffect(() => {
-    if (!live) return
     const es = new EventSource(`/api/control-plane/projects/${projectId}/events`)
     es.onopen = () => setEsState("streaming")
     es.onmessage = (message) => {
@@ -125,9 +123,9 @@ export function LiveEvents({
       setEsState("error")
     }
     return () => es.close()
-  }, [live, projectId])
+  }, [projectId])
 
-  const connection: ConnectionState = live ? esState : "idle"
+  const connection: ConnectionState = esState
 
   useEffect(() => {
     const el = listRef.current
