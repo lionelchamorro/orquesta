@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react"
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/client"
 import { Send, Sparkles, Loader2, CornerDownLeft, Wrench } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, uid } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import type { ChatMessage } from "@/lib/types"
 
@@ -60,7 +60,7 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
   async function send(text: string) {
     const content = text.trim()
     if (!content || loading) return
-    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "user", content }])
+    setMessages((prev) => [...prev, { id: uid(), role: "user", content }])
     setInput("")
     setLoading(true)
     setToolCalls([])
@@ -76,13 +76,13 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
       if (tools.length) setToolCalls(tools)
       setMessages((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), role: "assistant", content: reply || "(the agent returned no text)" },
+        { id: uid(), role: "assistant", content: reply || "(the agent returned no text)" },
       ])
     } catch (err) {
       setMessages((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: uid(),
           role: "assistant",
           content: `Could not reach the agent: ${err instanceof Error ? err.message : String(err)}`,
         },
