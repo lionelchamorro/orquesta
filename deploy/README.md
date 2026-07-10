@@ -11,6 +11,7 @@ reverse proxy reached by IP.
 |----------------|------------------|----------|------|
 | Next.js front  | `0.0.0.0:3000`   | **yes**  | the only public port; the proxy targets it |
 | FastAPI api    | `127.0.0.1:8000` | no       | `ORQUESTA_API_URL`; spawns orq-lite per run |
+| MCP bridge     | `127.0.0.1:8765` | no       | exposes control-plane tools to opencode; authenticates to the api with `AUTH_TOKEN` |
 | opencode serve | `127.0.0.1:4096` | no       | `OPENCODE_SERVER_URL`; backs the global chat |
 | orq-lite       | ephemeral loopback | no     | real upstream release (v0.2.0); one process **per run**, launched by the api |
 
@@ -47,13 +48,22 @@ directly.
    (Missing dirs would otherwise be created root-owned by Docker and break the
    mounts.)
 
-2. Build + run:
+2. Create `deploy/.env` and set a real shared bearer token:
+   ```bash
+   cp deploy/.env.example deploy/.env
+   # edit deploy/.env: AUTH_TOKEN=<random secret>
+   ```
+   The frontend server-side proxy and the MCP bridge both call the loopback
+   FastAPI control plane with `Authorization: Bearer $AUTH_TOKEN`. If this value
+   is missing or wrong, MCP tool calls will fail with an `AUTH_TOKEN` error.
+
+3. Build + run:
    ```bash
    cd deploy
    docker compose up -d --build
    ```
 
-3. Point your TLS-terminating proxy at `http://<host-ip>:3000`
+4. Point your TLS-terminating proxy at `http://<host-ip>:3000`
    (see `nginx.conf.example` — **SSE endpoints must be unbuffered**).
 
 ## Capping the build (host OOM guard)
