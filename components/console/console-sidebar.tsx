@@ -8,6 +8,7 @@ import { BrandWordmark } from "@/components/brand-mark"
 import type { Project } from "@/lib/types"
 import { StateDot } from "@/components/status-badge"
 import { logout } from "@/app/login/actions"
+import { SystemStatusStrip } from "@/components/console/system-status"
 
 const nav = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
@@ -88,7 +89,7 @@ export function ConsoleSidebar({ projects }: { projects: Project[] }) {
           })}
         </div>
       </div>
-      <div className="mt-auto border-t border-border p-3">
+      <div className="border-t border-border p-3">
         <form action={logout}>
           <button
             type="submit"
@@ -98,6 +99,9 @@ export function ConsoleSidebar({ projects }: { projects: Project[] }) {
             Sign out
           </button>
         </form>
+      </div>
+      <div className="mt-auto">
+        <SystemStatusStrip />
       </div>
     </aside>
   )
