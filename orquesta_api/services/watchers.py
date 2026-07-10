@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from orquesta_api.db.tables import ProjectRow, WebhookDeliveryRow
+from orquesta_api.db.tables import ProjectRow, RunRow, WebhookDeliveryRow
 from orquesta_api.logger import get_logger
 from orquesta_api.meta.models import Run, RunKind
 from orquesta_api.services.runs import RunSupervisor
@@ -51,6 +51,43 @@ class WatcherService:
                 return row
         return None
 
+    async def _has_matching_queued_run(
+        self,
+        project_id: str,
+        flow: str,
+        inputs: dict[str, str],
+    ) -> bool:
+        result = await self._session.execute(
+            select(RunRow).where(
+                RunRow.project_id == project_id,
+                RunRow.state == "queued",
+                RunRow.flow == flow,
+            )
+        )
+        return any((row.inputs or {}) == inputs for row in result.scalars())
+
+    async def _launch_flow(
+        self,
+        project_id: str,
+        flow: str,
+        inputs: dict[str, str],
+    ) -> Run | None:
+        if await self._has_matching_queued_run(project_id, flow, inputs):
+            logger.info(
+                "Skipped webhook launch: identical queued run exists => project_id=%s flow=%s",
+                project_id,
+                flow,
+            )
+            return None
+
+        return await RunSupervisor(self._session).launch(
+            project_id,
+            kind=RunKind.flow,
+            flow=flow,
+            inputs=inputs,
+            queue=True,
+        )
+
     async def handle_pull_request(self, payload: dict[str, Any]) -> Run | None:
         """PR opened/synchronize + watch.prs -> flow=pr_review. Returns the launched Run, if any."""
         if payload.get("action") not in {"opened", "synchronize"}:
@@ -70,9 +107,8 @@ class WatcherService:
             pr_number,
             payload.get("action"),
         )
-        return await RunSupervisor(self._session).launch(
+        return await self._launch_flow(
             project.id,
-            kind=RunKind.flow,
             flow="pr_review",
             inputs={"pr_number": str(pr_number), "publish": "true"},
         )
@@ -91,9 +127,8 @@ class WatcherService:
             return None
 
         logger.info("GitHub issue event => project_id=%s issue_number=%s", project.id, issue_number)
-        return await RunSupervisor(self._session).launch(
+        return await self._launch_flow(
             project.id,
-            kind=RunKind.flow,
             flow="issue_fix",
             inputs={"issue_number": str(issue_number)},
         )

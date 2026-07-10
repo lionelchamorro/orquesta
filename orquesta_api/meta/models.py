@@ -207,6 +207,10 @@ class Run(BaseModel):
     kind: RunKind
     state: RunState
     executor: str
+    flow: str | None = None
+    inputs: dict[str, str] = Field(default_factory=dict)
+    plan_path: str | None = None
+    args: list[str] = Field(default_factory=list)
     container_id: str | None = None
     pid: int | None = None
     api_port: int | None = None

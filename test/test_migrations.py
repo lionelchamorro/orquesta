@@ -92,9 +92,7 @@ async def test_stale_version_raises() -> None:
 def test_active_run_unique_index_migration_upgrade_and_downgrade(tmp_path) -> None:
     db_path = tmp_path / "migration.sqlite"
     engine = create_engine(f"sqlite:///{db_path}")
-    migration = _load_migration_module(
-        "1f6d0dfba0c1_add_active_run_unique_index.py"
-    )
+    migration = _load_migration_module("1f6d0dfba0c1_add_active_run_unique_index.py")
     try:
         Base.metadata.create_all(engine)
         with engine.begin() as conn:
@@ -119,5 +117,88 @@ def test_active_run_unique_index_migration_upgrade_and_downgrade(tmp_path) -> No
             migration.downgrade()
             indexes = conn.execute(text("PRAGMA index_list('runs')")).mappings().all()
             assert not any(row["name"] == "uq_runs_one_active_per_project" for row in indexes)
+    finally:
+        engine.dispose()
+
+
+def test_run_queue_launch_params_migration_upgrade_and_downgrade(tmp_path) -> None:
+    db_path = tmp_path / "queue-migration.sqlite"
+    engine = create_engine(f"sqlite:///{db_path}")
+    migration = _load_migration_module("7c2ef0ef6fb8_add_run_queue_launch_params.py")
+    try:
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            operations = Operations(MigrationContext.configure(conn))
+            migration.op = operations
+
+            conn.execute(text("DROP INDEX IF EXISTS uq_runs_one_active_per_project"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX uq_runs_one_active_per_project ON runs (project_id) "
+                    "WHERE state IN ('queued', 'starting', 'running', 'stopping')"
+                )
+            )
+            for column in ("created_at", "queued_at", "flow", "inputs", "plan_path", "args"):
+                conn.execute(text(f"ALTER TABLE runs DROP COLUMN {column}"))
+
+            migration.upgrade()
+            columns = {
+                row["name"] for row in conn.execute(text("PRAGMA table_info('runs')")).mappings()
+            }
+            assert {"created_at", "queued_at", "flow", "inputs", "plan_path", "args"}.issubset(
+                columns
+            )
+            index_sql = conn.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'index' AND name = 'uq_runs_one_active_per_project'"
+                )
+            ).scalar_one()
+            assert "WHERE state IN ('starting', 'running', 'stopping')" in index_sql
+
+            migration.downgrade()
+            columns = {
+                row["name"] for row in conn.execute(text("PRAGMA table_info('runs')")).mappings()
+            }
+            assert not {"created_at", "queued_at", "flow", "inputs", "plan_path", "args"} & columns
+            old_index_sql = conn.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'index' AND name = 'uq_runs_one_active_per_project'"
+                )
+            ).scalar_one()
+            assert "WHERE state IN ('queued', 'starting', 'running', 'stopping')" in old_index_sql
+    finally:
+        engine.dispose()
+
+
+def test_run_queue_launch_params_migration_skips_existing_columns(tmp_path) -> None:
+    db_path = tmp_path / "queue-migration-existing-columns.sqlite"
+    engine = create_engine(f"sqlite:///{db_path}")
+    migration = _load_migration_module("7c2ef0ef6fb8_add_run_queue_launch_params.py")
+    try:
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            operations = Operations(MigrationContext.configure(conn))
+            migration.op = operations
+
+            conn.execute(text("DROP INDEX IF EXISTS uq_runs_one_active_per_project"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX uq_runs_one_active_per_project ON runs (project_id) "
+                    "WHERE state IN ('queued', 'starting', 'running', 'stopping')"
+                )
+            )
+            for column in ("queued_at", "flow", "inputs", "plan_path", "args"):
+                conn.execute(text(f"ALTER TABLE runs DROP COLUMN {column}"))
+
+            migration.upgrade()
+
+            columns = {
+                row["name"] for row in conn.execute(text("PRAGMA table_info('runs')")).mappings()
+            }
+            assert {"created_at", "queued_at", "flow", "inputs", "plan_path", "args"}.issubset(
+                columns
+            )
     finally:
         engine.dispose()

@@ -28,6 +28,10 @@ def _row_to_model(row: RunRow) -> Run:
         kind=RunKind(row.kind),
         state=RunState(row.state),
         executor=row.executor,
+        flow=row.flow,
+        inputs=row.inputs or {},
+        plan_path=row.plan_path,
+        args=row.args or [],
         container_id=row.container_id,
         pid=row.pid,
         api_port=row.api_port,
@@ -51,6 +55,7 @@ def _build_handle(row: RunRow) -> RunHandle:
 _ACTIVE_RUN_STATES = frozenset(
     {RunState.queued, RunState.starting, RunState.running, RunState.stopping}
 )
+_PROCESS_RUN_STATES = frozenset({RunState.starting, RunState.running, RunState.stopping})
 
 
 _LOCAL_EXECUTOR: ExecutorInterface | None = None
@@ -153,6 +158,7 @@ class RunSupervisor:
         flow: str | None = None,
         inputs: dict[str, str] | None = None,
         args: list[str] | None = None,
+        queue: bool = True,
     ) -> Run:
         """Start a new run for the project and return a Run in the running state.
 
@@ -173,72 +179,148 @@ class RunSupervisor:
                 "(set watch.prs and/or watch.issues)"
             )
 
-        # Reject concurrent launches for the same project.
+        # Queue behind a process-active run, or preserve the explicit 409 path.
         existing = await self._session.execute(
             select(RunRow).where(
                 RunRow.project_id == project_id,
-                RunRow.state.in_([s.value for s in _ACTIVE_RUN_STATES]),
+                RunRow.state.in_([s.value for s in _PROCESS_RUN_STATES]),
             )
         )
         if existing.scalar_one_or_none() is not None:
+            if queue:
+                return await self._queue_run(project_id, kind, plan_path, flow, inputs, args)
             raise FileExistsError(f"Project '{project_id}' already has an active run")
 
         workspace = project.workspace_path or ""
         await ensure_workspace_ready(workspace, settings.orq_lite_bin)
 
         run_id = str(uuid.uuid4())
+        now = datetime.now(tz=UTC)
         row = RunRow(
             id=run_id,
             project_id=project_id,
             kind=kind.value,
-            state=RunState.queued.value,
+            state=RunState.starting.value,
             executor=settings.run_executor,
+            created_at=now,
+            flow=flow,
+            inputs=inputs or {},
+            plan_path=plan_path,
+            args=args or [],
         )
         self._session.add(row)
         try:
             await self._session.flush()
         except IntegrityError as exc:
             await self._session.rollback()
+            if queue:
+                return await self._queue_run(project_id, kind, plan_path, flow, inputs, args)
             raise FileExistsError(f"Project '{project_id}' already has an active run") from exc
 
-        row.state = RunState.starting.value
+        await self._start_row(row, project, workspace)
+        return _row_to_model(row)
 
-        spec = RunSpec(
+    async def _queue_run(
+        self,
+        project_id: str,
+        kind: RunKind,
+        plan_path: str | None,
+        flow: str | None,
+        inputs: dict[str, str] | None,
+        args: list[str] | None,
+    ) -> Run:
+        """Persist a queued run without starting an executor process."""
+        now = datetime.now(tz=UTC)
+        row = RunRow(
+            id=str(uuid.uuid4()),
             project_id=project_id,
-            workspace_path=workspace,
-            kind=kind,
-            plan_path=plan_path,
+            kind=kind.value,
+            state=RunState.queued.value,
+            executor=settings.run_executor,
+            created_at=now,
+            queued_at=now,
             flow=flow,
             inputs=inputs or {},
+            plan_path=plan_path,
             args=args or [],
+        )
+        self._session.add(row)
+        await self._session.commit()
+        return _row_to_model(row)
+
+    async def _start_row(self, row: RunRow, project: ProjectRow, workspace: str) -> None:
+        """Start a persisted run row using its stored launch parameters."""
+        kind = RunKind(row.kind)
+        spec = RunSpec(
+            project_id=row.project_id,
+            workspace_path=workspace,
+            kind=kind,
+            plan_path=row.plan_path,
+            flow=row.flow,
+            inputs=row.inputs or {},
+            args=row.args or [],
             watch_prs=project.watch_prs,
             watch_issues=project.watch_issues,
         )
-
-        handle: RunHandle = await self._executor.start(spec, run_id=run_id)
+        handle: RunHandle = await self._executor.start(spec, run_id=row.id)
 
         row.pid = handle.pid
         row.api_port = handle.api_port
         row.container_id = handle.container_id
         row.started_at = datetime.now(tz=UTC)
         row.state = RunState.running.value
-        # A foreground run marks the project running so the UI disables the flow
-        # launcher while it executes. A watch daemon is a long-lived background
-        # supervisor — it must NOT, or the launcher would stay disabled for its
-        # whole life. stop()/_supervise reset the project when the run ends.
         if kind is not RunKind.watch:
             project.state = "running"
 
         await self._session.commit()
 
-        # Launch background supervision task; hold a strong reference so it
-        # is not garbage-collected before it writes the terminal state.
         if handle.pid is not None:
-            task = asyncio.create_task(self._supervise(run_id, handle.pid))
+            task = asyncio.create_task(self._supervise(row.id, handle.pid))
             _track(task)
 
         await self._emit_lifecycle(row, EventKind.run_started, status=kind.value)
-        return _row_to_model(row)
+
+    async def _start_oldest_queued(self, project_id: str) -> None:
+        """Start the oldest queued run for a project with no active process."""
+        async with self._session_maker() as session:
+            project = await session.get(ProjectRow, project_id)
+            if project is None or project.state not in {"idle", "needs_human"}:
+                return
+
+            active = await session.execute(
+                select(RunRow).where(
+                    RunRow.project_id == project_id,
+                    RunRow.state.in_([s.value for s in _PROCESS_RUN_STATES]),
+                )
+            )
+            if active.scalar_one_or_none() is not None:
+                return
+
+            result = await session.execute(
+                select(RunRow)
+                .where(RunRow.project_id == project_id, RunRow.state == RunState.queued.value)
+                .order_by(
+                    RunRow.queued_at.asc().nullsfirst(),
+                    RunRow.created_at.asc().nullsfirst(),
+                    RunRow.id.asc(),
+                )
+                .limit(1)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return
+
+            row.state = RunState.starting.value
+            await session.flush()
+            workspace = project.workspace_path or ""
+            await ensure_workspace_ready(workspace, settings.orq_lite_bin)
+            starter = RunSupervisor(
+                session,
+                executor=self._executor,
+                session_maker=self._session_maker,
+                events=self._events,
+            )
+            await starter._start_row(row, project, workspace)
 
     async def _supervise(self, run_id: str, pid: int) -> None:
         """Await process exit and persist the real terminal state.
@@ -289,6 +371,7 @@ class RunSupervisor:
 
         await self._emit_lifecycle(row, EventKind.run_finished, status=final_state)
         logger.info("_supervise: run %s finished => exit_code=%s", run_id, exit_code)
+        await self._start_oldest_queued(row.project_id)
 
     async def get_stream_context(self, run_id: str) -> tuple[Run, RunHandle]:
         """Return (run_model, handle) for log streaming; raises ValueError if not found."""
@@ -303,6 +386,16 @@ class RunSupervisor:
         if the process had already exited naturally, uses the real outcome.
         """
         row = await self._get_row(run_id)
+
+        # A queued run has no process; cancel it directly and drain the queue.
+        if RunState(row.state) is RunState.queued:
+            project_id = row.project_id
+            row.state = RunState.cancelled.value
+            row.finished_at = datetime.now(tz=UTC)
+            await self._session.commit()
+            await self._emit_lifecycle(row, EventKind.run_finished, status=row.state)
+            await self._start_oldest_queued(project_id)
+            return _row_to_model(row)
 
         # If _supervise already finalized the row, return current state.
         if RunState(row.state) not in _ACTIVE_RUN_STATES:
@@ -356,7 +449,7 @@ class RunSupervisor:
         succeeded/failed when the process exits, so runs would otherwise stay
         'running' forever. Ask the executor and persist a terminal outcome.
         """
-        if RunState(row.state) not in _ACTIVE_RUN_STATES or row.pid is None:
+        if RunState(row.state) not in _PROCESS_RUN_STATES or row.pid is None:
             return
         live = await self._executor.status(_build_handle(row))
         if live in (RunState.succeeded, RunState.failed):
@@ -376,15 +469,11 @@ class RunSupervisor:
         from ``executor.status()`` and are left untouched.
         """
         result = await self._session.execute(
-            select(RunRow).where(RunRow.state.in_([s.value for s in _ACTIVE_RUN_STATES]))
+            select(RunRow).where(RunRow.state.in_([s.value for s in _PROCESS_RUN_STATES]))
         )
-        rows = result.scalars().all()
-        if not rows:
-            return
-
         now = datetime.now(tz=UTC)
         count = 0
-        for row in rows:
+        for row in result.scalars().all():
             live = await self._executor.status(_build_handle(row))
             if live not in (RunState.succeeded, RunState.failed):
                 # Executor claims still running; leave it alone.
@@ -400,9 +489,14 @@ class RunSupervisor:
                 project.last_run = now
             count += 1
 
-        if count:
-            await self._session.commit()
+        await self._session.commit()
         logger.info("Startup reconciliation: %d orphaned run(s) marked failed", count)
+
+        projects = await self._session.execute(
+            select(ProjectRow.id).where(ProjectRow.state.in_(["idle", "needs_human"]))
+        )
+        for project_id in projects.scalars().all():
+            await self._start_oldest_queued(project_id)
 
     async def list(
         self,

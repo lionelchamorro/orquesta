@@ -2,7 +2,18 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -40,8 +51,8 @@ class RunRow(Base):
             "uq_runs_one_active_per_project",
             "project_id",
             unique=True,
-            sqlite_where=text("state IN ('queued', 'starting', 'running', 'stopping')"),
-            postgresql_where=text("state IN ('queued', 'starting', 'running', 'stopping')"),
+            sqlite_where=text("state IN ('starting', 'running', 'stopping')"),
+            postgresql_where=text("state IN ('starting', 'running', 'stopping')"),
         ),
     )
 
@@ -50,6 +61,12 @@ class RunRow(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)
     state: Mapped[str] = mapped_column(String, nullable=False)
     executor: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime)
+    flow: Mapped[str | None] = mapped_column(String)
+    inputs: Mapped[dict[str, str] | None] = mapped_column(JSON)
+    plan_path: Mapped[str | None] = mapped_column(String)
+    args: Mapped[list[str] | None] = mapped_column(JSON)
     container_id: Mapped[str | None] = mapped_column(String)
     pid: Mapped[int | None] = mapped_column(Integer)
     api_port: Mapped[int | None] = mapped_column(Integer)

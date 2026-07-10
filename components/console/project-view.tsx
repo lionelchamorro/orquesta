@@ -1,8 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
-import { GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar } from "lucide-react"
+import { GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar, XCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
@@ -12,10 +12,84 @@ import { LiveEvents } from "@/components/console/live-events"
 import { GlobalChat } from "@/components/console/global-chat"
 import { FlowLauncher } from "@/components/console/flow-launcher"
 import { RunHistory } from "@/components/console/run-history"
-import type { Project } from "@/lib/types"
+import type { Project, Run } from "@/lib/types"
 
 const tabs = ["Factory", "Tasks", "Runs", "Chat"] as const
 type Tab = (typeof tabs)[number]
+
+async function fetchJSON<T>(url: string): Promise<T | null> {
+  try {
+    const res = await fetch(url, { cache: "no-store" })
+    return res.ok ? ((await res.json()) as T) : null
+  } catch {
+    return null
+  }
+}
+
+function QueuedRuns({ projectId }: { projectId: string }) {
+  const [runs, setRuns] = useState<Run[] | null>(null)
+  const [cancelling, setCancelling] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchJSON<Run[]>(`/api/control-plane/runs?project=${projectId}&state=queued`).then((data) => {
+      if (!cancelled) setRuns(data ?? [])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
+  async function refresh() {
+    const data = await fetchJSON<Run[]>(
+      `/api/control-plane/runs?project=${projectId}&state=queued`,
+    )
+    setRuns(data ?? [])
+  }
+
+  async function cancelRun(runId: string) {
+    setCancelling(runId)
+    try {
+      await fetch(`/api/control-plane/runs/${runId}/stop`, { method: "POST" })
+      await refresh()
+    } finally {
+      setCancelling(null)
+    }
+  }
+
+  if (runs === null || runs.length === 0) return null
+
+  return (
+    <div className="mt-4 rounded-xl border border-border bg-card">
+      <div className="border-b border-border/50 px-4 py-2 font-mono text-xs text-muted-foreground">
+        Queued runs
+      </div>
+      <ul className="divide-y divide-border/50">
+        {runs.map((run) => (
+          <li key={run.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+            <StatusBadge status={run.state} />
+            <span className="font-mono text-sm">{run.flow ?? run.kind}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+              {Object.entries(run.inputs ?? {})
+                .map(([key, value]) => `${key}=${value}`)
+                .join(" ")}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="font-mono text-xs"
+              disabled={cancelling === run.id}
+              onClick={() => cancelRun(run.id)}
+            >
+              <XCircle className="h-3.5 w-3.5" />
+              Cancel
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
 export function ProjectView({ project }: { project: Project }) {
   const [tab, setTab] = useState<Tab>("Factory")
@@ -53,6 +127,7 @@ export function ProjectView({ project }: { project: Project }) {
           </span>
           <span className="ml-auto text-warn">${project.cost_usd.toFixed(2)} spend</span>
         </div>
+        <QueuedRuns projectId={project.id} />
 
         {/* tabs */}
         <div className="mt-6 flex items-center gap-1 border-b border-border">
@@ -136,7 +211,7 @@ export function ProjectActions({ project }: { project: Project }) {
           Office
         </Link>
       </Button>
-      <FlowLauncher projectId={project.id} disabled={isRunning} />
+      <FlowLauncher projectId={project.id} disabled={false} />
       {watchEnabled && (
         <Button
           size="sm"

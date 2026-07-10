@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Play, ShieldAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import type { DoctorReport, FlowCatalog, FlowCatalogEntry } from "@/lib/types"
+import type { DoctorReport, FlowCatalog, FlowCatalogEntry, Run } from "@/lib/types"
 
 // Fallback when the project's serve predates GET /api/flows (I1): the static
 // selector this launcher replaces (Task 4 behavior).
@@ -102,7 +102,8 @@ export function FlowLauncher({ projectId, disabled }: { projectId: string; disab
         setMessage(`launch failed: ${detail?.detail ?? `HTTP ${res.status}`}`)
         return
       }
-      setMessage("launched")
+      const run = (await res.json()) as Run
+      setMessage(run.state === "queued" ? "queued behind active run" : "launched")
     } catch (err) {
       setMessage(`launch failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {

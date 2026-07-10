@@ -36,6 +36,7 @@ class RunCreate(BaseModel):
     flow: str | None = None
     inputs: dict[str, str] = Field(default_factory=dict)
     args: list[str] = Field(default_factory=list)
+    queue: bool = True
 
 
 async def _event_stream(log_iter: AsyncIterator[str], is_tail: bool) -> AsyncGenerator[str, None]:
@@ -72,6 +73,7 @@ async def launch_run(
         flow=body.flow,
         inputs=body.inputs,
         args=body.args,
+        queue=body.queue,
     )
 
 

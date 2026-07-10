@@ -153,7 +153,7 @@ async def test_launch_rejects_second_run_for_same_project(
     executor = LocalExecutor(bin_path=fake_bin)
     svc = RunSupervisor(session, executor=executor)
     with pytest.raises(FileExistsError, match="proj1"):
-        await svc.launch("proj1", kind=RunKind.run)
+        await svc.launch("proj1", kind=RunKind.run, queue=False)
 
 
 async def test_concurrent_launches_admit_only_one_active_run(tmp_path: Path) -> None:
@@ -185,7 +185,7 @@ async def test_concurrent_launches_admit_only_one_active_run(tmp_path: Path) -> 
             async with maker() as session:
                 svc = RunSupervisor(session, executor=executor, session_maker=maker)
                 try:
-                    run = await svc.launch("proj1", kind=RunKind.run)
+                    run = await svc.launch("proj1", kind=RunKind.run, queue=False)
                 except FileExistsError:
                     return FileExistsError
                 return run.state
