@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from orquesta_api.config import settings
@@ -194,7 +195,11 @@ class RunSupervisor:
             executor=settings.run_executor,
         )
         self._session.add(row)
-        await self._session.flush()
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            await self._session.rollback()
+            raise FileExistsError(f"Project '{project_id}' already has an active run") from exc
 
         row.state = RunState.starting.value
 

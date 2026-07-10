@@ -1,5 +1,6 @@
 """Repo lifecycle service: clone, adopt, status, and sync."""
 
+import asyncio
 from pathlib import Path
 
 from sqlalchemy import select
@@ -51,7 +52,9 @@ class RepoManager:
         repo_row = await self._get_repo_row(project.id)
         workspace = Path(repo_row.root)
 
-        workspace_is_git = workspace.exists() and git.is_git_repo(workspace)
+        workspace_is_git = workspace.exists() and await asyncio.to_thread(
+            git.is_git_repo, workspace
+        )
 
         if workspace.exists() and any(workspace.iterdir()) and not workspace_is_git:
             raise CloneTargetError(
@@ -73,7 +76,7 @@ class RepoManager:
         """Read current git state for the project's workspace and persist it."""
         repo_row = await self._get_repo_row(project_id)
         workspace = Path(repo_row.root)
-        state = git.status(workspace)
+        state = await asyncio.to_thread(git.status, workspace)
         _apply_git_state(repo_row, state)
         await self._session.commit()
         logger.info("Refreshed repo status => %s", project_id)
@@ -84,7 +87,7 @@ class RepoManager:
         repo_row = await self._get_repo_row(project_id)
         workspace = Path(repo_row.root)
 
-        state = git.status(workspace)
+        state = await asyncio.to_thread(git.status, workspace)
         if state.dirty and not force:
             raise WorkspaceDirtyError(
                 f"Workspace for project '{project_id}' has uncommitted changes;"
@@ -100,19 +103,19 @@ class RepoManager:
         if active.scalar_one_or_none() is not None:
             raise RunInFlightError(f"A run is in flight for project '{project_id}'")
 
-        git.fetch(workspace)
-        git.checkout(workspace, repo_row.base_branch)
-        git.merge_ff_only(workspace, repo_row.base_branch)
+        await asyncio.to_thread(git.fetch, workspace)
+        await asyncio.to_thread(git.checkout, workspace, repo_row.base_branch)
+        await asyncio.to_thread(git.merge_ff_only, workspace, repo_row.base_branch)
 
-        new_state = git.status(workspace)
+        new_state = await asyncio.to_thread(git.status, workspace)
         _apply_git_state(repo_row, new_state)
         await self._session.commit()
         logger.info("Synced repo => %s branch=%s", project_id, repo_row.base_branch)
         return _row_to_model(repo_row)
 
     async def _clone(self, url: str, dest: Path, repo_row: RepoRow) -> Repo:
-        git.clone(url, str(dest))
-        state = git.status(dest)
+        await asyncio.to_thread(git.clone, url, str(dest))
+        state = await asyncio.to_thread(git.status, dest)
         repo_row.managed = True
         repo_row.remote_url = url
         _apply_git_state(repo_row, state)
@@ -125,7 +128,7 @@ class RepoManager:
 
         managed is owned by registration (ProjectService.create), not recomputed here.
         """
-        state = git.status(workspace)
+        state = await asyncio.to_thread(git.status, workspace)
         _apply_git_state(repo_row, state)
         await self._session.commit()
         logger.info("Refreshed existing repo => %s", workspace)

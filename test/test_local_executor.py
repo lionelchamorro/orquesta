@@ -1,14 +1,46 @@
 """Integration tests for LocalExecutor and workspace initialization."""
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from orquesta_api.db.tables import ProjectRow, RunRow
 from orquesta_api.executors.local import LocalExecutor
-from orquesta_api.meta.models import RunKind, RunSpec, RunState
+from orquesta_api.meta.executor import ExecutorInterface
+from orquesta_api.meta.models import Container, RunHandle, RunKind, RunSpec, RunState
 from orquesta_api.services.runs import RunSupervisor, ensure_workspace_ready
+
+
+class DelayedExecutor(ExecutorInterface):
+    """Executor test double that keeps launch calls overlapped."""
+
+    async def start(self, spec: RunSpec, run_id: str = "") -> RunHandle:
+        await asyncio.sleep(0.05)
+        return RunHandle(run_id=run_id)
+
+    async def stop(self, handle: RunHandle, grace_s: int = 10) -> None:
+        return None
+
+    async def status(self, handle: RunHandle) -> RunState:
+        return RunState.running
+
+    async def wait(self, handle: RunHandle) -> int:
+        return 0
+
+    def logs(self, handle: RunHandle, tail: int | None = None) -> AsyncIterator[str]:
+        return self._empty_logs()
+
+    async def _empty_logs(self) -> AsyncIterator[str]:
+        if False:
+            yield ""
+
+    async def inspect(self, handle: RunHandle) -> Container | None:
+        return None
 
 
 async def test_start_run_writes_invocation_and_succeeds(fake_bin: str, tmp_path: Path) -> None:
@@ -122,3 +154,49 @@ async def test_launch_rejects_second_run_for_same_project(
     svc = RunSupervisor(session, executor=executor)
     with pytest.raises(FileExistsError, match="proj1"):
         await svc.launch("proj1", kind=RunKind.run)
+
+
+async def test_concurrent_launches_admit_only_one_active_run(tmp_path: Path) -> None:
+    """The database constraint makes one-active-run admission atomic."""
+    db_path = tmp_path / "runs.sqlite"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(ProjectRow.metadata.create_all)
+
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "team.json").write_text("{}")
+
+        async with maker() as session:
+            session.add(
+                ProjectRow(
+                    id="proj1",
+                    name="Test Project",
+                    workspace_path=str(workspace),
+                )
+            )
+            await session.commit()
+
+        executor = DelayedExecutor()
+
+        async def launch_once() -> RunState | type[FileExistsError]:
+            async with maker() as session:
+                svc = RunSupervisor(session, executor=executor, session_maker=maker)
+                try:
+                    run = await svc.launch("proj1", kind=RunKind.run)
+                except FileExistsError:
+                    return FileExistsError
+                return run.state
+
+        results = await asyncio.gather(launch_once(), launch_once())
+
+        assert results.count(RunState.running) == 1
+        assert results.count(FileExistsError) == 1
+
+        async with maker() as session:
+            rows = await session.execute(select(RunRow).where(RunRow.project_id == "proj1"))
+            assert len(rows.scalars().all()) == 1
+    finally:
+        await engine.dispose()

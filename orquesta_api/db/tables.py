@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -35,6 +35,15 @@ class RunRow(Base):
     """Persistent record for a single orq-lite run."""
 
     __tablename__ = "runs"
+    __table_args__ = (
+        Index(
+            "uq_runs_one_active_per_project",
+            "project_id",
+            unique=True,
+            sqlite_where=text("state IN ('queued', 'starting', 'running', 'stopping')"),
+            postgresql_where=text("state IN ('queued', 'starting', 'running', 'stopping')"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id"), nullable=False)
