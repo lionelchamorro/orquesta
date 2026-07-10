@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from orquesta_api.db.tables import Base, ProjectRow, RunRow
 from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import Container, RunHandle, RunKind, RunSpec, RunState
+from orquesta_api.routers.runs import retry_run
 from orquesta_api.services import runs as runs_module
 from orquesta_api.services.runs import RunSupervisor
 from orquesta_api.services.watchers import WatcherService
@@ -144,6 +145,121 @@ async def test_launch_queues_behind_active_run(db, project: str) -> None:
 
     assert active.pid is not None
     executor.finish(active.pid)
+    await _wait_for_supervisor_tasks()
+
+
+async def test_retry_finished_run_launches_with_persisted_parameters(
+    db, project: str
+) -> None:
+    executor = QueueExecutor()
+    now = datetime.now(tz=UTC)
+    async with db() as session:
+        original = RunRow(
+            id="failed-run",
+            project_id=project,
+            kind=RunKind.flow.value,
+            state=RunState.failed.value,
+            executor="local",
+            created_at=now,
+            finished_at=now,
+            flow="pr_review",
+            inputs={"ticket": "123", "mode": "strict"},
+            plan_path="plans/fix.md",
+            args=["--verbose"],
+            error="failed",
+        )
+        session.add(original)
+        await session.commit()
+
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        retried = await svc.retry("failed-run")
+
+    assert retried.state == RunState.running
+    assert retried.id != "failed-run"
+    spec = executor.started[retried.id]
+    assert spec.kind == RunKind.flow
+    assert spec.flow == "pr_review"
+    assert spec.inputs == {"ticket": "123", "mode": "strict"}
+    assert spec.plan_path == "plans/fix.md"
+    assert spec.args == ["--verbose"]
+
+    assert retried.pid is not None
+    executor.finish(retried.pid)
+    await _wait_for_supervisor_tasks()
+
+
+async def test_retry_finished_run_queues_with_persisted_parameters_when_project_busy(
+    db, project: str
+) -> None:
+    executor = QueueExecutor()
+    now = datetime.now(tz=UTC)
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        active = await svc.launch(project, kind=RunKind.flow, flow="active")
+        original = RunRow(
+            id="failed-run",
+            project_id=project,
+            kind=RunKind.flow.value,
+            state=RunState.failed.value,
+            executor="local",
+            created_at=now,
+            finished_at=now,
+            flow="pr_review",
+            inputs={"ticket": "123", "mode": "strict"},
+            plan_path="plans/fix.md",
+            args=["--verbose"],
+            error="failed",
+        )
+        session.add(original)
+        await session.commit()
+
+        retried = await svc.retry("failed-run")
+
+    assert retried.state == RunState.queued
+    assert retried.id != "failed-run"
+    assert len(executor.started) == 1
+
+    async with db() as session:
+        row = await session.get(RunRow, retried.id)
+        assert row is not None
+        assert row.flow == "pr_review"
+        assert row.inputs == {"ticket": "123", "mode": "strict"}
+        assert row.plan_path == "plans/fix.md"
+        assert row.args == ["--verbose"]
+        assert row.queued_at is not None
+
+    assert active.pid is not None
+    executor.finish(active.pid)
+    await _wait_for_supervisor_tasks()
+
+
+async def test_retry_endpoint_delegates_to_supervisor(db, project: str) -> None:
+    executor = QueueExecutor()
+    now = datetime.now(tz=UTC)
+    async with db() as session:
+        session.add(
+            RunRow(
+                id="failed-run",
+                project_id=project,
+                kind=RunKind.flow.value,
+                state=RunState.failed.value,
+                executor="local",
+                created_at=now,
+                finished_at=now,
+                flow="pr_review",
+                inputs={"ticket": "123"},
+            )
+        )
+        await session.commit()
+
+        retried = await retry_run("failed-run", session, executor)
+
+    assert retried.state == RunState.running
+    assert executor.started[retried.id].flow == "pr_review"
+    assert executor.started[retried.id].inputs == {"ticket": "123"}
+
+    assert retried.pid is not None
+    executor.finish(retried.pid)
     await _wait_for_supervisor_tasks()
 
 

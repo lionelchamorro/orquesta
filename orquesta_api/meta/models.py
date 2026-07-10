@@ -118,6 +118,12 @@ class ProjectState(str, Enum):
     paused = "paused"
 
 
+class AttentionKind(str, Enum):
+    run_failed = "run_failed"
+    task_needs_human = "task_needs_human"
+    task_needs_clarification = "task_needs_clarification"
+
+
 class Task(BaseModel):
     id: str
     status: TaskStatus
@@ -180,6 +186,20 @@ class Project(BaseModel):
     cost_usd: float
     last_run: str
     source: Literal["mock", "orq-lite"] | None = None
+
+
+class AttentionItem(BaseModel):
+    kind: AttentionKind
+    project_id: str
+    project_name: str
+    ref: str
+    title: str
+    detail: str
+    ts: str
+
+
+class AttentionResponse(BaseModel):
+    items: list[AttentionItem] = Field(default_factory=list)
 
 
 class ChatMessage(BaseModel):

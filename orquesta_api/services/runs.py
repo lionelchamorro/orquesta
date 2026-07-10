@@ -378,6 +378,21 @@ class RunSupervisor:
         row = await self._get_row(run_id)
         return _row_to_model(row), _build_handle(row)
 
+    async def retry(self, run_id: str) -> Run:
+        """Relaunch a finished run using its persisted launch parameters."""
+        row = await self._get_row(run_id)
+        if RunState(row.state) in _ACTIVE_RUN_STATES:
+            raise ValueError(f"Run '{run_id}' is not finished")
+        return await self.launch(
+            row.project_id,
+            kind=RunKind(row.kind),
+            plan_path=row.plan_path,
+            flow=row.flow,
+            inputs=row.inputs or {},
+            args=row.args or [],
+            queue=True,
+        )
+
     async def stop(self, run_id: str) -> Run:
         """Stop a running process and persist the terminal state.
 

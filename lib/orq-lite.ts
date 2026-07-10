@@ -1,5 +1,14 @@
 import { flows as mockFlows, teams as mockTeams } from "./mock-data"
-import type { AgentDefinition, FlowDefinition, FlowStep, Project, TeamDefinition, TeamRoleDefinition } from "./types"
+import type {
+  AgentDefinition,
+  AttentionItem,
+  AttentionResponse,
+  FlowDefinition,
+  FlowStep,
+  Project,
+  TeamDefinition,
+  TeamRoleDefinition,
+} from "./types"
 
 type RawAgent = Omit<Partial<AgentDefinition>, "id"> & { provider?: string; cmd?: string[] }
 type RawTeamRole = Partial<TeamRoleDefinition>
@@ -25,6 +34,13 @@ function demoModeEnabled(): boolean {
 
 export async function getProjects(): Promise<Project[]> {
   return getControlPlaneProjects()
+}
+
+export async function getAttention(): Promise<AttentionItem[]> {
+  const baseURL = orquestaApiBaseURL()
+  if (!baseURL) return []
+  const response = await fetchJSON<AttentionResponse>(`${baseURL}/attention`, { items: [] })
+  return response.items
 }
 
 export async function getProject(id: string): Promise<Project | undefined> {

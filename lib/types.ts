@@ -148,6 +148,22 @@ export interface Run {
 
 export type ProjectState = "running" | "idle" | "needs_human" | "paused"
 
+export type AttentionKind = "run_failed" | "task_needs_human" | "task_needs_clarification"
+
+export interface AttentionItem {
+  kind: AttentionKind
+  project_id: string
+  project_name: string
+  ref: string
+  title: string
+  detail: string
+  ts: string
+}
+
+export interface AttentionResponse {
+  items: AttentionItem[]
+}
+
 // projects.json entry plus derived in-memory state for the UI.
 export interface Project {
   id: string

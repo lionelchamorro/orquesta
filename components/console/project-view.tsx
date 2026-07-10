@@ -17,6 +17,10 @@ import type { Project, Run } from "@/lib/types"
 const tabs = ["Factory", "Tasks", "Runs", "Chat"] as const
 type Tab = (typeof tabs)[number]
 
+function parseTab(value: string | null): Tab {
+  return tabs.find((tab) => tab === value) ?? "Factory"
+}
+
 async function fetchJSON<T>(url: string): Promise<T | null> {
   try {
     const res = await fetch(url, { cache: "no-store" })
@@ -93,6 +97,13 @@ function QueuedRuns({ projectId }: { projectId: string }) {
 
 export function ProjectView({ project }: { project: Project }) {
   const [tab, setTab] = useState<Tab>("Factory")
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setTab(parseTab(new URLSearchParams(window.location.search).get("tab")))
+    }, 0)
+    return () => window.clearTimeout(timeout)
+  }, [])
 
   return (
     <div className="grid flex-1 xl:grid-cols-[minmax(0,1fr)_420px]">

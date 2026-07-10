@@ -115,6 +115,13 @@ async def get_run(run_id: str, session: SessionDep) -> Run:
     return await svc.get(run_id)
 
 
+@router.post("/runs/{run_id}/retry")
+async def retry_run(run_id: str, session: SessionDep, executor: ExecutorDep) -> Run:
+    """Relaunch a finished run using its persisted launch parameters."""
+    svc = RunSupervisor(session, executor=executor)
+    return await svc.retry(run_id)
+
+
 @router.post("/runs/{run_id}/stop")
 async def stop_run(run_id: str, session: SessionDep) -> Run:
     """Stop a running process and transition it to a terminal state."""

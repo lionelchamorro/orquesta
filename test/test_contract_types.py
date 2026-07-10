@@ -16,6 +16,7 @@ from pathlib import Path
 
 from orquesta_api.meta.models import (
     AgentDefinition,
+    AttentionItem,
     ChatMessage,
     Feature,
     FlowDefinition,
@@ -53,6 +54,7 @@ MIRRORED_MODELS: dict[str, tuple[type, dict[str, str]]] = {
     "TeamRoleDefinition": (TeamRoleDefinition, {}),
     "TeamLimits": (TeamLimits, {}),
     "TeamDefinition": (TeamDefinition, {}),
+    "AttentionItem": (AttentionItem, {}),
     "FlowStep": (FlowStep, {"as_": "as"}),
     "FlowInputSpec": (FlowInputSpec, {}),
     "FlowDefinition": (FlowDefinition, {}),
