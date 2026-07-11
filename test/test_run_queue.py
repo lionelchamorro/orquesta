@@ -148,9 +148,7 @@ async def test_launch_queues_behind_active_run(db, project: str) -> None:
     await _wait_for_supervisor_tasks()
 
 
-async def test_retry_finished_run_launches_with_persisted_parameters(
-    db, project: str
-) -> None:
+async def test_retry_finished_run_launches_with_persisted_parameters(db, project: str) -> None:
     executor = QueueExecutor()
     now = datetime.now(tz=UTC)
     async with db() as session:
