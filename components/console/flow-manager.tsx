@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 import { emptyStep } from "@/lib/flow-steps"
 import { FormView } from "@/components/console/flow-editor/form-view"
 import { GraphView } from "@/components/console/flow-editor/graph-view"
+import { JsonView } from "@/components/console/flow-editor/json-view"
 import type { FlowDefinition, Project } from "@/lib/types"
 
 export function FlowManager({
@@ -230,7 +231,12 @@ export function FlowManager({
 
         {tab === "form" && <FormView steps={selected.steps} onChange={(steps) => updateSelected({ steps })} />}
         {tab === "graph" && <GraphView steps={selected.steps} onChange={(steps) => updateSelected({ steps })} invalidPaths={[]} />}
-        {tab === "json" && <p className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">JSON — Task 12</p>}
+        {tab === "json" && (
+          <JsonView
+            flow={selected}
+            onApply={(patch) => updateSelected(patch)}
+          />
+        )}
 
         {message && (
           <p className="inline-flex items-center gap-2 font-mono text-xs text-muted-foreground">
