@@ -5,6 +5,8 @@ import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/clie
 import { Send, Sparkles, Loader2, CornerDownLeft, Wrench } from "lucide-react"
 import { cn, uid } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { useSystemStatus } from "@/lib/use-system-status"
+import { BackendBanner } from "@/components/console/system-status"
 import type { ChatMessage } from "@/lib/types"
 
 const suggestions = [
@@ -57,9 +59,12 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
     return { client, sessionID: sessionRef.current }
   }
 
+  const { status, refresh } = useSystemStatus()
+  const opencodeDown = status !== null && status.opencode === "down"
+
   async function send(text: string) {
     const content = text.trim()
-    if (!content || loading) return
+    if (!content || loading || opencodeDown) return
     setMessages((prev) => [...prev, { id: uid(), role: "user", content }])
     setInput("")
     setLoading(true)
@@ -99,6 +104,16 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
           <Sparkles className="h-4 w-4 text-primary" />
           <span className="font-mono text-sm font-semibold">Orquesta agent</span>
           <span className="ml-auto font-mono text-[11px] text-muted-foreground">opencode · {AGENT}</span>
+        </div>
+      )}
+
+      {opencodeDown && (
+        <div className="p-4">
+          <BackendBanner
+            label="opencode is not running"
+            hint="The chat needs the opencode server (OPENCODE_SERVER_URL). In the container, check `docker logs` — supervisord should keep it alive on :4096."
+            onRetry={refresh}
+          />
         </div>
       )}
 
@@ -170,7 +185,7 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
             placeholder="Ask for something: register a project, launch a flow, toggle a watcher…"
             className="max-h-32 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
           />
-          <Button type="submit" size="icon" disabled={loading || !input.trim()} className="shrink-0">
+          <Button type="submit" size="icon" disabled={loading || !input.trim() || opencodeDown} className="shrink-0">
             <Send className="h-4 w-4" />
             <span className="sr-only">Send</span>
           </Button>
