@@ -24,6 +24,7 @@ from orquesta_api.routers.history import router as history_router
 from orquesta_api.routers.projects import router as projects_router
 from orquesta_api.routers.repos import router as repos_router
 from orquesta_api.routers.runs import router as runs_router
+from orquesta_api.routers.skills import router as skills_router
 from orquesta_api.routers.teams import router as teams_router
 from orquesta_api.routers.webhooks import router as webhooks_router
 from orquesta_api.services.correlation import RunCorrelator
@@ -126,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(teams_router)
     app.include_router(repos_router)
     app.include_router(runs_router)
+    app.include_router(skills_router)
     app.include_router(events_router)
     app.include_router(attention_router)
     app.include_router(chat_router)

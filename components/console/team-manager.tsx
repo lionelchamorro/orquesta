@@ -1,13 +1,60 @@
 "use client"
 
-import { useMemo, useState, type FormEvent } from "react"
+import { useEffect, useMemo, useState, type FormEvent } from "react"
 import { Bot, Braces, Check, Copy, ListPlus, Save, Shield, Trash2, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
-import type { AgentDefinition, AgentProvider, Project, TeamDefinition, TeamRoleDefinition } from "@/lib/types"
+import type {
+  AgentDefinition,
+  AgentProvider,
+  Project,
+  SkillSummary,
+  SkillsResponse,
+  TeamDefinition,
+  TeamRoleDefinition,
+} from "@/lib/types"
 
 const providers: AgentProvider[] = ["codex", "claude", "gemini", "opencode", "cmd"]
+const skillBodies: Record<string, string> = {
+  "code-review-checklist": `Review the change for hidden assumptions: inputs that are trusted without validation, timing or ordering assumptions, default values that may differ in production, and contracts that are implied but not enforced.
+
+Trace error paths as carefully as success paths. Check external I/O, filesystem access, network calls, subprocesses, retries, cancellation, partial writes, and cleanup after failures.
+
+Verify tests assert observable behavior through public interfaces rather than private implementation details. Prefer tests that would catch a real regression over tests that mirror the current code structure.
+
+Inspect security-sensitive sinks: shell commands, path joins, file writes, environment handling, logs, auth decisions, SQL or query construction, template rendering, and user-controlled data crossing trust boundaries.`,
+  "repo-conventions": `Before writing code, read and honor the target repository's CLAUDE.md or AGENTS.md files that apply to the working directory.
+
+Inspect the lint, format, typecheck, and test configuration before choosing implementation style. Existing repo configuration wins over generic defaults.
+
+Match the repository's naming, module layout, logging, error handling, data modeling, and test style.
+
+When local instructions and general habits conflict, follow the local repo instructions.`,
+  "tdd-workflow": `Work in small vertical slices. write a failing test first that captures the next required behavior.
+
+Implement the minimum code needed to make that test pass. Keep the change narrow, run the relevant test, and get back to green before adding the next behavior.
+
+After the test passes, refactor only when the refactor preserves behavior and improves the code. Run the test again after refactoring.
+
+never weaken an assertion to make a test pass. If a test exposes a mismatch, fix the implementation or correct the test only when the test was asserting the wrong contract.`,
+  "verification-evidence": `Any claim of "pass" must quote the command that was run and the actual output that supports the claim.
+
+Do not report success from memory, intent, or an assumed result. If the command was not run, say that it was not run.
+
+When output is long, include the meaningful summary lines: command, exit status, failing or passing test names, and the final result line.
+
+No success claims without evidence.`,
+}
+
+export const SKILLS_START_MARKER = "<!-- orquesta:skills start -->"
+export const SKILLS_END_MARKER = "<!-- orquesta:skills end -->"
+
+export function composeSkillPreview(skillIds: string[]): string {
+  if (skillIds.length === 0) return ""
+  const bodies = skillIds.map((skillId) => skillBodies[skillId]).filter(Boolean).join("\n\n")
+  return `${SKILLS_START_MARKER}\n${bodies}\n${SKILLS_END_MARKER}`
+}
 
 function teamExport(team: TeamDefinition) {
   return {
@@ -43,8 +90,23 @@ export function TeamManager({
   const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "")
   const [selectedId, setSelectedId] = useState(initialTeams[0]?.id ?? "default")
   const [message, setMessage] = useState("")
+  const [skills, setSkills] = useState<SkillSummary[]>([])
   const selected = teams.find((team) => team.id === selectedId) ?? teams[0]
   const selectedJson = useMemo(() => JSON.stringify(selected ? teamExport(selected) : {}, null, 2), [selected])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadSkills() {
+      const res = await fetch("/api/control-plane/skills", { cache: "no-store" })
+      if (!res.ok) return
+      const body: SkillsResponse = await res.json()
+      if (!cancelled) setSkills(body.skills)
+    }
+    loadSkills()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function switchProject(nextProjectId: string) {
     setProjectId(nextProjectId)
@@ -73,6 +135,15 @@ export function TeamManager({
   function updateRole(roleName: string, patch: Partial<TeamRoleDefinition>) {
     if (!selected) return
     updateSelected({ roles: selected.roles.map((role) => (role.role === roleName ? { ...role, ...patch } : role)) })
+  }
+
+  function toggleRoleSkill(role: TeamRoleDefinition, skillId: string) {
+    const current = role.skills ?? []
+    updateRole(role.role, {
+      skills: current.includes(skillId)
+        ? current.filter((candidate) => candidate !== skillId)
+        : [...current, skillId],
+    })
   }
 
   function addAgent(event: FormEvent<HTMLFormElement>) {
@@ -247,6 +318,32 @@ export function TeamManager({
                     <input value={role.agents.join(", ")} onChange={(event) => updateRole(role.role, { agents: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
                     <input value={role.prompt} onChange={(event) => updateRole(role.role, { prompt: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
                     <input type="number" value={role.timeout_seconds} onChange={(event) => updateRole(role.role, { timeout_seconds: Number(event.target.value) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    {skills.length > 0 && (
+                      <div className="rounded-lg border border-border bg-card p-3">
+                        <p className="mb-2 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Skills</p>
+                        <div className="space-y-2">
+                          {skills.map((skill) => (
+                            <label key={skill.id} className="flex cursor-pointer items-start gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={(role.skills ?? []).includes(skill.id)}
+                                onChange={() => toggleRoleSkill(role, skill.id)}
+                                className="mt-1 h-4 w-4 rounded border-border"
+                              />
+                              <span className="min-w-0">
+                                <span className="block font-mono text-xs font-medium">{skill.name}</span>
+                                <span className="block text-xs leading-relaxed text-muted-foreground">{skill.description}</span>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {(role.skills ?? []).length > 0 && (
+                      <pre className="max-h-64 overflow-auto rounded-lg border border-border bg-card p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                        {composeSkillPreview(role.skills ?? [])}
+                      </pre>
+                    )}
                   </div>
                 </div>
               ))}

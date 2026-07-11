@@ -213,6 +213,9 @@ class TeamConfigStore:
                 prompt=str(role.get("prompt") or f"prompts/{name}.md"),
                 result_path=str(role.get("result_path") or f".orquestalite/results/{name}.json"),
                 timeout_seconds=int(role.get("timeout_seconds") or 600),
+                skills=[str(skill) for skill in role.get("skills", [])]
+                if isinstance(role.get("skills"), list)
+                else [],
                 escalation_ladder=role.get("escalation_ladder"),
                 decompose_prompt=role.get("decompose_prompt"),
                 mode=role.get("mode"),

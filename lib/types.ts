@@ -221,6 +221,7 @@ export interface TeamRoleDefinition {
   prompt: string
   result_path: string
   timeout_seconds: number
+  skills?: string[]
   escalation_ladder?: string[]
   decompose_prompt?: string
   mode?: "per_task" | "per_cycle" | "both" | ""
@@ -249,6 +250,17 @@ export interface TeamDefinition {
   lint_command?: string
   conventions_file?: string
   source?: "mock" | "orq-lite" | "orquesta-api"
+}
+
+export interface SkillSummary {
+  id: string
+  name: string
+  description: string
+  suggested_roles: string[]
+}
+
+export interface SkillsResponse {
+  skills: SkillSummary[]
 }
 
 export type FlowStepType = "agent" | "command" | "action" | "loop" | "retry_until" | "eval"

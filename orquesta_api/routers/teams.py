@@ -15,13 +15,18 @@ deep-merge layer preserves any fields the model does not know about (e.g.
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.db.session import get_session
 from orquesta_api.meta.models import TeamDefinition
 from orquesta_api.services.config_files import TeamConfigStore
 from orquesta_api.services.projects import ProjectService
+from orquesta_api.services.skills import (
+    compose_role_prompt_file,
+    load_skill_catalog,
+    selected_skills,
+)
 
 router = APIRouter(prefix="/projects", tags=["teams"])
 
@@ -84,5 +89,24 @@ async def update_team(project_id: str, body: TeamDefinition, session: SessionDep
     are preserved; only the fields known to ``TeamDefinition`` are patched.
     """
     workspace = await _get_workspace(project_id, session)
+    catalog = load_skill_catalog()
+    unknown_skill_ids: list[str] = []
+    for role in body.roles:
+        try:
+            selected_skills(catalog, role.skills)
+        except ValueError:
+            known_ids = {skill.id for skill in catalog}
+            unknown_skill_ids.extend(
+                skill_id for skill_id in role.skills if skill_id not in known_ids
+            )
+    if unknown_skill_ids:
+        raise HTTPException(
+            status_code=422,
+            detail={"unknown_skill_ids": sorted(set(unknown_skill_ids))},
+        )
+
     patch = _to_raw_patch(body)
-    return TeamConfigStore(workspace).update(patch)
+    updated = TeamConfigStore(workspace).update(patch)
+    for role in updated.roles:
+        compose_role_prompt_file(workspace, role.prompt, role.skills, catalog)
+    return updated
