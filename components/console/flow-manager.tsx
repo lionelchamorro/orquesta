@@ -66,6 +66,7 @@ export function FlowManager({
     }
     setFlows((prev) => [...prev, next])
     setSelectedId(next.id)
+    setInvalidPaths([])
     setAdding(false)
     setMessage("Draft flow created")
     event.currentTarget.reset()
@@ -96,7 +97,7 @@ export function FlowManager({
         return
       }
       const detail = await res.json().catch(() => null)
-      if (Array.isArray(detail?.detail) && detail.detail.every((d: { step?: string }) => typeof d?.step === "string")) {
+      if (Array.isArray(detail?.detail) && detail.detail.length > 0 && detail.detail.every((d: { step?: string }) => typeof d?.step === "string")) {
         applyStepErrors(detail.detail as FlowStepError[])
         return
       }
