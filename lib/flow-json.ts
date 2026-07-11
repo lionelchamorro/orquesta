@@ -24,7 +24,6 @@ export type ParsedFlow =
   | { ok: true; patch: Pick<FlowDefinition, "description" | "inputs" | "steps"> }
   | { ok: false; errors: string[] }
 
-// ast-grep-ignore
 type RawEntry = { description?: string; inputs?: FlowDefinition["inputs"]; steps?: FlowStep[] }
 
 export function parseFlowJson(text: string, flowId: string): ParsedFlow {
@@ -49,7 +48,10 @@ export function parseFlowJson(text: string, flowId: string): ParsedFlow {
     entry = data as RawEntry
   }
 
-  const steps = Array.isArray(entry.steps) ? entry.steps : []
+  if (!Array.isArray(entry.steps)) {
+    return { ok: false, errors: ["'steps' must be an array"] }
+  }
+  const steps = entry.steps
   const stepErrors = validateFlowSteps(steps)
   if (stepErrors.length > 0) {
     return { ok: false, errors: stepErrors.map((e) => `${e.step}: ${e.error}`) }

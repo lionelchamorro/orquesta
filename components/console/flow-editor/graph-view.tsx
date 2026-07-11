@@ -87,7 +87,7 @@ export function GraphView({
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
-          onNodeClick={(_, node) => setSelectedPath((node.data as StepNodeData).graph.path)}
+          onNodeClick={(_, node) => setSelectedPath(node.data.graph.path)}
           onPaneClick={() => setSelectedPath(null)}
           fitView
           nodesDraggable={false}
@@ -111,8 +111,39 @@ export function GraphView({
                 step {selectedPath.map((i) => i + 1).join(".")}
               </p>
               <div className="flex items-center gap-1">
-                <Button size="icon-xs" variant="ghost" title="Move up" onClick={() => mutate(moveStep(steps, selectedPath, -1))}><ArrowUp /></Button>
-                <Button size="icon-xs" variant="ghost" title="Move down" onClick={() => mutate(moveStep(steps, selectedPath, 1))}><ArrowDown /></Button>
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  title="Move up"
+                  onClick={() => {
+                    const idx = selectedPath[selectedPath.length - 1]
+                    const next = moveStep(steps, selectedPath, -1)
+                    // moveStep returns the same array reference when the move
+                    // is a no-op (already at the top) — only follow selection
+                    // when the swap actually happened.
+                    if (next !== steps) {
+                      mutate(next)
+                      setSelectedPath([...selectedPath.slice(0, -1), idx - 1])
+                    }
+                  }}
+                >
+                  <ArrowUp />
+                </Button>
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  title="Move down"
+                  onClick={() => {
+                    const idx = selectedPath[selectedPath.length - 1]
+                    const next = moveStep(steps, selectedPath, 1)
+                    if (next !== steps) {
+                      mutate(next)
+                      setSelectedPath([...selectedPath.slice(0, -1), idx + 1])
+                    }
+                  }}
+                >
+                  <ArrowDown />
+                </Button>
                 <Button
                   size="icon-xs"
                   variant="ghost"
@@ -130,7 +161,17 @@ export function GraphView({
             <StepFields step={selectedStep} onChange={(patch) => mutate(updateStepAt(steps, selectedPath, patch))} />
 
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" className="font-mono text-xs" onClick={() => mutate(insertStepAt(steps, selectedPath, emptyStep()))}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="font-mono text-xs"
+                onClick={() => {
+                  const idx = selectedPath[selectedPath.length - 1]
+                  mutate(insertStepAt(steps, selectedPath, emptyStep()))
+                  // The step the user was editing shifted down by one.
+                  setSelectedPath([...selectedPath.slice(0, -1), idx + 1])
+                }}
+              >
                 <ListPlus />Before
               </Button>
               <Button

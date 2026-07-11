@@ -48,4 +48,8 @@ describe("parseFlowJson", () => {
     const parsed = parseFlowJson(JSON.stringify({ flows: { a: { steps: [] }, b: { steps: [] } } }), "release")
     expect(parsed.ok).toBe(false)
   })
+  it("rejects an entry with a missing or mistyped steps key instead of silently defaulting to []", () => {
+    const parsed = parseFlowJson(JSON.stringify({ description: "x", step: [] }), "id")
+    expect(parsed).toEqual({ ok: false, errors: ["'steps' must be an array"] })
+  })
 })

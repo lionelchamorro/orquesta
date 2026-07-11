@@ -21,10 +21,13 @@ export function JsonView({
   const [applied, setApplied] = useState(false)
   const flowIdRef = useRef(flow.id)
 
-  // Cuando el flow cambia desde afuera (otra pestaña, otro flow seleccionado),
-  // re-sincronizar el editor SOLO si el usuario no tiene ediciones pendientes.
-  // El "applied" solo se resetea al cambiar de flow: el canonical también cambia
-  // como consecuencia del propio Apply y no debe borrar la confirmación.
+  // Cuando el flow cambia desde afuera (otra pestaña, otro flow seleccionado,
+  // o el propio Apply), el editor se re-sincroniza con el canonical y
+  // reemplaza cualquier edición no aplicada — salvo que un Apply fallido haya
+  // dejado errores pendientes, en cuyo caso preservamos el texto para que el
+  // usuario pueda corregirlo. El "applied" solo se resetea al cambiar de flow:
+  // el canonical también cambia como consecuencia del propio Apply y no debe
+  // borrar la confirmación.
   useEffect(() => {
     const flowChanged = flowIdRef.current !== flow.id
     flowIdRef.current = flow.id
