@@ -70,4 +70,8 @@ describe("moveStep", () => {
     expect(moveStep(nested, [0], -1)).toEqual(nested)
     expect(moveStep(nested, [2], 1)).toEqual(nested)
   })
+  it("is a reference-preserving no-op at a nested boundary", () => {
+    expect(moveStep(nested, [1, 0], -1)).toBe(nested)
+    expect(moveStep(nested, [1, 1], 1)).toBe(nested)
+  })
 })

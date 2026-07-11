@@ -22,7 +22,9 @@ function withSiblings(steps: FlowStep[], path: StepPath, edit: (siblings: FlowSt
   if (rest.length === 0) return edit(steps, head)
   const parent = steps[head]
   if (!parent?.body) return steps
-  return steps.map((s, i) => (i === head ? { ...parent, body: withSiblings(parent.body!, rest, edit) } : s))
+  const edited = withSiblings(parent.body, rest, edit)
+  if (edited === parent.body) return steps
+  return steps.map((s, i) => (i === head ? { ...parent, body: edited } : s))
 }
 
 export function updateStepAt(steps: FlowStep[], path: StepPath, patch: Partial<FlowStep>): FlowStep[] {

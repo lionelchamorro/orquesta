@@ -122,10 +122,11 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
           if (!active) break
           const ev = event as {
             type?: string
-            properties?: { part?: Part; info?: { id?: string; role?: string } }
+            properties?: { part?: Part; info?: { id?: string; role?: string; sessionID?: string } }
           }
           if (ev.type === "message.updated") {
             const info = ev.properties?.info
+            if (info?.sessionID !== sessionRef.current) continue
             if (info?.id) rolesRef.current.set(info.id, info.role === "user" ? "user" : "assistant")
             continue
           }
@@ -162,6 +163,7 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
     localStorage.removeItem(SESSION_KEY)
     setTurns([])
     setSendError(null)
+    rolesRef.current.clear()
   }
 
   async function send(text: string) {
