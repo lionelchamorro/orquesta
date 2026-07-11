@@ -1,20 +1,13 @@
 "use client"
 
-import { useMemo, useState, type FormEvent } from "react"
-import { Braces, Copy, ListPlus, Play, Save, Workflow, X } from "lucide-react"
+import { useState, type FormEvent } from "react"
+import { Copy, ListPlus, Play, Save, Workflow, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
-import { flowToEngineJson } from "@/lib/flow-json"
-import type { FlowDefinition, FlowStep, FlowStepType, Project } from "@/lib/types"
-
-const stepTypes: FlowStepType[] = ["command", "agent", "action", "loop", "retry_until", "eval"]
-
-function emptyStep(): FlowStep {
-  // A valid placeholder so a brand-new draft saves; the engine rejects an empty
-  // command ("command steps require exactly one of command/args").
-  return { type: "command", command: "echo configure this step" }
-}
+import { emptyStep } from "@/lib/flow-steps"
+import { FormView } from "@/components/console/flow-editor/form-view"
+import type { FlowDefinition, Project } from "@/lib/types"
 
 export function FlowManager({
   initialFlows,
@@ -30,8 +23,8 @@ export function FlowManager({
   const [selectedId, setSelectedId] = useState(initialFlows[0]?.id ?? "")
   const [adding, setAdding] = useState(false)
   const [message, setMessage] = useState("")
+  const [tab, setTab] = useState<"graph" | "form" | "json">("form")
   const selected = flows.find((flow) => flow.id === selectedId) ?? flows[0]
-  const selectedJson = useMemo(() => (selected ? flowToEngineJson(selected) : "{}"), [selected])
 
   async function switchProject(nextProjectId: string) {
     setProjectId(nextProjectId)
@@ -50,13 +43,6 @@ export function FlowManager({
   function updateSelected(patch: Partial<FlowDefinition>) {
     if (!selected) return
     setFlows((prev) => prev.map((flow) => (flow.id === selected.id ? { ...flow, ...patch } : flow)))
-  }
-
-  function updateStep(index: number, patch: Partial<FlowStep>) {
-    if (!selected) return
-    updateSelected({
-      steps: selected.steps.map((step, i) => (i === index ? { ...step, ...patch } : step)),
-    })
   }
 
   function addFlow(event: FormEvent<HTMLFormElement>) {
@@ -226,122 +212,30 @@ export function FlowManager({
           )}
         </div>
 
-        <div className="rounded-xl border border-border bg-card p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="font-mono text-sm font-semibold uppercase tracking-wide text-muted-foreground">Steps</h2>
-            <Button size="sm" variant="outline" className="font-mono text-xs" onClick={() => updateSelected({ steps: [...selected.steps, emptyStep()] })}>
-              <ListPlus />Step
-            </Button>
-          </div>
-          <div className="space-y-3">
-            {selected.steps.map((step, index) => (
-              <div key={index} className="rounded-lg border border-border bg-background p-4">
-                <div className="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)_140px]">
-                  <label className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Type</span>
-                    <select
-                      value={step.type}
-                      onChange={(event) => updateStep(index, { type: event.target.value as FlowStepType })}
-                      className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
-                    >
-                      {stepTypes.map((type) => <option key={type} value={type}>{type}</option>)}
-                    </select>
-                  </label>
-                  <div className="flex items-end font-mono text-[11px] text-muted-foreground">
-                    step {index + 1} of {selected.steps.length}
-                  </div>
-                  <label className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">On failure</span>
-                    <select value={step.on_failure ?? ""} onChange={(event) => updateStep(index, { on_failure: event.target.value as "" | "continue" })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50">
-                      <option value="">stop</option>
-                      <option value="continue">continue</option>
-                    </select>
-                  </label>
-                </div>
-
-                {step.type === "command" && (
-                  <div className="mt-3 grid gap-3 md:grid-cols-2">
-                    <label className="flex flex-col gap-1">
-                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Command (shell string)</span>
-                      <input value={step.command ?? ""} onChange={(event) => { const value = event.target.value; updateStep(index, { command: value || undefined, args: value ? undefined : step.args }) }} placeholder="go test ./..." className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                    </label>
-                    <label className="flex flex-col gap-1">
-                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Args (argv, alternative to command)</span>
-                      <input value={(step.args ?? []).join(" ")} onChange={(event) => { const args = event.target.value.split(" ").filter(Boolean); updateStep(index, { args: args.length > 0 ? args : undefined, command: args.length > 0 ? undefined : step.command }) }} placeholder="git push -u origin branch" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                    </label>
-                    <p className="col-span-full font-mono text-[11px] text-muted-foreground">The engine requires exactly one of command / args — filling one clears the other.</p>
-                  </div>
-                )}
-
-                {step.type === "agent" && (
-                  <label className="mt-3 flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Agent role</span>
-                    <input value={step.agent ?? ""} onChange={(event) => updateStep(index, { agent: event.target.value })} placeholder="coder" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                  </label>
-                )}
-
-                {step.type === "action" && (
-                  <label className="mt-3 flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Action</span>
-                    <input value={step.action ?? ""} onChange={(event) => updateStep(index, { action: event.target.value })} placeholder="factory_extract_features" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                  </label>
-                )}
-
-                {step.type === "loop" && (
-                  <div className="mt-3 grid gap-3 md:grid-cols-2">
-                    <label className="flex flex-col gap-1">
-                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Iterator</span>
-                      <input value={step.iterator ?? ""} onChange={(event) => updateStep(index, { iterator: event.target.value })} placeholder="{features_queue}" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                    </label>
-                    <label className="flex flex-col gap-1">
-                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">As</span>
-                      <input value={step.as ?? ""} onChange={(event) => updateStep(index, { as: event.target.value })} placeholder="feature" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                    </label>
-                  </div>
-                )}
-
-                {step.type === "retry_until" && (
-                  <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_120px]">
-                    <label className="flex flex-col gap-1">
-                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Condition</span>
-                      <input value={step.condition ?? ""} onChange={(event) => updateStep(index, { condition: event.target.value })} placeholder="{task_verified} == true" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                    </label>
-                    <label className="flex flex-col gap-1">
-                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Max retries</span>
-                      <input type="number" value={step.max_retries ?? 1} onChange={(event) => updateStep(index, { max_retries: Number(event.target.value) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                    </label>
-                  </div>
-                )}
-
-                {step.type === "eval" && (
-                  <label className="mt-3 flex flex-col gap-1">
-                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Expression</span>
-                    <input value={step.expression ?? ""} onChange={(event) => updateStep(index, { expression: event.target.value })} placeholder="{lint_res.pass} && {tester_res.pass}" className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
-                  </label>
-                )}
-
-                {(step.type === "loop" || step.type === "retry_until") && step.body && step.body.length > 0 && (
-                  <p className="mt-3 font-mono text-[11px] text-muted-foreground">
-                    {step.body.length} nested step{step.body.length === 1 ? "" : "s"} — edit the body via the JSON export below.
-                  </p>
-                )}
-
-                <div className="mt-3 flex justify-end">
-                  <Button size="icon-xs" variant="ghost" title="Remove step" onClick={() => updateSelected({ steps: selected.steps.filter((_, i) => i !== index) })}><X /></Button>
-                </div>
-              </div>
-            ))}
-          </div>
+        <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 font-mono text-xs">
+          {(["graph", "form", "json"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={cn(
+                "rounded-md px-3 py-1.5 transition-colors",
+                tab === t ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t === "graph" ? "Graph" : t === "form" ? "Form" : "JSON"}
+            </button>
+          ))}
         </div>
 
-        <div className="rounded-xl border border-border bg-card p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="inline-flex items-center gap-2 font-mono text-sm font-semibold uppercase tracking-wide text-muted-foreground"><Braces className="h-4 w-4" />Export</h2>
-            <Button size="sm" variant="ghost" className="font-mono text-xs" onClick={() => navigator.clipboard?.writeText(selectedJson)}><Copy />Copy</Button>
-          </div>
-          <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-background p-4 font-mono text-xs leading-relaxed text-muted-foreground">{selectedJson}</pre>
-          {message && <p className="mt-3 inline-flex items-center gap-2 font-mono text-xs text-muted-foreground"><Play className="h-3.5 w-3.5 text-primary" />{message}</p>}
-        </div>
+        {tab === "form" && <FormView steps={selected.steps} onChange={(steps) => updateSelected({ steps })} />}
+        {tab === "graph" && <p className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">Graph — Task 11</p>}
+        {tab === "json" && <p className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">JSON — Task 12</p>}
+
+        {message && (
+          <p className="inline-flex items-center gap-2 font-mono text-xs text-muted-foreground">
+            <Play className="h-3.5 w-3.5 text-primary" />{message}
+          </p>
+        )}
       </div>
     </div>
   )
