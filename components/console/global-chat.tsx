@@ -1,13 +1,14 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
-import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/client"
-import { Send, Sparkles, Loader2, CornerDownLeft, Wrench } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import Link from "next/link"
+import { createOpencodeClient, type OpencodeClient, type Part } from "@opencode-ai/sdk/client"
+import { Send, Sparkles, Loader2, CornerDownLeft, Wrench, Plus, ExternalLink, CircleCheck, CircleX } from "lucide-react"
 import { cn, uid } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { useSystemStatus } from "@/lib/use-system-status"
 import { BackendBanner } from "@/components/console/system-status"
-import type { ChatMessage } from "@/lib/types"
+import { applyPartUpdate, localUserTurn, turnsFromHistory, type ChatPart, type ChatTurn } from "@/lib/chat-parts"
 
 const suggestions = [
   "What projects need attention?",
@@ -16,84 +17,141 @@ const suggestions = [
   "Launch factory_fast on prm",
 ]
 
-// The browser talks to the loopback opencode server through the same-origin
-// /opencode proxy (app/opencode/[...path]/route.ts). The `orquesta` agent
-// (deploy/opencode.json) drives the control plane via its MCP tools.
+// El browser habla con el opencode loopback a través del proxy same-origin
+// /opencode (app/opencode/[...path]/route.ts). El agente `orquesta`
+// (deploy/opencode.json) opera el control plane vía sus tools MCP.
 const AGENT = "orquesta"
+const SESSION_KEY = "orquesta.chat.session"
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractParts(data: any): { text: string; tools: string[] } {
-  const parts: unknown[] = data?.parts ?? data?.info?.parts ?? []
-  let text = ""
-  const tools: string[] = []
-  for (const p of parts) {
-    const part = p as { type?: string; text?: string; tool?: string; state?: { title?: string } }
-    if (part.type === "text" && part.text) text += part.text
-    else if (part.type === "tool") tools.push(part.tool ?? part.state?.title ?? "tool")
-  }
-  return { text: text.trim(), tools }
+function ToolChip({ part }: { part: Extract<ChatPart, { kind: "tool" }> }) {
+  const icon =
+    part.status === "completed" ? <CircleCheck className="h-3.5 w-3.5 text-emerald-500" />
+    : part.status === "error" ? <CircleX className="h-3.5 w-3.5 text-red-500" />
+    : <Loader2 className="h-3.5 w-3.5 animate-spin" />
+  return (
+    <div className="my-1 flex items-center gap-2 rounded-2xl rounded-bl-sm bg-secondary/60 px-4 py-2 font-mono text-xs text-muted-foreground">
+      <Wrench className="h-3.5 w-3.5" />
+      {part.name}
+      {icon}
+      {part.link && (
+        <Link
+          href={part.link.projectId ? `/projects/${part.link.projectId}` : "/dashboard/projects"}
+          className="inline-flex items-center gap-1 text-primary hover:underline"
+        >
+          run {part.link.runId.slice(0, 8)} <ExternalLink className="h-3 w-3" />
+        </Link>
+      )}
+    </div>
+  )
 }
 
 export function GlobalChat({ compact = false }: { compact?: boolean }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [toolCalls, setToolCalls] = useState<string[]>([])
+  const [turns, setTurns] = useState<ChatTurn[]>([])
   const [input, setInput] = useState("")
-  const [loading, setLoading] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  const { status, refresh } = useSystemStatus()
+  const opencodeDown = status !== null && status.opencode === "down"
   const scrollRef = useRef<HTMLDivElement>(null)
   const clientRef = useRef<OpencodeClient | null>(null)
   const sessionRef = useRef<string | null>(null)
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
-  }, [messages, loading, toolCalls])
-
-  async function ensureSession(): Promise<{ client: OpencodeClient; sessionID: string }> {
+  function client(): OpencodeClient {
     if (!clientRef.current) clientRef.current = createOpencodeClient({ baseUrl: "/opencode" })
-    const client = clientRef.current
-    if (!sessionRef.current) {
-      const created = await client.session.create({ body: {} })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      sessionRef.current = (created.data as any)?.id
-      if (!sessionRef.current) throw new Error("could not create an opencode session")
-    }
-    return { client, sessionID: sessionRef.current }
+    return clientRef.current
   }
 
-  const { status, refresh } = useSystemStatus()
-  const opencodeDown = status !== null && status.opencode === "down"
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
+  }, [turns, sending])
+
+  // Restaurar la conversación previa: opencode persiste las sesiones, nosotros
+  // solo recordamos el id en localStorage.
+  useEffect(() => {
+    const stored = localStorage.getItem(SESSION_KEY)
+    if (!stored) return
+    sessionRef.current = stored
+    client()
+      .session.messages({ path: { id: stored } })
+      .then((res) => {
+        if (res.data) setTurns(turnsFromHistory(res.data as Array<{ info: { id: string; role: string }; parts: Part[] }>))
+      })
+      .catch(() => {
+        sessionRef.current = null
+        localStorage.removeItem(SESSION_KEY)
+      })
+  }, [])
+
+  // Streaming: el feed SSE global de opencode emite message.part.updated con
+  // cada delta de texto y transición de tool — filtramos por nuestra sesión.
+  // Si el stream no está disponible, send() igual renderiza el turno completo
+  // al resolver (fallback sin streaming).
+  useEffect(() => {
+    let active = true
+    let stream: AsyncGenerator<unknown> | null = null
+    async function listen() {
+      try {
+        const events = await client().event.subscribe()
+        stream = events.stream as AsyncGenerator<unknown>
+        for await (const event of events.stream) {
+          if (!active) break
+          const ev = event as { type?: string; properties?: { part?: Part } }
+          if (ev.type !== "message.part.updated") continue
+          const part = ev.properties?.part
+          if (!part || part.sessionID !== sessionRef.current) continue
+          setTurns((prev) => applyPartUpdate(prev, part))
+        }
+      } catch {
+        // sin SSE seguimos funcionando en modo respuesta-completa
+      }
+    }
+    void listen()
+    return () => {
+      active = false
+      void stream?.return?.(undefined)
+    }
+  }, [])
+
+  async function ensureSession(): Promise<string> {
+    if (sessionRef.current) return sessionRef.current
+    const created = await client().session.create({ body: {} })
+    const id = (created.data as { id?: string } | undefined)?.id
+    if (!id) throw new Error("could not create an opencode session")
+    sessionRef.current = id
+    localStorage.setItem(SESSION_KEY, id)
+    return id
+  }
+
+  function resetConversation() {
+    sessionRef.current = null
+    localStorage.removeItem(SESSION_KEY)
+    setTurns([])
+    setSendError(null)
+  }
 
   async function send(text: string) {
     const content = text.trim()
-    if (!content || loading || opencodeDown) return
-    setMessages((prev) => [...prev, { id: uid(), role: "user", content }])
+    if (!content || sending || opencodeDown) return
+    setTurns((prev) => [...prev, localUserTurn(uid(), content)])
     setInput("")
-    setLoading(true)
-    setToolCalls([])
+    setSending(true)
+    setSendError(null)
 
     try {
-      const { client, sessionID } = await ensureSession()
-      const result = await client.session.prompt({
+      const sessionID = await ensureSession()
+      const result = await client().session.prompt({
         path: { id: sessionID },
         body: { agent: AGENT, parts: [{ type: "text", text: content }] },
       })
       if (result.error) throw new Error(JSON.stringify(result.error))
-      const { text: reply, tools } = extractParts(result.data)
-      if (tools.length) setToolCalls(tools)
-      setMessages((prev) => [
-        ...prev,
-        { id: uid(), role: "assistant", content: reply || "(the agent returned no text)" },
-      ])
+      // Reconciliación final (idempotente): si el SSE se perdió algo, los
+      // parts del resultado completan el turno.
+      const parts = ((result.data as { parts?: Part[] } | undefined)?.parts ?? []) as Part[]
+      setTurns((prev) => parts.reduce(applyPartUpdate, prev))
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: uid(),
-          role: "assistant",
-          content: `Could not reach the agent: ${err instanceof Error ? err.message : String(err)}`,
-        },
-      ])
+      setSendError(err instanceof Error ? err.message : String(err))
     } finally {
-      setLoading(false)
+      setSending(false)
     }
   }
 
@@ -103,7 +161,9 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <Sparkles className="h-4 w-4 text-primary" />
           <span className="font-mono text-sm font-semibold">Orquesta agent</span>
-          <span className="ml-auto font-mono text-[11px] text-muted-foreground">opencode · {AGENT}</span>
+          <Button size="sm" variant="ghost" className="ml-auto font-mono text-[11px] text-muted-foreground" onClick={resetConversation}>
+            <Plus className="h-3.5 w-3.5" /> new conversation
+          </Button>
         </div>
       )}
 
@@ -118,29 +178,28 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
       )}
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
-        {messages.map((m) => (
-          <div key={m.id} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-            <div
-              className={cn(
-                "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-                m.role === "user"
-                  ? "rounded-br-sm bg-primary text-primary-foreground"
-                  : "rounded-bl-sm bg-secondary text-secondary-foreground",
-              )}
-            >
-              <p className="whitespace-pre-wrap text-pretty">{m.content}</p>
-            </div>
+        {turns.map((turn) => (
+          <div key={turn.id} className={cn("flex flex-col", turn.role === "user" ? "items-end" : "items-start")}>
+            {turn.parts.map((part) =>
+              part.kind === "text" ? (
+                <div
+                  key={part.id}
+                  className={cn(
+                    "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+                    turn.role === "user"
+                      ? "rounded-br-sm bg-primary text-primary-foreground"
+                      : "rounded-bl-sm bg-secondary text-secondary-foreground",
+                  )}
+                >
+                  <p className="whitespace-pre-wrap text-pretty">{part.text}</p>
+                </div>
+              ) : (
+                <ToolChip key={part.id} part={part} />
+              ),
+            )}
           </div>
         ))}
-        {toolCalls.map((name, i) => (
-          <div key={`${name}-${i}`} className="flex justify-start">
-            <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-secondary/60 px-4 py-2 font-mono text-xs text-muted-foreground">
-              <Wrench className="h-3.5 w-3.5" />
-              {name}
-            </div>
-          </div>
-        ))}
-        {loading && (
+        {sending && (
           <div className="flex justify-start">
             <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-secondary px-4 py-2.5 text-sm text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -148,9 +207,16 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
             </div>
           </div>
         )}
+        {sendError && (
+          <div className="flex justify-start">
+            <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-red-500/10 px-4 py-2.5 text-sm text-red-400">
+              Could not complete the turn: {sendError}
+            </div>
+          </div>
+        )}
       </div>
 
-      {messages.length === 0 && (
+      {turns.length === 0 && !opencodeDown && (
         <div className="flex flex-wrap gap-2 px-4 pb-2">
           {suggestions.map((s) => (
             <button
@@ -185,7 +251,7 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
             placeholder="Ask for something: register a project, launch a flow, toggle a watcher…"
             className="max-h-32 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
           />
-          <Button type="submit" size="icon" disabled={loading || !input.trim() || opencodeDown} className="shrink-0">
+          <Button type="submit" size="icon" disabled={sending || !input.trim() || opencodeDown} className="shrink-0">
             <Send className="h-4 w-4" />
             <span className="sr-only">Send</span>
           </Button>
