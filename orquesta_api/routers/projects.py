@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -49,8 +49,16 @@ def _github_pr_url(repo_url: str | None, pr_number: int) -> str | None:
     return f"https://github.com/{m.group(1)}/pull/{pr_number}"
 
 
+def _pr_number_from_inputs(inputs: Mapping[str, object] | None) -> int | None:
+    raw = (inputs or {}).get("pr_number")
+    if not isinstance(raw, str) or not raw.isdigit():
+        return None
+    return int(raw)
+
+
 def _get_executor() -> ExecutorInterface:
     return _make_executor()
+
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -288,8 +296,7 @@ async def get_project_reviews(
         ]
     reviews: list[ReviewRun] = []
     for row, cost_task in zip(rows, cost_tasks, strict=True):
-        pr_number_raw = (row.inputs or {}).get("pr_number")
-        pr_number = int(pr_number_raw) if pr_number_raw and pr_number_raw.isdigit() else None
+        pr_number = _pr_number_from_inputs(row.inputs)
         pr_url = _github_pr_url(project.repo_url, pr_number) if pr_number is not None else None
         duration_s, cost_usd = cost_task.result()
         reviews.append(

@@ -269,6 +269,80 @@ async def test_reviews_pr_url_non_github_is_null(db, tmp_path: Path) -> None:
     assert reviews[0].pr_number == 3
 
 
+async def test_reviews_tolerates_non_string_pr_number(db, project: str) -> None:
+    now = datetime.now(tz=UTC)
+    async with db() as session:
+        session.add_all(
+            [
+                RunRow(
+                    id="rev-int",
+                    project_id=project,
+                    kind=RunKind.flow.value,
+                    state=RunState.succeeded.value,
+                    executor="local",
+                    created_at=now,
+                    flow="pr_review",
+                    inputs={"pr_number": 12},
+                ),
+                RunRow(
+                    id="rev-none",
+                    project_id=project,
+                    kind=RunKind.flow.value,
+                    state=RunState.succeeded.value,
+                    executor="local",
+                    created_at=now,
+                    flow="pr_review",
+                    inputs={"pr_number": None},
+                ),
+            ]
+        )
+        await session.commit()
+
+        serves = ServeManager()
+        reviews = await get_project_reviews(project, session, serves)
+
+    assert [review.pr_number for review in reviews] == [None, None]
+    assert [review.pr_url for review in reviews] == [None, None]
+
+
+async def test_reviews_are_newest_first(db, project: str) -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 1, 2, tzinfo=UTC)
+    async with db() as session:
+        session.add_all(
+            [
+                RunRow(
+                    id="rev-old",
+                    project_id=project,
+                    kind=RunKind.flow.value,
+                    state=RunState.succeeded.value,
+                    executor="local",
+                    created_at=older,
+                    started_at=older,
+                    flow="pr_review",
+                    inputs={"pr_number": "1"},
+                ),
+                RunRow(
+                    id="rev-new",
+                    project_id=project,
+                    kind=RunKind.flow.value,
+                    state=RunState.succeeded.value,
+                    executor="local",
+                    created_at=newer,
+                    started_at=newer,
+                    flow="pr_review",
+                    inputs={"pr_number": "2"},
+                ),
+            ]
+        )
+        await session.commit()
+
+        serves = ServeManager()
+        reviews = await get_project_reviews(project, session, serves)
+
+    assert [review.run_id for review in reviews] == ["rev-new", "rev-old"]
+
+
 async def test_rerun_review_relaunches_with_persisted_inputs(db, project: str) -> None:
     executor = NoopExecutor()
     now = datetime.now(tz=UTC)
