@@ -164,6 +164,17 @@ export interface AttentionResponse {
   items: AttentionItem[]
 }
 
+export interface ReviewRun {
+  run_id: string
+  pr_number: number | null
+  pr_url: string | null
+  state: RunState
+  started_at: string | null
+  finished_at: string | null
+  duration_s: number | null
+  cost_usd: number | null
+}
+
 // projects.json entry plus derived in-memory state for the UI.
 export interface Project {
   id: string

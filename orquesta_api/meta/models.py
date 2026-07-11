@@ -198,6 +198,17 @@ class AttentionItem(BaseModel):
     ts: str
 
 
+class ReviewRun(BaseModel):
+    run_id: str
+    pr_number: int | None = None
+    pr_url: str | None = None
+    state: RunState
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_s: float | None = None
+    cost_usd: float | None = None
+
+
 class AttentionResponse(BaseModel):
     items: list[AttentionItem] = Field(default_factory=list)
 
