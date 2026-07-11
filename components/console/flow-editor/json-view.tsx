@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import CodeMirror from "@uiw/react-codemirror"
 import { json } from "@codemirror/lang-json"
 import { Check, Copy, RotateCcw } from "lucide-react"
@@ -19,15 +19,20 @@ export function JsonView({
   const [text, setText] = useState(canonical)
   const [errors, setErrors] = useState<string[]>([])
   const [applied, setApplied] = useState(false)
+  const flowIdRef = useRef(flow.id)
 
-  // When the flow changes from outside (another tab, another flow selected),
-  // re-sync the editor ONLY if the user doesn't have pending edits.
+  // Cuando el flow cambia desde afuera (otra pestaña, otro flow seleccionado),
+  // re-sincronizar el editor SOLO si el usuario no tiene ediciones pendientes.
+  // El "applied" solo se resetea al cambiar de flow: el canonical también cambia
+  // como consecuencia del propio Apply y no debe borrar la confirmación.
   useEffect(() => {
+    const flowChanged = flowIdRef.current !== flow.id
+    flowIdRef.current = flow.id
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setText((prev) => (prev === canonical || errors.length === 0 ? canonical : prev))
-    setApplied(false)
+    if (flowChanged) setApplied(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canonical])
+  }, [canonical, flow.id])
 
   const dirty = text !== canonical
 
@@ -53,7 +58,7 @@ export function JsonView({
           <Button size="sm" variant="ghost" className="font-mono text-xs" onClick={() => navigator.clipboard?.writeText(text)}>
             <Copy />Copy
           </Button>
-          <Button size="sm" variant="outline" className="font-mono text-xs" disabled={!dirty} onClick={() => { setText(canonical); setErrors([]) }}>
+          <Button size="sm" variant="outline" className="font-mono text-xs" disabled={!dirty} onClick={() => { setText(canonical); setErrors([]); setApplied(false) }}>
             <RotateCcw />Discard
           </Button>
           <Button size="sm" className="font-mono text-xs" disabled={!dirty} onClick={apply}>
