@@ -29,14 +29,14 @@ say "frontend"
 wait_for "$BASE" "next" || exit 1
 
 say "system status (api + opencode + mcp up)"
-status=$(curl -fsS -m 5 "$BASE/api/system-status")
+status=$(curl -fsS -m 5 "$BASE/api/system-status") || { fail "system-status unreachable"; status='{}'; }
 echo "  $status"
 for svc in api opencode mcp; do
-  if [ "$(echo "$status" | jq -r ".$svc")" = "up" ]; then ok "$svc up"; else fail "$svc down"; fi
+  if [ "$(echo "$status" | jq -r ".$svc // \"missing\"")" = "up" ]; then ok "$svc up"; else fail "$svc down"; fi
 done
 
 say "control plane via proxy"
-projects=$(curl -fsS -m 5 "$BASE/api/control-plane/projects")
+projects=$(curl -fsS -m 5 "$BASE/api/control-plane/projects") || { fail "GET /projects unreachable"; projects='[]'; }
 if echo "$projects" | jq -e 'type == "array"' >/dev/null; then
   ok "GET /projects → array of $(echo "$projects" | jq length)"
 else
@@ -58,13 +58,13 @@ fi
 say "flows round-trip (if there's at least one project)"
 first_project=$(echo "$projects" | jq -r '.[0].id // empty')
 if [ -n "$first_project" ]; then
-  flows=$(curl -fsS -m 5 "$BASE/api/control-plane/projects/$first_project/flows")
+  flows=$(curl -fsS -m 5 "$BASE/api/control-plane/projects/$first_project/flows") || { fail "GET flows unreachable"; flows='[]'; }
   first_flow=$(echo "$flows" | jq -c '.[0] // empty')
   if [ -n "$first_flow" ]; then
     flow_id=$(echo "$first_flow" | jq -r '.id')
-    code=$(curl -fsS -m 10 -o /dev/null -w '%{http_code}' -X PUT \
+    code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -X PUT \
       -H 'Content-Type: application/json' -d "$first_flow" \
-      "$BASE/api/control-plane/projects/$first_project/flows/$flow_id")
+      "$BASE/api/control-plane/projects/$first_project/flows/$flow_id") || { fail "PUT flow request failed"; code=000; }
     if [ "$code" = "200" ]; then ok "PUT flow '$flow_id' (round-trip without changes) → 200"; else fail "PUT flow → $code"; fi
   else
     ok "project has no flows — skipped"
@@ -77,21 +77,25 @@ if [ -n "${SMOKE_REPO_URL:-}" ]; then
   say "test project registration"
   created=$(curl -fsS -m 60 -X POST -H 'Content-Type: application/json' \
     -d "{\"name\": \"smoke-$(date +%s)\", \"repo_url\": \"$SMOKE_REPO_URL\", \"base_branch\": \"main\"}" \
-    "$BASE/api/control-plane/projects")
+    "$BASE/api/control-plane/projects") || { fail "project registration request failed"; created='{}'; }
   pid=$(echo "$created" | jq -r '.id // empty')
   if [ -n "$pid" ]; then ok "project registered: $pid"; else fail "registration failed: $created"; fi
 fi
 
 if [ "${SMOKE_CHAT:-0}" = "1" ]; then
   say "real chat turn (orquesta agent + MCP tools)"
-  sid=$(curl -fsS -m 10 -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/opencode/session" | jq -r '.id')
-  reply=$(curl -fsS -m 120 -X POST -H 'Content-Type: application/json' \
-    -d '{"agent": "orquesta", "parts": [{"type": "text", "text": "List my projects"}]}' \
-    "$BASE/opencode/session/$sid/message")
-  if echo "$reply" | jq -e '.parts | length > 0' >/dev/null 2>&1; then
-    ok "agent responded ($(echo "$reply" | jq '[.parts[] | select(.type == "tool")] | length') tool calls)"
+  sid=$(curl -fsS -m 10 -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/opencode/session" | jq -r '.id') || { fail "could not create opencode session"; sid=''; }
+  if [ -z "$sid" ] || [ "$sid" = "null" ]; then
+    fail "could not create opencode session"
   else
-    fail "agent did not respond: $(echo "$reply" | head -c 200)"
+    reply=$(curl -fsS -m 120 -X POST -H 'Content-Type: application/json' \
+      -d '{"agent": "orquesta", "parts": [{"type": "text", "text": "List my projects"}]}' \
+      "$BASE/opencode/session/$sid/message") || { fail "chat message request failed"; reply='{}'; }
+    if echo "$reply" | jq -e '.parts | length > 0' >/dev/null 2>&1; then
+      ok "agent responded ($(echo "$reply" | jq '[.parts[] | select(.type == "tool")] | length') tool calls)"
+    else
+      fail "agent did not respond: $(echo "$reply" | head -c 200)"
+    fi
   fi
 fi
 
