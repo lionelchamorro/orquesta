@@ -65,33 +65,44 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
   }, [turns, sending])
 
-  // Restaurar la conversación previa: opencode persiste las sesiones, nosotros
-  // solo recordamos el id en localStorage.
-  useEffect(() => {
-    const stored = localStorage.getItem(SESSION_KEY)
-    if (!stored) return
-    sessionRef.current = stored
-    client()
-      .session.messages({ path: { id: stored } })
-      .then((res) => {
-        if (res.data) setTurns(turnsFromHistory(res.data as Array<{ info: { id: string; role: string }; parts: Part[] }>))
-      })
-      .catch(() => {
-        sessionRef.current = null
-        localStorage.removeItem(SESSION_KEY)
-      })
-  }, [])
-
-  // Streaming: el feed SSE global de opencode emite message.part.updated con
-  // cada delta de texto y transición de tool — filtramos por nuestra sesión.
-  // Si el stream no está disponible, send() igual renderiza el turno completo
-  // al resolver (fallback sin streaming).
+  // Restaurar la conversación previa y luego suscribirnos al stream SSE, en
+  // ese orden estricto: si el restore y el listen corrieran en paralelo, un
+  // part SSE que llegue mientras el fetch de historial está pendiente sería
+  // descartado por el reemplazo duro de setTurns(turnsFromHistory(...)).
+  // Al esperar el restore antes de arrancar el listen, cualquier delta que
+  // nos perdamos en la ventana del fetch se autocorrige: cada
+  // message.part.updated trae el estado completo del part.
   useEffect(() => {
     let active = true
     let stream: AsyncGenerator<unknown> | null = null
-    async function listen() {
+
+    async function start() {
+      const stored = localStorage.getItem(SESSION_KEY)
+      if (stored) {
+        sessionRef.current = stored
+        try {
+          const res = await client().session.messages({ path: { id: stored } })
+          if (active && res.data) {
+            setTurns(turnsFromHistory(res.data as Array<{ info: { id: string; role: string }; parts: Part[] }>))
+          }
+        } catch {
+          sessionRef.current = null
+          localStorage.removeItem(SESSION_KEY)
+        }
+      }
+
+      if (!active) return
+
+      // Streaming: el feed SSE global de opencode emite message.part.updated
+      // con cada delta de texto y transición de tool — filtramos por nuestra
+      // sesión. Si el stream no está disponible, send() igual renderiza el
+      // turno completo al resolver (fallback sin streaming).
       try {
         const events = await client().event.subscribe()
+        if (!active) {
+          void events.stream.return?.(undefined)
+          return
+        }
         stream = events.stream as AsyncGenerator<unknown>
         for await (const event of events.stream) {
           if (!active) break
@@ -105,7 +116,8 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
         // sin SSE seguimos funcionando en modo respuesta-completa
       }
     }
-    void listen()
+
+    void start()
     return () => {
       active = false
       void stream?.return?.(undefined)
@@ -145,7 +157,10 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
       })
       if (result.error) throw new Error(JSON.stringify(result.error))
       // Reconciliación final (idempotente): si el SSE se perdió algo, los
-      // parts del resultado completan el turno.
+      // parts del resultado completan el turno. Si el usuario reinició la
+      // conversación (o inició otra) mientras el prompt estaba en vuelo,
+      // descartamos esta reconciliación.
+      if (sessionRef.current !== sessionID) return
       const parts = ((result.data as { parts?: Part[] } | undefined)?.parts ?? []) as Part[]
       setTurns((prev) => parts.reduce(applyPartUpdate, prev))
     } catch (err) {
