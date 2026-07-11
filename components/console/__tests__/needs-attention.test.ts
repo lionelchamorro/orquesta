@@ -1,7 +1,7 @@
 import React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it } from "vitest"
-import { AttentionSection } from "../needs-attention"
+import { AttentionSection, retryRequestInit } from "../needs-attention"
 import type { AttentionItem } from "@/lib/types"
 
 const runItem: AttentionItem = {
@@ -52,5 +52,13 @@ describe("AttentionSection", () => {
     expect(html).toContain("Retry")
     expect(html).toContain("/projects/proj1?tab=Runs")
     expect(html).toContain("/projects/proj1?tab=Tasks")
+  })
+
+  it("builds retry requests with feedback from the attention detail", () => {
+    expect(retryRequestInit(runItem)).toEqual({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feedback: "tests failed" }),
+    })
   })
 })

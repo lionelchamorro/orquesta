@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from orquesta_api.db.tables import Base, ProjectRow, RunRow
 from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import Container, RunHandle, RunKind, RunSpec, RunState
-from orquesta_api.routers.runs import retry_run
+from orquesta_api.routers.runs import RunRetry, retry_run
 from orquesta_api.services import runs as runs_module
 from orquesta_api.services.runs import RunSupervisor
 from orquesta_api.services.watchers import WatcherService
@@ -250,15 +250,46 @@ async def test_retry_endpoint_delegates_to_supervisor(db, project: str) -> None:
         )
         await session.commit()
 
-        retried = await retry_run("failed-run", session, executor)
+        retried = await retry_run(
+            "failed-run",
+            session,
+            executor,
+            RunRetry(feedback="please keep the auth fix smaller"),
+        )
 
     assert retried.state == RunState.running
     assert executor.started[retried.id].flow == "pr_review"
-    assert executor.started[retried.id].inputs == {"ticket": "123"}
+    assert executor.started[retried.id].inputs == {
+        "ticket": "123",
+        "feedback": "please keep the auth fix smaller",
+    }
 
     assert retried.pid is not None
     executor.finish(retried.pid)
     await _wait_for_supervisor_tasks()
+
+
+async def test_retry_rejects_flow_without_persisted_flow_name(db, project: str) -> None:
+    executor = QueueExecutor()
+    now = datetime.now(tz=UTC)
+    async with db() as session:
+        session.add(
+            RunRow(
+                id="failed-run",
+                project_id=project,
+                kind=RunKind.flow.value,
+                state=RunState.failed.value,
+                executor="local",
+                created_at=now,
+                finished_at=now,
+                inputs={"ticket": "123"},
+            )
+        )
+        await session.commit()
+
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        with pytest.raises(ValueError, match="persisted flow"):
+            await svc.retry("failed-run")
 
 
 async def test_launch_with_queue_false_rejects_active_run(db, project: str) -> None:

@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +37,12 @@ class RunCreate(BaseModel):
     inputs: dict[str, str] = Field(default_factory=dict)
     args: list[str] = Field(default_factory=list)
     queue: bool = True
+
+
+class RunRetry(BaseModel):
+    """Request body for POST /runs/{id}/retry."""
+
+    feedback: str | None = None
 
 
 async def _event_stream(log_iter: AsyncIterator[str], is_tail: bool) -> AsyncGenerator[str, None]:
@@ -116,10 +122,15 @@ async def get_run(run_id: str, session: SessionDep) -> Run:
 
 
 @router.post("/runs/{run_id}/retry")
-async def retry_run(run_id: str, session: SessionDep, executor: ExecutorDep) -> Run:
+async def retry_run(
+    run_id: str,
+    session: SessionDep,
+    executor: ExecutorDep,
+    body: Annotated[RunRetry | None, Body()] = None,
+) -> Run:
     """Relaunch a finished run using its persisted launch parameters."""
     svc = RunSupervisor(session, executor=executor)
-    return await svc.retry(run_id)
+    return await svc.retry(run_id, feedback=body.feedback if body is not None else None)
 
 
 @router.post("/runs/{run_id}/stop")

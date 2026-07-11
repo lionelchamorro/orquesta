@@ -378,17 +378,25 @@ class RunSupervisor:
         row = await self._get_row(run_id)
         return _row_to_model(row), _build_handle(row)
 
-    async def retry(self, run_id: str) -> Run:
+    async def retry(self, run_id: str, feedback: str | None = None) -> Run:
         """Relaunch a finished run using its persisted launch parameters."""
         row = await self._get_row(run_id)
         if RunState(row.state) in _ACTIVE_RUN_STATES:
             raise ValueError(f"Run '{run_id}' is not finished")
+        kind = RunKind(row.kind)
+        if kind is RunKind.flow and not row.flow:
+            raise ValueError(f"Run '{run_id}' is missing persisted flow launch parameters")
+        if kind is RunKind.plan and not row.plan_path:
+            raise ValueError(f"Run '{run_id}' is missing persisted plan launch parameters")
+        inputs = dict(row.inputs or {})
+        if feedback:
+            inputs["feedback"] = feedback
         return await self.launch(
             row.project_id,
-            kind=RunKind(row.kind),
+            kind=kind,
             plan_path=row.plan_path,
             flow=row.flow,
-            inputs=row.inputs or {},
+            inputs=inputs,
             args=row.args or [],
             queue=True,
         )

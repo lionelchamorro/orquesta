@@ -32,6 +32,14 @@ function timeLabel(ts: string): string {
   return date.toLocaleString()
 }
 
+export function retryRequestInit(item: AttentionItem): RequestInit {
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ feedback: item.detail }),
+  }
+}
+
 export function AttentionSection({
   items,
   retrying,
@@ -138,7 +146,7 @@ export function NeedsAttention() {
   async function retry(item: AttentionItem) {
     setRetrying(item.ref)
     try {
-      const res = await fetch(`/api/control-plane/runs/${item.ref}/retry`, { method: "POST" })
+      const res = await fetch(`/api/control-plane/runs/${item.ref}/retry`, retryRequestInit(item))
       if (!res.ok) {
         const detail = await res.json().catch(() => ({}))
         setMessages((current) => ({
