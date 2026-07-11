@@ -54,6 +54,10 @@ describe("insertStepAt / removeStepAt / appendToBody", () => {
     const out = appendToBody(nested, [1], { type: "eval", expression: "{x}" })
     expect(getStepAt(out, [1, 2])?.expression).toBe("{x}")
   })
+  it("is a no-op when the target step is not a container", () => {
+    const out = appendToBody(nested, [0], { type: "eval", expression: "{x}" })
+    expect(out).toBe(nested)
+  })
 })
 
 describe("moveStep", () => {

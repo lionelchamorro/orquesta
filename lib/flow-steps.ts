@@ -50,5 +50,7 @@ export function moveStep(steps: FlowStep[], path: StepPath, dir: -1 | 1): FlowSt
 }
 
 export function appendToBody(steps: FlowStep[], path: StepPath, step: FlowStep): FlowStep[] {
-  return updateStepAt(steps, path, { body: [...(getStepAt(steps, path)?.body ?? []), step] })
+  const target = getStepAt(steps, path)
+  if (!target || (target.type !== "loop" && target.type !== "retry_until")) return steps
+  return updateStepAt(steps, path, { body: [...(target.body ?? []), step] })
 }
