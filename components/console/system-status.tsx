@@ -51,7 +51,7 @@ export function BackendBanner({ label, hint, onRetry }: { label: string; hint: s
       {onRetry && (
         <Button size="sm" variant="outline" className="shrink-0 font-mono text-xs" onClick={onRetry}>
           <RefreshCw className="h-3.5 w-3.5" />
-          Reintentar
+          Retry
         </Button>
       )}
     </div>

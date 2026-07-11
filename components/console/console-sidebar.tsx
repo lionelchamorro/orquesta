@@ -89,19 +89,19 @@ export function ConsoleSidebar({ projects }: { projects: Project[] }) {
           })}
         </div>
       </div>
-      <div className="border-t border-border p-3">
-        <form action={logout}>
-          <button
-            type="submit"
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-mono text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-foreground"
-          >
-            <LogOut className="h-4 w-4" />
-            Sign out
-          </button>
-        </form>
-      </div>
       <div className="mt-auto">
         <SystemStatusStrip />
+        <div className="border-t border-border p-3">
+          <form action={logout}>
+            <button
+              type="submit"
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-mono text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-foreground"
+            >
+              <LogOut className="h-4 w-4" />
+              Sign out
+            </button>
+          </form>
+        </div>
       </div>
     </aside>
   )
