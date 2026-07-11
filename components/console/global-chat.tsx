@@ -55,6 +55,11 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const clientRef = useRef<OpencodeClient | null>(null)
   const sessionRef = useRef<string | null>(null)
+  // messageID -> role, poblado desde message.updated. message.part.updated no
+  // trae el role del mensaje al que pertenece el part, así que lo llevamos
+  // aparte para poder distinguir los parts del usuario (que no se re-renderan,
+  // ver applyPartUpdate) de los del assistant.
+  const rolesRef = useRef(new Map<string, "user" | "assistant">())
 
   function client(): OpencodeClient {
     if (!clientRef.current) clientRef.current = createOpencodeClient({ baseUrl: "/opencode" })
@@ -82,12 +87,21 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
         sessionRef.current = stored
         try {
           const res = await client().session.messages({ path: { id: stored } })
-          if (active && res.data) {
-            setTurns(turnsFromHistory(res.data as Array<{ info: { id: string; role: string }; parts: Part[] }>))
+          if (res.error) {
+            // Respuesta definitiva del server: la sesión ya no existe.
+            sessionRef.current = null
+            localStorage.removeItem(SESSION_KEY)
+          } else if (active && res.data) {
+            const history = res.data as Array<{ info: { id: string; role: string }; parts: Part[] }>
+            for (const entry of history) {
+              rolesRef.current.set(entry.info.id, entry.info.role === "user" ? "user" : "assistant")
+            }
+            setTurns(turnsFromHistory(history))
           }
         } catch {
-          sessionRef.current = null
-          localStorage.removeItem(SESSION_KEY)
+          // Falla transitoria (red, opencode reiniciando): conservamos la
+          // sesión guardada para reintentar en el próximo mount/reload en
+          // vez de perder el hilo de la conversación.
         }
       }
 
@@ -106,11 +120,20 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
         stream = events.stream as AsyncGenerator<unknown>
         for await (const event of events.stream) {
           if (!active) break
-          const ev = event as { type?: string; properties?: { part?: Part } }
+          const ev = event as {
+            type?: string
+            properties?: { part?: Part; info?: { id?: string; role?: string } }
+          }
+          if (ev.type === "message.updated") {
+            const info = ev.properties?.info
+            if (info?.id) rolesRef.current.set(info.id, info.role === "user" ? "user" : "assistant")
+            continue
+          }
           if (ev.type !== "message.part.updated") continue
           const part = ev.properties?.part
           if (!part || part.sessionID !== sessionRef.current) continue
-          setTurns((prev) => applyPartUpdate(prev, part))
+          const role = rolesRef.current.get(part.messageID) ?? "assistant"
+          setTurns((prev) => applyPartUpdate(prev, part, role))
         }
       } catch {
         // sin SSE seguimos funcionando en modo respuesta-completa
@@ -162,7 +185,9 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
       // descartamos esta reconciliación.
       if (sessionRef.current !== sessionID) return
       const parts = ((result.data as { parts?: Part[] } | undefined)?.parts ?? []) as Part[]
-      setTurns((prev) => parts.reduce(applyPartUpdate, prev))
+      setTurns((prev) =>
+        parts.reduce((acc, p) => applyPartUpdate(acc, p, rolesRef.current.get(p.messageID) ?? "assistant"), prev),
+      )
     } catch (err) {
       setSendError(err instanceof Error ? err.message : String(err))
     } finally {

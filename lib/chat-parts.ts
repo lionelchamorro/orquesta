@@ -37,7 +37,7 @@ export function runLinkFromTool(tool: string, output: string): ChatRunLink | nul
 
 function toChatPart(part: Part): ChatPart | null {
   if (part.type === "text") {
-    if (part.synthetic || part.ignored) return null
+    if (part.synthetic || part.ignored || part.text === "") return null
     return { kind: "text", id: part.id, text: part.text }
   }
   if (part.type === "tool") {
@@ -58,7 +58,19 @@ export function localUserTurn(id: string, text: string): ChatTurn {
 // Upsert inmutable de un part dentro del turno del assistant al que pertenece
 // (messageID). Crea el turno si es la primera vez que lo vemos; conserva el
 // orden de primera aparición de cada part (los updates reemplazan in place).
-export function applyPartUpdate(turns: ChatTurn[], part: Part): ChatTurn[] {
+//
+// opencode emite message.part.updated también para los parts del propio
+// mensaje del USUARIO (sin ningún flag synthetic/ignored que lo distinga).
+// El turno de usuario ya se renderiza localmente al enviar (localUserTurn),
+// así que cuando role === "user" no hacemos nada: de lo contrario el mismo
+// texto aparecería dos veces (burbuja de usuario + burbuja de assistant).
+export function applyPartUpdate(
+  turns: ChatTurn[],
+  part: Part,
+  role: "user" | "assistant" = "assistant",
+): ChatTurn[] {
+  if (role === "user") return turns
+
   const chatPart = toChatPart(part)
   if (!chatPart) return turns
 

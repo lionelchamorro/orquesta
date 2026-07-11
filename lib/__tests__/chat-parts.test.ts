@@ -74,6 +74,20 @@ describe("applyPartUpdate", () => {
     expect(turns[0]).toBe(user)
     expect(turns[1].id).toBe("msg_2")
   })
+
+  it("ignores SSE updates for the user's own message parts (role: user)", () => {
+    const user = localUserTurn("local-1", "listá mis proyectos")
+    const turns = applyPartUpdate([user], textPart({ messageID: "local-1" }), "user")
+    expect(turns).toEqual([user])
+  })
+
+  it("drops an empty text delta and renders it once a later update has text", () => {
+    let turns = applyPartUpdate([], textPart({ text: "" }))
+    expect(turns).toHaveLength(0)
+    turns = applyPartUpdate(turns, textPart({ text: "hola" }))
+    expect(turns).toHaveLength(1)
+    expect(turns[0].parts).toEqual([{ kind: "text", id: "prt_1", text: "hola" }])
+  })
 })
 
 describe("turnsFromHistory", () => {
