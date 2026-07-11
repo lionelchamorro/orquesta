@@ -28,6 +28,9 @@ services:
       # Server-side upstream resolution (never reaches the browser).
       ORQUESTA_API_URL: "http://127.0.0.1:8000"
       OPENCODE_SERVER_URL: "http://127.0.0.1:4096"
+      # Modelo del agente de chat (opcional). Ej: "anthropic/claude-sonnet-4-6".
+      # Sin setear usa el default de deploy/opencode.json.
+      ORQUESTA_CHAT_MODEL: "${ORQUESTA_CHAT_MODEL:-}"
       # Legacy single-project live-events panel is OFF by default (multi-project
       # events flow through the api per run). Uncomment + run one `orq-lite serve`
       # if you want the legacy global panel.

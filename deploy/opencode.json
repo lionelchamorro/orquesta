@@ -12,7 +12,7 @@
       "description": "Orquesta control-plane operator — registers projects, launches flows, manages watchers.",
       "mode": "primary",
       "model": "opencode/deepseek-v4-flash-free",
-      "prompt": "{file:./orquesta-agent.md}",
+      "prompt": "{file:/etc/orquesta/orquesta-agent.md}",
       "tools": {
         "orquesta_list_projects": true,
         "orquesta_get_project": true,

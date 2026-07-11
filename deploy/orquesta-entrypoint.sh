@@ -17,6 +17,18 @@ if [ ! -f /data/flows.json ] && [ -f /srv/api/flows.json ]; then
   cp /srv/api/flows.json /data/flows.json
 fi
 
+# --- opencode chat agent config ----------------------------------------------
+# El modelo del agente de chat es overrideable por env (ORQUESTA_CHAT_MODEL) sin
+# rebuild: renderizamos la config de la imagen a /data aplicando el override.
+# supervisord apunta OPENCODE_CONFIG a /data/opencode.json.
+if [ -n "${ORQUESTA_CHAT_MODEL:-}" ]; then
+  jq --arg m "$ORQUESTA_CHAT_MODEL" '.agent.orquesta.model = $m' \
+    /etc/orquesta/opencode.json > /data/opencode.json
+  echo "opencode: chat agent model => $ORQUESTA_CHAT_MODEL"
+else
+  cp /etc/orquesta/opencode.json /data/opencode.json
+fi
+
 # --- keep orq-lite current ---------------------------------------------------
 # Self-update to the latest release on every start. Best-effort and time-boxed
 # so an offline start or a slow download can't block boot; needs root (sudo) to
