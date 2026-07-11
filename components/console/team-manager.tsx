@@ -1,10 +1,12 @@
 "use client"
 
 import { useEffect, useMemo, useState, type FormEvent } from "react"
-import { Bot, Braces, Check, Copy, ListPlus, Save, Shield, Trash2, Users } from "lucide-react"
+import { Bot, Braces, Copy, ListPlus, Save, Shield, Trash2, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
+import { normalizeError } from "@/lib/error-message"
+import { useToast } from "@/lib/toast"
 import type {
   AgentDefinition,
   AgentProvider,
@@ -86,10 +88,10 @@ export function TeamManager({
   projects?: Project[]
   initialProjectId?: string
 }) {
+  const toast = useToast()
   const [teams, setTeams] = useState(initialTeams)
   const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "")
   const [selectedId, setSelectedId] = useState(initialTeams[0]?.id ?? "default")
-  const [message, setMessage] = useState("")
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const selected = teams.find((team) => team.id === selectedId) ?? teams[0]
   const selectedJson = useMemo(() => JSON.stringify(selected ? teamExport(selected) : {}, null, 2), [selected])
@@ -110,16 +112,16 @@ export function TeamManager({
 
   async function switchProject(nextProjectId: string) {
     setProjectId(nextProjectId)
-    setMessage("Loading team...")
     const res = await fetch(`/api/control-plane/projects/${nextProjectId}/team`, { cache: "no-store" })
     if (!res.ok) {
-      setMessage(`Could not load team for ${nextProjectId}`)
+      const body = await res.json().catch(() => null)
+      const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+      toast.error(message, detail)
       return
     }
     const team: TeamDefinition = await res.json()
     setTeams([team])
     setSelectedId(team.id)
-    setMessage("")
   }
 
   function updateSelected(patch: Partial<TeamDefinition>) {
@@ -162,7 +164,7 @@ export function TeamManager({
         },
       ],
     })
-    setMessage("Draft agent added")
+    toast.success("Draft agent added")
     event.currentTarget.reset()
   }
 
@@ -184,19 +186,29 @@ export function TeamManager({
         },
       ],
     })
-    setMessage("Draft role added")
+    toast.success("Draft role added")
     event.currentTarget.reset()
   }
 
   async function saveSelected() {
     if (!selected || !projectId) return
-    setMessage("Saving team...")
-    const res = await fetch(`/api/control-plane/projects/${projectId}/team`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(selected),
-    })
-    setMessage(res.ok ? "Saved to team.json" : "Local draft only; control plane is not available")
+    try {
+      const res = await fetch(`/api/control-plane/projects/${projectId}/team`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selected),
+      })
+      if (res.ok) {
+        toast.success("Saved to team.json")
+      } else {
+        const body = await res.json().catch(() => null)
+        const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+        toast.error(message, detail)
+      }
+    } catch (err) {
+      const { message, detail } = normalizeError(err)
+      toast.error(message, detail)
+    }
   }
 
   if (!selected) {
@@ -357,7 +369,6 @@ export function TeamManager({
             <Button size="sm" variant="ghost" className="font-mono text-xs" onClick={() => navigator.clipboard?.writeText(selectedJson)}><Copy />Copy</Button>
           </div>
           <pre className="max-h-96 overflow-auto rounded-lg border border-border bg-background p-4 font-mono text-xs leading-relaxed text-muted-foreground">{selectedJson}</pre>
-          {message && <p className="mt-3 inline-flex items-center gap-2 font-mono text-xs text-muted-foreground"><Check className="h-3.5 w-3.5 text-ok" />{message}</p>}
         </div>
       </div>
     </div>

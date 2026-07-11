@@ -5,6 +5,8 @@ import Link from "next/link"
 import { Plus, GitBranch, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { normalizeError } from "@/lib/error-message"
+import { useToast } from "@/lib/toast"
 import { StatusBadge, StateDot } from "@/components/status-badge"
 import type { Project } from "@/lib/types"
 
@@ -46,10 +48,10 @@ function Toggle({
 }
 
 export function RegistryTable({ initialProjects }: { initialProjects: Project[] }) {
+  const toast = useToast()
   const [projects, setProjects] = useState<Project[]>(initialProjects)
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState({ name: "", repo: "", path: "", branch: "main" })
-  const [error, setError] = useState("")
   const [watchInFlight, setWatchInFlight] = useState<Set<string>>(new Set())
 
   async function toggleWatch(id: string, key: "prs" | "issues") {
@@ -73,17 +75,19 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
         body: JSON.stringify({ watch: newWatch }),
       })
       if (!res.ok) {
-        const detail = await res.json().catch(() => ({}))
+        const body = await res.json().catch(() => null)
+        const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
         setProjects((prev) =>
           prev.map((p) => (p.id === id ? { ...p, watch: originalWatch } : p)),
         )
-        setError(`watch toggle rejected: ${detail?.detail ?? `HTTP ${res.status}`}`)
+        toast.error(message, detail)
       }
     } catch (err) {
+      const { message, detail } = normalizeError(err)
       setProjects((prev) =>
         prev.map((p) => (p.id === id ? { ...p, watch: originalWatch } : p)),
       )
-      setError(`watch toggle failed: ${err instanceof Error ? err.message : String(err)}`)
+      toast.error(message, detail)
     } finally {
       setWatchInFlight((prev) => {
         const next = new Set(prev)
@@ -100,10 +104,9 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
     const name = form.name.trim()
     if (!name) return
     if (projects.some((p) => p.id === name || p.name === name)) {
-      setError(`project add rejected: "${name}" already exists`)
+      toast.error(`"${name}" already exists`)
       return
     }
-    setError("")
     setSaving(true)
     try {
       const res = await fetch("/api/control-plane/projects", {
@@ -117,16 +120,19 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
         }),
       })
       if (!res.ok) {
-        const detail = await res.json().catch(() => ({}))
-        setError(`project add rejected: ${detail?.detail ?? `HTTP ${res.status}`}`)
+        const body = await res.json().catch(() => null)
+        const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+        toast.error(message, detail)
         return
       }
       const created: Project = await res.json()
       setProjects((prev) => [...prev, created])
       setForm({ name: "", repo: "", path: "", branch: "main" })
       setAdding(false)
+      toast.success(`Project "${name}" added`)
     } catch (err) {
-      setError(`project add failed: ${err instanceof Error ? err.message : String(err)}`)
+      const { message, detail } = normalizeError(err)
+      toast.error(message, detail)
     } finally {
       setSaving(false)
     }
@@ -193,7 +199,6 @@ export function RegistryTable({ initialProjects }: { initialProjects: Project[] 
               className="rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
             />
           </div>
-          {error && <p className="font-mono text-[11px] text-err sm:col-span-2">{error}</p>}
           <div className="sm:col-span-2">
             <Button type="submit" size="sm" className="font-mono text-xs" disabled={saving}>
               {saving ? "registering…" : "orq-lite project add"}

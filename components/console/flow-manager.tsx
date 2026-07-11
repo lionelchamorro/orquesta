@@ -1,10 +1,12 @@
 "use client"
 
 import { useMemo, useState, type FormEvent } from "react"
-import { Braces, Copy, ListPlus, Play, Save, Workflow, X } from "lucide-react"
+import { Braces, Copy, ListPlus, Save, Workflow, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
+import { normalizeError } from "@/lib/error-message"
+import { useToast } from "@/lib/toast"
 import type { FlowDefinition, FlowStep, FlowStepType, Project } from "@/lib/types"
 
 const stepTypes: FlowStepType[] = ["command", "agent", "action", "loop", "retry_until", "eval"]
@@ -39,26 +41,26 @@ export function FlowManager({
   projects: Project[]
   initialProjectId?: string
 }) {
+  const toast = useToast()
   const [flows, setFlows] = useState(initialFlows)
   const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "")
   const [selectedId, setSelectedId] = useState(initialFlows[0]?.id ?? "")
   const [adding, setAdding] = useState(false)
-  const [message, setMessage] = useState("")
   const selected = flows.find((flow) => flow.id === selectedId) ?? flows[0]
   const selectedJson = useMemo(() => JSON.stringify(selected ? flowExport(selected) : {}, null, 2), [selected])
 
   async function switchProject(nextProjectId: string) {
     setProjectId(nextProjectId)
-    setMessage("Loading flows...")
     const res = await fetch(`/api/control-plane/projects/${nextProjectId}/flows`, { cache: "no-store" })
     if (!res.ok) {
-      setMessage(`Could not load flows for ${nextProjectId}`)
+      const body = await res.json().catch(() => null)
+      const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+      toast.error(message, detail)
       return
     }
     const next: FlowDefinition[] = await res.json()
     setFlows(next)
     setSelectedId(next[0]?.id ?? "")
-    setMessage("")
   }
 
   function updateSelected(patch: Partial<FlowDefinition>) {
@@ -90,17 +92,16 @@ export function FlowManager({
     setFlows((prev) => [...prev, next])
     setSelectedId(next.id)
     setAdding(false)
-    setMessage("Draft flow created")
+    toast.success("Draft flow created")
     event.currentTarget.reset()
   }
 
   async function saveSelected() {
     if (!selected) return
     if (!projectId) {
-      setMessage("Select a project first — flows are saved per project.")
+      toast.error("Select a project first — flows are saved per project.")
       return
     }
-    setMessage("Saving flow...")
     try {
       const res = await fetch(`/api/control-plane/projects/${projectId}/flows/${selected.id}`, {
         method: "PUT",
@@ -108,20 +109,15 @@ export function FlowManager({
         body: JSON.stringify(selected),
       })
       if (res.ok) {
-        setMessage("Saved to flows.json")
+        toast.success("Saved to flows.json")
         return
       }
-      // Surface the real validation error (e.g. an invalid step) instead of a
-      // generic "control plane is not available".
-      const detail = await res.json().catch(() => null)
-      const problems = Array.isArray(detail?.detail)
-        ? detail.detail
-            .map((d: { error?: string; msg?: string }) => d.error ?? d.msg ?? JSON.stringify(d))
-            .join("; ")
-        : (detail?.detail ?? `HTTP ${res.status}`)
-      setMessage(`Save failed: ${problems}`)
+      const body = await res.json().catch(() => null)
+      const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+      toast.error(message, detail)
     } catch (err) {
-      setMessage(`Save failed: ${err instanceof Error ? err.message : String(err)}`)
+      const { message, detail } = normalizeError(err)
+      toast.error(message, detail)
     }
   }
 
@@ -354,7 +350,6 @@ export function FlowManager({
             <Button size="sm" variant="ghost" className="font-mono text-xs" onClick={() => navigator.clipboard?.writeText(selectedJson)}><Copy />Copy</Button>
           </div>
           <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-background p-4 font-mono text-xs leading-relaxed text-muted-foreground">{selectedJson}</pre>
-          {message && <p className="mt-3 inline-flex items-center gap-2 font-mono text-xs text-muted-foreground"><Play className="h-3.5 w-3.5 text-primary" />{message}</p>}
         </div>
       </div>
     </div>
