@@ -43,7 +43,7 @@ export function validateFlowSteps(steps: FlowStep[], path = ""): FlowStepError[]
     const locator = `${path}steps[${index}](${step.type})`
     if (!stepTypeOk(step)) errors.push({ step: locator, error: STEP_TYPE_ERROR[step.type] })
     if (step.body) errors.push(...validateFlowSteps(step.body, `${locator}.`))
-    if (step.on_failure !== undefined && step.on_failure !== "" && step.on_failure !== "continue") {
+    if (step.on_failure != null && step.on_failure !== "" && step.on_failure !== "continue") {
       errors.push({ step: locator, error: `invalid on_failure '${step.on_failure}'` })
     }
   })

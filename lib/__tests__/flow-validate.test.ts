@@ -33,6 +33,11 @@ describe("validateFlowSteps", () => {
       { step: "steps[0](command)", error: "invalid on_failure 'retry'" },
     ])
   })
+
+  it("accepts on_failure null (backend treats None as valid)", () => {
+    const step = { type: "command", command: "x", on_failure: null } as unknown as FlowStep
+    expect(validateFlowSteps([step])).toEqual([])
+  })
 })
 
 describe("pathFromLocator", () => {
