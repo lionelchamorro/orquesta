@@ -56,6 +56,26 @@ directly.
 3. Point your TLS-terminating proxy at `http://<host-ip>:3000`
    (see `nginx.conf.example` — **SSE endpoints must be unbuffered**).
 
+## Configuration knobs
+
+| Env var (deploy/.env)   | Default                      | What it does |
+|--------------------------|------------------------------|--------------|
+| `ORQUESTA_CHAT_MODEL`   | the model in `opencode.json` | Chat agent model (e.g. `anthropic/claude-sonnet-4-6`). Applied at container start, no rebuild. |
+| `WEB_PORT`              | `3000`                       | Host port for the frontend. |
+
+## Smoke test
+
+After `docker compose up -d`:
+
+```bash
+./smoke.sh                    # infrastructure + control plane + flows
+SMOKE_CHAT=1 ./smoke.sh       # + a real chat turn with MCP tools
+```
+
+The dashboard shows the status of the internal processes (control plane /
+opencode / mcp) at the foot of the sidebar; if something is down you'll see it
+there and as a banner on the affected pages.
+
 ## Capping the build (host OOM guard)
 
 `next build` can be memory-hungry. The image already caps the Node heap, but
