@@ -1,18 +1,15 @@
 """Projects router: CRUD endpoints for the project registry."""
 
-import asyncio
 import re
-from collections.abc import Mapping, Sequence
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.db.session import get_session
-from orquesta_api.db.tables import ProjectRow, RunRow
+from orquesta_api.db.tables import ProjectRow
 from orquesta_api.meta.models import (
     Feature,
     Project,
@@ -20,39 +17,17 @@ from orquesta_api.meta.models import (
     ProjectWatch,
     ReviewRun,
     Run,
-    RunKind,
-    RunState,
     Task,
 )
 from orquesta_api.routers.dependencies import ExecutorDep, IngestDep, ServesDep
 from orquesta_api.services.aggregator import Aggregator, CostSnapshot
 from orquesta_api.services.projects import ProjectService
-from orquesta_api.services.runs import RunSupervisor
+from orquesta_api.services.reviews import ReviewService
 
 # Role names are opaque strings owned by team.json, not a closed enum (orq-lite
 # accepts arbitrary role names and returns null for unknown ones itself,
 # web/server.go:95-104). This only guards against path-traversal-shaped input.
 _VALID_ROLE_PATTERN = re.compile(r"^[a-z0-9_-]{1,32}$")
-
-_GITHUB_HTTPS = re.compile(r"^https://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$")
-_GITHUB_SSH = re.compile(r"^git@github\.com:([^/]+/[^/]+?)(?:\.git)?$")
-
-
-def _github_pr_url(repo_url: str | None, pr_number: int) -> str | None:
-    if not repo_url:
-        return None
-    m = _GITHUB_HTTPS.match(repo_url) or _GITHUB_SSH.match(repo_url)
-    if m is None:
-        return None
-    return f"https://github.com/{m.group(1)}/pull/{pr_number}"
-
-
-def _pr_number_from_inputs(inputs: Mapping[str, object] | None) -> int | None:
-    raw = (inputs or {}).get("pr_number")
-    if not isinstance(raw, str) or not raw.isdigit():
-        return None
-    return int(raw)
-
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -222,75 +197,12 @@ async def get_project_result(
     return await agg.get_result(project_id, role)
 
 
-async def _pr_review_rows(session: AsyncSession, project_id: str) -> Sequence[RunRow]:
-    """Return all pr_review flow runs for *project_id*, newest-first."""
-    result = await session.execute(
-        select(RunRow)
-        .where(
-            RunRow.project_id == project_id,
-            RunRow.kind == RunKind.flow.value,
-            RunRow.flow == "pr_review",
-        )
-        .order_by(
-            RunRow.started_at.desc().nullslast(),
-            RunRow.created_at.desc().nullslast(),
-            RunRow.id.desc(),
-        )
-    )
-    return result.scalars().all()
-
-
-async def _orq_cost_duration(
-    agg: Aggregator, project_id: str, orq_run_id: str | None
-) -> tuple[float | None, float | None]:
-    """Return (duration_s, cost_usd) from the orq-lite serve history, or (None, None).
-
-    Expected failure modes are ValueError (no serve running) and RuntimeError
-    (serve reachable but history unavailable or returned an error status).
-    Anything else propagates so genuine bugs surface.
-    """
-    if orq_run_id is None:
-        return None, None
-    try:
-        summary = await agg.get_run(project_id, orq_run_id)
-        return summary.duration_s, summary.cost_usd
-    except (ValueError, RuntimeError):
-        return None, None
-
-
 @router.get("/{project_id}/reviews")
 async def get_project_reviews(
     project_id: str, session: SessionDep, serves: ServesDep
 ) -> list[ReviewRun]:
     """Return pr_review flow runs for the project, newest-first."""
-    project = await session.get(ProjectRow, project_id)
-    if project is None:
-        raise ValueError(f"Project '{project_id}' not found")
-
-    rows = await _pr_review_rows(session, project_id)
-    agg = Aggregator(serves=serves)
-    async with asyncio.TaskGroup() as tg:
-        cost_tasks = [
-            tg.create_task(_orq_cost_duration(agg, project_id, row.orq_run_id)) for row in rows
-        ]
-    reviews: list[ReviewRun] = []
-    for row, cost_task in zip(rows, cost_tasks, strict=True):
-        pr_number = _pr_number_from_inputs(row.inputs)
-        pr_url = _github_pr_url(project.repo_url, pr_number) if pr_number is not None else None
-        duration_s, cost_usd = cost_task.result()
-        reviews.append(
-            ReviewRun(
-                run_id=row.id,
-                pr_number=pr_number,
-                pr_url=pr_url,
-                state=RunState(row.state),
-                started_at=row.started_at,
-                finished_at=row.finished_at,
-                duration_s=duration_s,
-                cost_usd=cost_usd,
-            )
-        )
-    return reviews
+    return await ReviewService(session).list_reviews(project_id, Aggregator(serves=serves))
 
 
 @router.post("/{project_id}/reviews/{pr_number}/rerun")
@@ -298,12 +210,4 @@ async def rerun_review(
     project_id: str, pr_number: int, session: SessionDep, executor: ExecutorDep
 ) -> Run:
     """Relaunch the most recent pr_review run for this pr_number using its persisted inputs."""
-    rows = await _pr_review_rows(session, project_id)
-    target = next(
-        (r for r in rows if (r.inputs or {}).get("pr_number") == str(pr_number)),
-        None,
-    )
-    if target is None:
-        raise ValueError(f"pr_review run for PR #{pr_number} not found")
-    svc = RunSupervisor(session, executor=executor)
-    return await svc.retry(target.id)
+    return await ReviewService(session).rerun_review(project_id, pr_number, executor)

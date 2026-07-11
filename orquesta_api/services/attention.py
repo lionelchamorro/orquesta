@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Sequence
 from datetime import datetime
 
 from sqlalchemy import select
@@ -20,7 +22,7 @@ from orquesta_api.meta.models import (
     TaskStatus,
 )
 from orquesta_api.services.aggregator import Aggregator
-from orquesta_api.services.runs import _make_executor
+from orquesta_api.services.runs import make_executor
 from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
@@ -39,40 +41,53 @@ class AttentionService:
         self._session = session
         self._serves = serves
         self._client = client if client is not None else OrqLiteClient()
-        self._executor = executor if executor is not None else _make_executor()
+        self._executor = executor if executor is not None else make_executor()
 
     async def list(self) -> AttentionResponse:
         """Return all attention items sorted newest-first."""
         result = await self._session.execute(select(ProjectRow))
         projects = list(result.scalars().all())
         items: list[AttentionItem] = []
+        projects_by_id = {project.id: project for project in projects}
 
-        for project in projects:
-            run_item = await self._failed_run_item(project)
+        failed_runs = await self._failed_runs_by_project(
+            [project.id for project in projects if project.state == "needs_human"]
+        )
+        for project_id, row in failed_runs.items():
+            project = projects_by_id[project_id]
+            run_item = await self._failed_run_item(project, row)
             if run_item is not None:
                 items.append(run_item)
-            items.extend(await self._task_items(project))
+
+        async with asyncio.TaskGroup() as tg:
+            task_item_tasks = [tg.create_task(self._task_items(project)) for project in projects]
+        for task in task_item_tasks:
+            items.extend(task.result())
 
         items.sort(key=lambda item: item.ts, reverse=True)
         return AttentionResponse(items=items)
 
-    async def _failed_run_item(self, project: ProjectRow) -> AttentionItem | None:
-        if project.state != "needs_human":
-            return None
+    async def _failed_runs_by_project(self, project_ids: Sequence[str]) -> dict[str, RunRow]:
+        if not project_ids:
+            return {}
         result = await self._session.execute(
             select(RunRow)
-            .where(RunRow.project_id == project.id, RunRow.state == RunState.failed.value)
+            .where(
+                RunRow.project_id.in_(project_ids),
+                RunRow.state == RunState.failed.value,
+            )
             .order_by(
                 RunRow.finished_at.desc().nullslast(),
                 RunRow.created_at.desc().nullslast(),
                 RunRow.id.desc(),
             )
-            .limit(1)
         )
-        row = result.scalar_one_or_none()
-        if row is None:
-            return None
+        rows_by_project: dict[str, RunRow] = {}
+        for row in result.scalars():
+            rows_by_project.setdefault(row.project_id, row)
+        return rows_by_project
 
+    async def _failed_run_item(self, project: ProjectRow, row: RunRow) -> AttentionItem | None:
         detail_parts = [part for part in [row.error, await self._log_tail(row)] if part]
         return AttentionItem(
             kind=AttentionKind.run_failed,
@@ -96,7 +111,7 @@ class AttentionService:
             logger.warning("Could not read run log tail => run_id=%s error=%s", row.id, exc)
         return "\n".join(lines)
 
-    async def _task_items(self, project: ProjectRow) -> list[AttentionItem]:
+    async def _task_items(self, project: ProjectRow) -> Sequence[AttentionItem]:
         aggregator = Aggregator(self._serves, client=self._client)
         try:
             snapshot = await aggregator.snapshot(project.id)

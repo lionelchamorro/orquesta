@@ -30,7 +30,7 @@ from orquesta_api.routers.webhooks import router as webhooks_router
 from orquesta_api.services.correlation import RunCorrelator
 from orquesta_api.services.events import EventIngestManager, get_event_bus
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
-from orquesta_api.services.runs import RunSupervisor, _make_executor
+from orquesta_api.services.runs import RunSupervisor, make_executor
 from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
@@ -50,7 +50,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Reconcile any runs that were active when the API last shut down.
     # Must run before serving requests so stale "running" rows are cleaned up.
     async with SessionLocal() as session:
-        supervisor = RunSupervisor(session, executor=_make_executor())
+        supervisor = RunSupervisor(session, executor=make_executor())
         await supervisor.reconcile()
 
     serves = ServeManager()

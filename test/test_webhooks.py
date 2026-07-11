@@ -110,7 +110,7 @@ async def test_pr_opened_on_watched_project_launches_pr_review(
 
     monkeypatch.setattr(
         runs_module,
-        "_make_executor",
+        "make_executor",
         lambda: LocalExecutor(bin_path=fake_bin, log_dir=tmp_path / "run-logs"),
     )
 
@@ -221,7 +221,7 @@ async def test_router_launches_a_run_for_a_real_pr_webhook(
 
     monkeypatch.setattr(
         runs_module,
-        "_make_executor",
+        "make_executor",
         lambda: LocalExecutor(bin_path=fake_bin, log_dir=tmp_path / "run-logs"),
     )
 

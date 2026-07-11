@@ -239,6 +239,14 @@ async def test_update_team_composes_role_prompt_and_rejects_unknown_skill(
     assert res.status_code == 200
     assert prompt_path.read_text() == composed
 
+    del body["roles"][0]["skills"]
+    res = client.put("/projects/proj/team", json=body)
+    assert res.status_code == 200
+    assert json.loads((workspace / "team.json").read_text())["roles"]["coder"]["skills"] == [
+        "tdd-workflow"
+    ]
+    assert prompt_path.read_text() == composed
+
     body["roles"][0]["skills"] = []
     res = client.put("/projects/proj/team", json=body)
     assert res.status_code == 200

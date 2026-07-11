@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useState } from "react"
 import { Play, ShieldAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -27,18 +27,12 @@ export function FlowLauncher({ projectId, disabled }: { projectId: string; disab
   // initialise selection when catalog loads
   const effectiveFlowName = flowName || (flowNames[0] ?? "")
 
-  const selectedFlow = useMemo(
-    () => flows?.find((f) => f.name === effectiveFlowName),
-    [flows, effectiveFlowName],
-  )
-
-  const inputs = useMemo(() => {
-    const defaults: Record<string, string> = {}
-    for (const [name, spec] of Object.entries(selectedFlow?.inputs ?? {})) {
-      if (spec.default !== null && spec.default !== undefined) defaults[name] = String(spec.default)
-    }
-    return { ...defaults, ...(edits[effectiveFlowName] ?? {}) }
-  }, [selectedFlow, edits, effectiveFlowName])
+  const selectedFlow = flows?.find((f) => f.name === effectiveFlowName)
+  const defaults: Record<string, string> = {}
+  for (const [name, spec] of Object.entries(selectedFlow?.inputs ?? {})) {
+    if (spec.default !== null && spec.default !== undefined) defaults[name] = String(spec.default)
+  }
+  const inputs = { ...defaults, ...(edits[effectiveFlowName] ?? {}) }
 
   const missingRequired = selectedFlow
     ? Object.entries(selectedFlow.inputs)

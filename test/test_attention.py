@@ -195,6 +195,41 @@ async def test_attention_ignores_unreachable_serve_and_keeps_run_items(session) 
     assert response.items[0].ref == "run1"
 
 
+async def test_attention_ignores_failed_runs_for_non_needs_human_projects(session) -> None:
+    now = datetime.now(tz=UTC)
+    session.add(
+        ProjectRow(
+            id="proj1",
+            name="Project",
+            workspace_path="/workspace",
+            state="idle",
+            last_run=now,
+        )
+    )
+    session.add(
+        RunRow(
+            id="run1",
+            project_id="proj1",
+            kind=RunKind.run.value,
+            state=RunState.failed.value,
+            executor="local",
+            created_at=now,
+            finished_at=now,
+            error="failed",
+        )
+    )
+    await session.commit()
+
+    response = await AttentionService(
+        session,
+        ServeManager(),
+        client=_client_for_tasks([]),
+        executor=FakeLogExecutor(),
+    ).list()
+
+    assert response.items == []
+
+
 async def test_attention_endpoint_returns_response_contract(session) -> None:
     now = datetime.now(tz=UTC)
     session.add(
@@ -227,8 +262,8 @@ async def test_attention_endpoint_returns_response_contract(session) -> None:
         "kind": AttentionKind.run_failed,
         "project_id": "proj1",
         "project_name": "Project",
-            "ref": "run1",
-            "title": "run failed",
-            "detail": "failed",
-            "ts": now.replace(tzinfo=None).isoformat(),
-        }
+        "ref": "run1",
+        "title": "run failed",
+        "detail": "failed",
+        "ts": now.replace(tzinfo=None).isoformat(),
+    }

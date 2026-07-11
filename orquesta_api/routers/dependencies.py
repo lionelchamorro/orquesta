@@ -12,13 +12,13 @@ from fastapi import Depends, Request
 
 from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.services.events import EventIngestManager
-from orquesta_api.services.runs import _make_executor
+from orquesta_api.services.runs import make_executor
 from orquesta_api.services.serves import ServeManager
 
 
 def get_executor() -> ExecutorInterface:
     """Return the process-wide executor singleton."""
-    return _make_executor()
+    return make_executor()
 
 
 def get_serves(request: Request) -> ServeManager:

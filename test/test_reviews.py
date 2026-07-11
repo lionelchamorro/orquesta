@@ -11,12 +11,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from orquesta_api.db.tables import Base, ProjectRow, RunRow
 from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import Container, RunHandle, RunKind, RunSpec, RunState
+from orquesta_api.meta.query_models import OrqRunSummary
 from orquesta_api.routers.projects import (
-    _github_pr_url,
     get_project_reviews,
     rerun_review,
 )
 from orquesta_api.services import runs as runs_module
+from orquesta_api.services.reviews import github_pr_url
 from orquesta_api.services.serves import ServeManager
 
 
@@ -98,34 +99,32 @@ async def _drain():
 
 
 def test_github_pr_url_https_without_git() -> None:
-    assert _github_pr_url("https://github.com/acme/atlas", 42) == (
+    assert github_pr_url("https://github.com/acme/atlas", 42) == (
         "https://github.com/acme/atlas/pull/42"
     )
 
 
 def test_github_pr_url_https_with_git_suffix() -> None:
-    assert _github_pr_url("https://github.com/acme/atlas.git", 7) == (
+    assert github_pr_url("https://github.com/acme/atlas.git", 7) == (
         "https://github.com/acme/atlas/pull/7"
     )
 
 
 def test_github_pr_url_ssh_without_git() -> None:
-    assert _github_pr_url("git@github.com:acme/atlas", 1) == (
-        "https://github.com/acme/atlas/pull/1"
-    )
+    assert github_pr_url("git@github.com:acme/atlas", 1) == ("https://github.com/acme/atlas/pull/1")
 
 
 def test_github_pr_url_ssh_with_git_suffix() -> None:
-    assert _github_pr_url("git@github.com:acme/atlas.git", 99) == (
+    assert github_pr_url("git@github.com:acme/atlas.git", 99) == (
         "https://github.com/acme/atlas/pull/99"
     )
 
 
 def test_github_pr_url_non_github_returns_none() -> None:
-    assert _github_pr_url("https://gitlab.com/acme/atlas", 1) is None
-    assert _github_pr_url("https://bitbucket.org/acme/atlas", 1) is None
-    assert _github_pr_url(None, 1) is None
-    assert _github_pr_url("", 1) is None
+    assert github_pr_url("https://gitlab.com/acme/atlas", 1) is None
+    assert github_pr_url("https://bitbucket.org/acme/atlas", 1) is None
+    assert github_pr_url(None, 1) is None
+    assert github_pr_url("", 1) is None
 
 
 async def test_reviews_only_returns_pr_review_flow_runs(db, project: str) -> None:
@@ -343,6 +342,76 @@ async def test_reviews_are_newest_first(db, project: str) -> None:
     assert [review.run_id for review in reviews] == ["rev-new", "rev-old"]
 
 
+async def test_reviews_populates_cost_and_duration_from_history(
+    db, project: str, monkeypatch
+) -> None:
+    now = datetime.now(tz=UTC)
+
+    async def fake_get_run(self, project_id: str, run_id: str) -> OrqRunSummary:
+        assert project_id == project
+        assert run_id == "abc123"
+        return OrqRunSummary(
+            run_id="abc123",
+            duration_s=45.0,
+            cost_usd=0.08,
+        )
+
+    monkeypatch.setattr("orquesta_api.services.aggregator.Aggregator.get_run", fake_get_run)
+
+    async with db() as session:
+        session.add(
+            RunRow(
+                id="rev-cost",
+                project_id=project,
+                kind=RunKind.flow.value,
+                state=RunState.succeeded.value,
+                executor="local",
+                created_at=now,
+                flow="pr_review",
+                inputs={"pr_number": "44"},
+                orq_run_id="abc123",
+            )
+        )
+        await session.commit()
+
+        reviews = await get_project_reviews(project, session, ServeManager())
+
+    assert reviews[0].duration_s == 45.0
+    assert reviews[0].cost_usd == 0.08
+
+
+async def test_reviews_degrades_cost_and_duration_when_history_unreachable(
+    db, project: str, monkeypatch
+) -> None:
+    now = datetime.now(tz=UTC)
+
+    async def fake_get_run(self, project_id: str, run_id: str) -> OrqRunSummary:
+        raise RuntimeError("serve unreachable")
+
+    monkeypatch.setattr("orquesta_api.services.aggregator.Aggregator.get_run", fake_get_run)
+
+    async with db() as session:
+        session.add(
+            RunRow(
+                id="rev-cost-unavailable",
+                project_id=project,
+                kind=RunKind.flow.value,
+                state=RunState.succeeded.value,
+                executor="local",
+                created_at=now,
+                flow="pr_review",
+                inputs={"pr_number": "45"},
+                orq_run_id="abc123",
+            )
+        )
+        await session.commit()
+
+        reviews = await get_project_reviews(project, session, ServeManager())
+
+    assert reviews[0].duration_s is None
+    assert reviews[0].cost_usd is None
+
+
 async def test_rerun_review_relaunches_with_persisted_inputs(db, project: str) -> None:
     executor = NoopExecutor()
     now = datetime.now(tz=UTC)
@@ -414,3 +483,10 @@ async def test_rerun_review_raises_when_no_prior_run(db, project: str) -> None:
     async with db() as session:
         with pytest.raises(ValueError, match="not found"):
             await rerun_review(project, 999, session, executor)
+
+
+async def test_rerun_review_raises_project_not_found_before_pr_lookup(db) -> None:
+    executor = NoopExecutor()
+    async with db() as session:
+        with pytest.raises(ValueError, match="Project 'missing' not found"):
+            await rerun_review("missing", 42, session, executor)

@@ -69,7 +69,7 @@ def load_skill_catalog(skills_dir: Path | None = None) -> list[SkillDefinition]:
     root = skills_dir or _SKILLS_DIR
     skills = [parse_skill_file(path) for path in sorted(root.glob("*.md"))]
     ordered = sorted(skills, key=lambda skill: skill.id)
-    logger.debug("skill_catalog_loaded", count=len(ordered), skills_dir=str(root))
+    logger.debug("skill_catalog_loaded => count=%s skills_dir=%s", len(ordered), root)
     return ordered
 
 

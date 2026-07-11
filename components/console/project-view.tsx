@@ -12,6 +12,7 @@ import { LiveEvents } from "@/components/console/live-events"
 import { GlobalChat } from "@/components/console/global-chat"
 import { FlowLauncher } from "@/components/console/flow-launcher"
 import { RunHistory } from "@/components/console/run-history"
+import { normalizeError } from "@/lib/error-message"
 import type { Project, ReviewRun, Run } from "@/lib/types"
 
 const tabs = ["Factory", "Tasks", "Reviews", "Runs", "Chat"] as const
@@ -159,9 +160,25 @@ async function fetchJSON<T>(url: string): Promise<T | null> {
   }
 }
 
+export async function stopQueuedRun(runId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/control-plane/runs/${runId}/stop`, { method: "POST" })
+    if (res.ok) {
+      return null
+    }
+    const body = await res.json().catch(() => null)
+    const { message } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+    return `cancel failed: ${message}`
+  } catch (err) {
+    const { message } = normalizeError(err)
+    return `cancel failed: ${message}`
+  }
+}
+
 function QueuedRuns({ projectId }: { projectId: string }) {
   const [runs, setRuns] = useState<Run[] | null>(null)
   const [cancelling, setCancelling] = useState<string | null>(null)
+  const [cancelError, setCancelError] = useState("")
 
   useEffect(() => {
     let cancelled = false
@@ -182,8 +199,13 @@ function QueuedRuns({ projectId }: { projectId: string }) {
 
   async function cancelRun(runId: string) {
     setCancelling(runId)
+    setCancelError("")
     try {
-      await fetch(`/api/control-plane/runs/${runId}/stop`, { method: "POST" })
+      const error = await stopQueuedRun(runId)
+      if (error !== null) {
+        setCancelError(error)
+        return
+      }
       await refresh()
     } finally {
       setCancelling(null)
@@ -197,6 +219,11 @@ function QueuedRuns({ projectId }: { projectId: string }) {
       <div className="border-b border-border/50 px-4 py-2 font-mono text-xs text-muted-foreground">
         Queued runs
       </div>
+      {cancelError && (
+        <div className="border-b border-border/50 px-4 py-2 font-mono text-xs text-warn">
+          {cancelError}
+        </div>
+      )}
       <ul className="divide-y divide-border/50">
         {runs.map((run) => (
           <li key={run.id} className="flex flex-wrap items-center gap-3 px-4 py-3">

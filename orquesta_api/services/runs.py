@@ -62,7 +62,7 @@ _LOCAL_EXECUTOR: ExecutorInterface | None = None
 _DOCKER_EXECUTOR: ExecutorInterface | None = None
 
 
-def _make_executor() -> ExecutorInterface:
+def make_executor() -> ExecutorInterface:
     # Both backends keep live state in memory (local: process handles/log
     # buffers; docker: a shared DockerClient), so each must be a process-wide
     # singleton: /logs and /stop run in later requests and need the same
@@ -140,7 +140,7 @@ class RunSupervisor:
         events: EventBus | None = None,
     ) -> None:
         self._session = session
-        self._executor = executor if executor is not None else _make_executor()
+        self._executor = executor if executor is not None else make_executor()
         # session_maker used by background _supervise tasks (never the request session).
         self._session_maker = session_maker if session_maker is not None else SessionLocal
         self._events = events if events is not None else get_event_bus()

@@ -304,7 +304,7 @@ class TeamRoleDefinition(BaseModel):
     prompt: str
     result_path: str
     timeout_seconds: int
-    skills: list[str] = Field(default_factory=list)
+    skills: list[str] | None = None
     escalation_ladder: list[str] | None = None
     decompose_prompt: str | None = None
     mode: Literal["per_task", "per_cycle", "both", ""] | None = None
