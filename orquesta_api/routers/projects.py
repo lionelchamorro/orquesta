@@ -5,7 +5,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.db.session import get_session
 from orquesta_api.db.tables import ProjectRow, RunRow
-from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import (
     Feature,
     Project,
@@ -25,11 +24,10 @@ from orquesta_api.meta.models import (
     RunState,
     Task,
 )
+from orquesta_api.routers.dependencies import ExecutorDep, IngestDep, ServesDep
 from orquesta_api.services.aggregator import Aggregator, CostSnapshot
-from orquesta_api.services.events import EventIngestManager
 from orquesta_api.services.projects import ProjectService
-from orquesta_api.services.runs import RunSupervisor, _make_executor
-from orquesta_api.services.serves import ServeManager
+from orquesta_api.services.runs import RunSupervisor
 
 # Role names are opaque strings owned by team.json, not a closed enum (orq-lite
 # accepts arbitrary role names and returns null for unknown ones itself,
@@ -56,28 +54,9 @@ def _pr_number_from_inputs(inputs: Mapping[str, object] | None) -> int | None:
     return int(raw)
 
 
-def _get_executor() -> ExecutorInterface:
-    return _make_executor()
-
-
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-
-
-def _get_serves(request: Request) -> ServeManager:
-    """FastAPI dependency: read ServeManager from app.state.serves."""
-    return request.app.state.serves  # type: ignore[no-any-return]
-
-
-def _get_ingest(request: Request) -> EventIngestManager:
-    """FastAPI dependency: read EventIngestManager from app.state.ingest."""
-    return request.app.state.ingest  # type: ignore[no-any-return]
-
-
-ServesDep = Annotated[ServeManager, Depends(_get_serves)]
-IngestDep = Annotated[EventIngestManager, Depends(_get_ingest)]
-ExecutorDep = Annotated[ExecutorInterface, Depends(_get_executor)]
 
 
 class TasksResponse(BaseModel):

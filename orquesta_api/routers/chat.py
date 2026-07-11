@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orquesta_api.config import settings
 from orquesta_api.db.session import get_session
 from orquesta_api.meta.models import ChatMessage
+from orquesta_api.routers.dependencies import ServesDep
 from orquesta_api.services.chat import (
     DEFAULT_CONVERSATION_ID,
     AnthropicChatModel,
@@ -18,20 +19,12 @@ from orquesta_api.services.chat import (
     get_history,
 )
 from orquesta_api.services.chat_tools import ToolExecutor
-from orquesta_api.services.serves import ServeManager
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 _CHAT_MODEL: ChatModel | None = None
-
-
-def _get_serves(request: Request) -> ServeManager:
-    return request.app.state.serves  # type: ignore[no-any-return]
-
-
-ServesDep = Annotated[ServeManager, Depends(_get_serves)]
 
 
 def _make_chat_model() -> ChatModel:

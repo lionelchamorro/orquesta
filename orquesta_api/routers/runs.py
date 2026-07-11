@@ -10,22 +10,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.db.session import get_session
-from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import Run, RunKind, RunState
-from orquesta_api.services.runs import RunSupervisor, _make_executor
+from orquesta_api.routers.dependencies import ExecutorDep
+from orquesta_api.services.runs import RunSupervisor
 
 router = APIRouter(tags=["runs"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 HEARTBEAT_INTERVAL_S: float = 15.0
-
-
-def _get_executor() -> ExecutorInterface:
-    return _make_executor()
-
-
-ExecutorDep = Annotated[ExecutorInterface, Depends(_get_executor)]
 
 
 class RunCreate(BaseModel):
