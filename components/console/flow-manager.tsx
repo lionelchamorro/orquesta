@@ -5,7 +5,8 @@ import { Copy, ListPlus, Play, Save, Workflow, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
-import { emptyStep } from "@/lib/flow-steps"
+import { emptyStep, type StepPath } from "@/lib/flow-steps"
+import { pathFromLocator, validateFlowSteps, type FlowStepError } from "@/lib/flow-validate"
 import { FormView } from "@/components/console/flow-editor/form-view"
 import { GraphView } from "@/components/console/flow-editor/graph-view"
 import { JsonView } from "@/components/console/flow-editor/json-view"
@@ -26,10 +27,12 @@ export function FlowManager({
   const [adding, setAdding] = useState(false)
   const [message, setMessage] = useState("")
   const [tab, setTab] = useState<"graph" | "form" | "json">("graph")
+  const [invalidPaths, setInvalidPaths] = useState<StepPath[]>([])
   const selected = flows.find((flow) => flow.id === selectedId) ?? flows[0]
 
   async function switchProject(nextProjectId: string) {
     setProjectId(nextProjectId)
+    setInvalidPaths([])
     setMessage("Loading flows...")
     const res = await fetch(`/api/control-plane/projects/${nextProjectId}/flows`, { cache: "no-store" })
     if (!res.ok) {
@@ -74,6 +77,13 @@ export function FlowManager({
       setMessage("Select a project first — flows are saved per project.")
       return
     }
+    // Validación local (espejo del backend): feedback inmediato sin round-trip.
+    const localErrors = validateFlowSteps(selected.steps)
+    if (localErrors.length > 0) {
+      applyStepErrors(localErrors)
+      return
+    }
+    setInvalidPaths([])
     setMessage("Saving flow...")
     try {
       const res = await fetch(`/api/control-plane/projects/${projectId}/flows/${selected.id}`, {
@@ -85,18 +95,23 @@ export function FlowManager({
         setMessage("Saved to flows.json")
         return
       }
-      // Surface the real validation error (e.g. an invalid step) instead of a
-      // generic "control plane is not available".
       const detail = await res.json().catch(() => null)
+      if (Array.isArray(detail?.detail) && detail.detail.every((d: { step?: string }) => typeof d?.step === "string")) {
+        applyStepErrors(detail.detail as FlowStepError[])
+        return
+      }
       const problems = Array.isArray(detail?.detail)
-        ? detail.detail
-            .map((d: { error?: string; msg?: string }) => d.error ?? d.msg ?? JSON.stringify(d))
-            .join("; ")
+        ? detail.detail.map((d: { error?: string; msg?: string }) => d.error ?? d.msg ?? JSON.stringify(d)).join("; ")
         : (detail?.detail ?? `HTTP ${res.status}`)
       setMessage(`Save failed: ${problems}`)
     } catch (err) {
       setMessage(`Save failed: ${err instanceof Error ? err.message : String(err)}`)
     }
+  }
+
+  function applyStepErrors(errors: FlowStepError[]) {
+    setInvalidPaths(errors.map((e) => pathFromLocator(e.step)).filter((p) => p.length > 0))
+    setMessage(`Save failed: ${errors.map((e) => `${e.step}: ${e.error}`).join("; ")}`)
   }
 
   if (!selected) {
@@ -133,7 +148,10 @@ export function FlowManager({
             {flows.map((flow) => (
               <button
                 key={flow.id}
-                onClick={() => setSelectedId(flow.id)}
+                onClick={() => {
+                  setSelectedId(flow.id)
+                  setInvalidPaths([])
+                }}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors",
                   flow.id === selected.id ? "bg-accent text-accent-foreground" : "hover:bg-muted/50",
@@ -229,12 +247,21 @@ export function FlowManager({
           ))}
         </div>
 
-        {tab === "form" && <FormView steps={selected.steps} onChange={(steps) => updateSelected({ steps })} />}
-        {tab === "graph" && <GraphView steps={selected.steps} onChange={(steps) => updateSelected({ steps })} invalidPaths={[]} />}
+        {tab === "form" && <FormView steps={selected.steps} onChange={(steps) => {
+          setInvalidPaths([])
+          updateSelected({ steps })
+        }} />}
+        {tab === "graph" && <GraphView steps={selected.steps} onChange={(steps) => {
+          setInvalidPaths([])
+          updateSelected({ steps })
+        }} invalidPaths={invalidPaths} />}
         {tab === "json" && (
           <JsonView
             flow={selected}
-            onApply={(patch) => updateSelected(patch)}
+            onApply={(patch) => {
+              setInvalidPaths([])
+              updateSelected(patch)
+            }}
           />
         )}
 
