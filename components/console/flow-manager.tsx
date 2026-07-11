@@ -5,6 +5,7 @@ import { Braces, Copy, ListPlus, Play, Save, Workflow, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
+import { flowToEngineJson } from "@/lib/flow-json"
 import type { FlowDefinition, FlowStep, FlowStepType, Project } from "@/lib/types"
 
 const stepTypes: FlowStepType[] = ["command", "agent", "action", "loop", "retry_until", "eval"]
@@ -13,21 +14,6 @@ function emptyStep(): FlowStep {
   // A valid placeholder so a brand-new draft saves; the engine rejects an empty
   // command ("command steps require exactly one of command/args").
   return { type: "command", command: "echo configure this step" }
-}
-
-// Exactly what the engine parses: {description?, inputs?, steps}. FlowStep
-// carries only engine fields, so the step objects serialize as-is
-// (JSON.stringify drops undefined keys).
-function flowExport(flow: FlowDefinition) {
-  return {
-    flows: {
-      [flow.id]: {
-        description: flow.description,
-        ...(flow.inputs && Object.keys(flow.inputs).length > 0 ? { inputs: flow.inputs } : {}),
-        steps: flow.steps,
-      },
-    },
-  }
 }
 
 export function FlowManager({
@@ -45,7 +31,7 @@ export function FlowManager({
   const [adding, setAdding] = useState(false)
   const [message, setMessage] = useState("")
   const selected = flows.find((flow) => flow.id === selectedId) ?? flows[0]
-  const selectedJson = useMemo(() => JSON.stringify(selected ? flowExport(selected) : {}, null, 2), [selected])
+  const selectedJson = useMemo(() => (selected ? flowToEngineJson(selected) : "{}"), [selected])
 
   async function switchProject(nextProjectId: string) {
     setProjectId(nextProjectId)
