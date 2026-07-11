@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
 import { emptyStep } from "@/lib/flow-steps"
 import { FormView } from "@/components/console/flow-editor/form-view"
+import { GraphView } from "@/components/console/flow-editor/graph-view"
 import type { FlowDefinition, Project } from "@/lib/types"
 
 export function FlowManager({
@@ -23,7 +24,7 @@ export function FlowManager({
   const [selectedId, setSelectedId] = useState(initialFlows[0]?.id ?? "")
   const [adding, setAdding] = useState(false)
   const [message, setMessage] = useState("")
-  const [tab, setTab] = useState<"graph" | "form" | "json">("form")
+  const [tab, setTab] = useState<"graph" | "form" | "json">("graph")
   const selected = flows.find((flow) => flow.id === selectedId) ?? flows[0]
 
   async function switchProject(nextProjectId: string) {
@@ -228,7 +229,7 @@ export function FlowManager({
         </div>
 
         {tab === "form" && <FormView steps={selected.steps} onChange={(steps) => updateSelected({ steps })} />}
-        {tab === "graph" && <p className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">Graph — Task 11</p>}
+        {tab === "graph" && <GraphView steps={selected.steps} onChange={(steps) => updateSelected({ steps })} invalidPaths={[]} />}
         {tab === "json" && <p className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">JSON — Task 12</p>}
 
         {message && (
