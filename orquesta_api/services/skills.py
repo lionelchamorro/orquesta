@@ -91,6 +91,11 @@ def compose_skill_block(skills: Sequence[SkillDefinition]) -> str:
     return f"{START_MARKER}\n{bodies}\n{END_MARKER}"
 
 
+def _strip_orphaned_markers(content: str) -> str:
+    """Remove malformed marker fragments while preserving user content."""
+    return content.replace(START_MARKER, "").replace(END_MARKER, "")
+
+
 def rewrite_prompt_skill_block(content: str, skills: Sequence[SkillDefinition]) -> str:
     """Replace, append, or remove the managed skill block in *content*."""
     start = content.find(START_MARKER)
@@ -98,13 +103,16 @@ def rewrite_prompt_skill_block(content: str, skills: Sequence[SkillDefinition]) 
     replacement = compose_skill_block(skills) if skills else ""
 
     if start != -1 and end != -1:
-        return content[:start] + replacement + content[end + len(END_MARKER) :]
+        before = _strip_orphaned_markers(content[:start])
+        after = _strip_orphaned_markers(content[end + len(END_MARKER) :])
+        return before + replacement + after
 
+    cleaned = _strip_orphaned_markers(content)
     if not skills:
-        return content
+        return cleaned
 
-    separator = "" if not content or content.endswith("\n") else "\n"
-    return f"{content}{separator}{replacement}"
+    separator = "" if not cleaned or cleaned.endswith("\n") else "\n"
+    return f"{cleaned}{separator}{replacement}"
 
 
 def compose_role_prompt_file(

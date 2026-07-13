@@ -9,7 +9,7 @@ router = APIRouter(tags=["skills"])
 
 
 class SkillSummary(BaseModel):
-    """Skill metadata exposed by GET /skills."""
+    """Skill metadata and body exposed by GET /skills."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -17,6 +17,7 @@ class SkillSummary(BaseModel):
     name: str
     description: str
     suggested_roles: list[str]
+    body: str
 
 
 class SkillsResponse(BaseModel):
@@ -29,7 +30,7 @@ class SkillsResponse(BaseModel):
 
 @router.get("/skills")
 async def list_skills() -> SkillsResponse:
-    """Return the in-repo skill catalog without instruction bodies."""
+    """Return the in-repo skill catalog."""
     return SkillsResponse(
         skills=[
             SkillSummary(
@@ -37,6 +38,7 @@ async def list_skills() -> SkillsResponse:
                 name=skill.name,
                 description=skill.description,
                 suggested_roles=skill.suggested_roles,
+                body=skill.body,
             )
             for skill in load_skill_catalog()
         ]

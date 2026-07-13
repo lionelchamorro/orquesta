@@ -257,6 +257,7 @@ export interface SkillSummary {
   name: string
   description: string
   suggested_roles: string[]
+  body: string
 }
 
 export interface SkillsResponse {

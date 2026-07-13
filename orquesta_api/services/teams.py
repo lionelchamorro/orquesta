@@ -24,8 +24,11 @@ class TeamService:
         catalog: list[SkillDefinition],
     ) -> TeamDefinition:
         """Merge a team update, validate selected skills, and rewrite prompts."""
-        self._validate_skill_ids(body, catalog)
-        updated = TeamConfigStore(workspace).update(self._to_raw_patch(body))
+        store = TeamConfigStore(workspace)
+        patch = self._to_raw_patch(body)
+        merged = store.preview_update(patch)
+        self._validate_skill_ids(merged, catalog)
+        updated = store.update(patch)
         for role in updated.roles:
             compose_role_prompt_file(workspace, role.prompt, role.skills or [], catalog)
         return updated
