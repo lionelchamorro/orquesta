@@ -22,7 +22,7 @@ from orquesta_api.meta.models import (
     TaskStatus,
 )
 from orquesta_api.services.aggregator import Aggregator
-from orquesta_api.services.runs import make_executor
+from orquesta_api.services.run_execution import make_executor
 from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)

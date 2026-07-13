@@ -3,8 +3,6 @@
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
-
 from orquesta_api.meta.models import TeamDefinition
 from orquesta_api.services.config_files import TeamConfigStore
 from orquesta_api.services.skills import (
@@ -12,6 +10,14 @@ from orquesta_api.services.skills import (
     compose_role_prompt_file_async,
     selected_skills,
 )
+
+
+class UnknownSkillsError(ValueError):
+    """Raised when a team references skill ids absent from the catalog."""
+
+    def __init__(self, unknown_skill_ids: list[str]) -> None:
+        self.unknown_skill_ids = sorted(set(unknown_skill_ids))
+        super().__init__(f"Unknown skill ids: {', '.join(self.unknown_skill_ids)}")
 
 
 class TeamService:
@@ -45,10 +51,7 @@ class TeamService:
                     skill_id for skill_id in role_skills if skill_id not in known_ids
                 )
         if unknown_skill_ids:
-            raise HTTPException(
-                status_code=422,
-                detail={"unknown_skill_ids": sorted(set(unknown_skill_ids))},
-            )
+            raise UnknownSkillsError(unknown_skill_ids)
 
     # ast-grep-ignore: no-dict-return-annotation
     def _to_raw_patch(self, body: TeamDefinition) -> dict[str, Any]:

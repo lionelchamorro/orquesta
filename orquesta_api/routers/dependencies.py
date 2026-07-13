@@ -12,7 +12,7 @@ from fastapi import Depends, Request
 
 from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.services.events import EventIngestManager
-from orquesta_api.services.runs import make_executor
+from orquesta_api.services.run_execution import make_executor
 from orquesta_api.services.serves import ServeManager
 
 

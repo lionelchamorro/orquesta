@@ -213,69 +213,80 @@ async def test_launch_queues_behind_existing_queued_run_when_no_process_active(
         assert [row.flow for row in rows.scalars().all()] == ["older", "newer"]
 
 
-async def test_concurrent_drains_claim_oldest_queued_run_once(db, project: str) -> None:
+async def test_concurrent_drains_claim_oldest_queued_run_once(tmp_path: Path) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'drain-race.sqlite'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    db: async_sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    project = "proj1"
     executor = BlockingStartExecutor()
     now = datetime.now(tz=UTC)
-    async with db() as session:
-        session.add(
-            RunRow(
-                id="queued-once",
-                project_id=project,
-                kind=RunKind.flow.value,
-                state=RunState.queued.value,
-                executor="local",
-                flow="issue_fix",
-                inputs={"issue_number": "7"},
-                inputs_hash=canonical_inputs_hash({"issue_number": "7"}),
-                created_at=now,
-                queued_at=now,
+    try:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        async with db() as session:
+            session.add(ProjectRow(id=project, name="Project", workspace_path=str(workspace)))
+            session.add(
+                RunRow(
+                    id="queued-once",
+                    project_id=project,
+                    kind=RunKind.flow.value,
+                    state=RunState.queued.value,
+                    executor="local",
+                    flow="issue_fix",
+                    inputs={"issue_number": "7"},
+                    inputs_hash=canonical_inputs_hash({"issue_number": "7"}),
+                    created_at=now,
+                    queued_at=now,
+                )
             )
-        )
-        await session.commit()
+            await session.commit()
 
-    async def ensure_ready(_workspace: str, _bin_path: str) -> None:
-        return None
+        async def ensure_ready(_workspace: str, _bin_path: str) -> None:
+            return None
 
-    async def supervise(_run_id: str, _pid: int) -> None:
-        return None
+        async def supervise(_run_id: str, _pid: int) -> None:
+            return None
 
-    async with db() as session_a, db() as session_b:
-        task_a = asyncio.create_task(
-            start_oldest_queued(
-                session_a,
-                executor,
-                EventBus(),
-                project,
-                ensure_ready,
-                supervise,
-                runs_module._track,
+        async with db() as session_a, db() as session_b:
+            task_a = asyncio.create_task(
+                start_oldest_queued(
+                    session_a,
+                    executor,
+                    EventBus(),
+                    project,
+                    ensure_ready,
+                    supervise,
+                    runs_module._track,
+                )
             )
-        )
-        await asyncio.wait_for(executor.first_start_entered.wait(), timeout=1)
-        task_b = asyncio.create_task(
-            start_oldest_queued(
-                session_b,
-                executor,
-                EventBus(),
-                project,
-                ensure_ready,
-                supervise,
-                runs_module._track,
+            await asyncio.wait_for(executor.first_start_entered.wait(), timeout=1)
+            task_b = asyncio.create_task(
+                start_oldest_queued(
+                    session_b,
+                    executor,
+                    EventBus(),
+                    project,
+                    ensure_ready,
+                    supervise,
+                    runs_module._track,
+                )
             )
-        )
-        await asyncio.sleep(0.05)
-        executor.release_starts.set()
-        await asyncio.gather(task_a, task_b)
+            await asyncio.sleep(0.05)
+            executor.release_starts.set()
+            await asyncio.gather(task_a, task_b)
 
-    assert list(executor.started) == ["queued-once"]
+        assert list(executor.started) == ["queued-once"]
 
-    async with db() as session:
-        row = await session.get(RunRow, "queued-once")
-        assert row is not None
-        assert row.state == RunState.running.value
-        assert row.pid is not None
+        async with db() as session:
+            row = await session.get(RunRow, "queued-once")
+            assert row is not None
+            assert row.state == RunState.running.value
+            assert row.pid is not None
 
-    executor.finish(row.pid)
+        executor.finish(row.pid)
+    finally:
+        await engine.dispose()
 
 
 async def test_retry_finished_run_launches_with_persisted_parameters(db, project: str) -> None:

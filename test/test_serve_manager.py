@@ -305,8 +305,9 @@ async def test_snapshot_preserves_runtime_error_type_from_serve() -> None:
     sm._ports["proj"] = 9999
     sm._processes["proj"] = _FakeAliveProcess()
 
-    with pytest.raises(RuntimeError, match="serve unavailable"):
+    with pytest.raises(RuntimeError, match="serve unavailable") as exc_info:
         await Aggregator(serves=sm, client=FailingClient()).snapshot("proj")
+    assert type(exc_info.value) is RuntimeError
 
 
 async def test_get_diff_raises_when_no_serve() -> None:

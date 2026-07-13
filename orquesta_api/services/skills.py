@@ -112,7 +112,7 @@ def rewrite_prompt_skill_block(content: str, skills: Sequence[SkillDefinition]) 
     end = content.find(END_MARKER, start + len(START_MARKER)) if start != -1 else -1
     replacement = compose_skill_block(skills) if skills else ""
 
-    if start != -1 and end != -1:
+    if start != -1 and end != -1 and start < end:
         before = _strip_orphaned_markers(content[:start])
         after = _strip_orphaned_markers(content[end + len(END_MARKER) :])
         return before + replacement + after

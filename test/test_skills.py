@@ -2,12 +2,11 @@ import json
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from orquesta_api.db.session import get_session
 from orquesta_api.db.tables import ProjectRow
+from orquesta_api.main import _register_exception_handlers
 from orquesta_api.routers.skills import router as skills_router
 from orquesta_api.routers.teams import router as teams_router
 from orquesta_api.services.config_files import TeamConfigStore
@@ -20,6 +19,7 @@ from orquesta_api.services.skills import (
     reset_skill_catalog_cache,
     rewrite_prompt_skill_block,
 )
+from orquesta_api.services.teams import TeamService, UnknownSkillsError
 
 
 def test_shipped_skill_catalog_parses_deterministically() -> None:
@@ -96,6 +96,13 @@ def test_skill_catalog_is_cached_until_reset(tmp_path: Path, monkeypatch) -> Non
 def _make_skills_app() -> FastAPI:
     app = FastAPI()
     app.include_router(skills_router)
+    return app
+
+
+def _make_teams_app() -> FastAPI:
+    app = FastAPI()
+    app.include_router(teams_router)
+    _register_exception_handlers(app)
     return app
 
 
@@ -209,12 +216,56 @@ def test_prompt_skill_block_repairs_orphaned_start_marker() -> None:
     assert "write a failing test first" in rewritten
 
 
+def test_prompt_skill_block_repairs_inverted_markers_without_duplication() -> None:
+    catalog = load_skill_catalog()
+    selected = [next(skill for skill in catalog if skill.id == "tdd-workflow")]
+    existing = f"alpha\n{END_MARKER}\nmiddle\n{START_MARKER}\nomega\n"
+
+    rewritten = rewrite_prompt_skill_block(existing, selected)
+
+    assert rewritten.count("middle") == 1
+    assert rewritten.startswith("alpha\n\nmiddle\n\nomega\n")
+    assert rewritten.count(START_MARKER) == 1
+    assert rewritten.count(END_MARKER) == 1
+    assert "write a failing test first" in rewritten
+
+
+def test_prompt_skill_block_repairs_orphaned_end_marker() -> None:
+    existing = f"alpha\n{END_MARKER}\nomega\n"
+
+    rewritten = rewrite_prompt_skill_block(existing, [])
+
+    assert rewritten == "alpha\n\nomega\n"
+
+
 def test_prompt_skill_block_removal_preserves_surrounding_text() -> None:
     catalog = load_skill_catalog()
     block = compose_skill_block([next(skill for skill in catalog if skill.id == "tdd-workflow")])
     existing = f"alpha\n{block}\nomega\n"
 
     assert rewrite_prompt_skill_block(existing, []) == "alpha\n\nomega\n"
+
+
+def test_team_service_raises_domain_error_for_unknown_skills() -> None:
+    team = TeamConfigStore(Path("unused"))._normalise_team(
+        {
+            "roles": {
+                "coder": {
+                    "prompt": "prompts/coder.md",
+                    "result_path": ".orquestalite/results/coder.json",
+                    "timeout_seconds": 600,
+                    "skills": ["missing-skill"],
+                }
+            }
+        }
+    )
+
+    try:
+        TeamService()._validate_skill_ids(team, load_skill_catalog())
+    except UnknownSkillsError as exc:
+        assert exc.unknown_skill_ids == ["missing-skill"]
+    else:
+        raise AssertionError("expected UnknownSkillsError")
 
 
 async def test_compose_role_prompt_file_async_runs_file_rewrite_in_thread(
@@ -282,12 +333,7 @@ async def test_update_team_composes_role_prompt_and_rejects_unknown_skill(
     )
     await session.commit()
 
-    app = FastAPI()
-    app.include_router(teams_router)
-
-    @app.exception_handler(ValueError)
-    async def _value_error_handler(_request: Request, exc: ValueError) -> JSONResponse:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    app = _make_teams_app()
 
     async def override_get_session():
         yield session
@@ -391,8 +437,7 @@ async def test_update_team_validates_merged_roles_before_writing(session, tmp_pa
     )
     await session.commit()
 
-    app = FastAPI()
-    app.include_router(teams_router)
+    app = _make_teams_app()
 
     async def override_get_session():
         yield session
@@ -422,5 +467,5 @@ async def test_update_team_validates_merged_roles_before_writing(session, tmp_pa
     res = client.put("/projects/proj-merged/team", json=body)
 
     assert res.status_code == 422
-    assert "deleted-skill" in str(res.json()["detail"])
+    assert res.json() == {"detail": {"unknown_skill_ids": ["deleted-skill"]}}
     assert team_file.read_text() == before

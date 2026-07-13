@@ -88,8 +88,6 @@ class Aggregator:
                     raise exc from None
             raise exc_group.exceptions[0] from None
 
-        if tasks_task is None or factory_task is None or cost_task is None:
-            raise RuntimeError("snapshot task initialization failed")
         tasks_resp = tasks_task.result() or {}
         factory_resp = factory_task.result() or {}
         cost_resp = cost_task.result() or {}
