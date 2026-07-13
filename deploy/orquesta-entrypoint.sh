@@ -49,6 +49,7 @@ fi
 # raises otherwise). Upgrade an existing DB, or create a fresh one from the
 # migrations, before the API starts.
 export DATABASE_URL="${DATABASE_URL:-sqlite+aiosqlite:////data/orquesta_api.db}"
+export AUTH_TOKEN="${AUTH_TOKEN:-}"
 if ( cd /srv/api && /srv/api/.venv/bin/alembic upgrade head ) 2>&1 | sed 's/^/  alembic: /'; then
   echo "  alembic: schema at head"
 else

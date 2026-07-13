@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 from fastmcp import FastMCP
 
+from orquesta_api.config import get_settings
 from orquesta_api.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,11 +35,26 @@ mcp: FastMCP = FastMCP(
 )
 
 
-async def _request(method: str, path: str, json: dict[str, Any] | None = None) -> Any:
+async def _request(
+    method: str,
+    path: str,
+    json: dict[str, Any] | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> Any:
     """Call the control-plane API and return the parsed JSON (or None for 204)."""
-    async with httpx.AsyncClient(base_url=_API_BASE, timeout=30.0) as client:
-        resp = await client.request(method, path, json=json)
+    headers: dict[str, str] = {}
+    auth_token = get_settings().auth_token.get_secret_value()
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+
+    async with httpx.AsyncClient(base_url=_API_BASE, timeout=30.0, transport=transport) as client:
+        resp = await client.request(method, path, json=json, headers=headers)
     logger.info("mcp -> %s %s => %s", method, path, resp.status_code)
+    if resp.status_code in {401, 403}:
+        raise RuntimeError(
+            f"{method} {path} failed ({resp.status_code}): MCP bridge is missing or using "
+            "the wrong AUTH_TOKEN for the Orquesta control plane."
+        )
     if resp.status_code >= 400:
         detail = resp.text
         raise RuntimeError(f"{method} {path} failed ({resp.status_code}): {detail}")

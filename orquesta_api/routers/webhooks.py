@@ -53,14 +53,9 @@ async def github_webhook(request: Request, session: SessionDep) -> Response:
     except json.JSONDecodeError:
         return Response(status_code=204)
 
-    try:
-        if event == "pull_request":
-            await watchers.handle_pull_request(payload)
-        elif event == "issues":
-            await watchers.handle_issues(payload)
-    except FileExistsError:
-        # A run is already active for this project; this event is dropped,
-        # not queued — the next PR sync/issue event will retry.
-        logger.info("Skipped webhook launch: project already has an active run")
+    if event == "pull_request":
+        await watchers.handle_pull_request(payload)
+    elif event == "issues":
+        await watchers.handle_issues(payload)
 
     return Response(status_code=204)

@@ -2,7 +2,18 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -35,12 +46,37 @@ class RunRow(Base):
     """Persistent record for a single orq-lite run."""
 
     __tablename__ = "runs"
+    __table_args__ = (
+        Index(
+            "uq_runs_one_active_per_project",
+            "project_id",
+            unique=True,
+            sqlite_where=text("state IN ('starting', 'running', 'stopping')"),
+            postgresql_where=text("state IN ('starting', 'running', 'stopping')"),
+        ),
+        Index(
+            "uq_runs_queued_flow_inputs",
+            "project_id",
+            "flow",
+            "inputs_hash",
+            unique=True,
+            sqlite_where=text("state = 'queued'"),
+            postgresql_where=text("state = 'queued'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id"), nullable=False)
     kind: Mapped[str] = mapped_column(String, nullable=False)
     state: Mapped[str] = mapped_column(String, nullable=False)
     executor: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime)
+    flow: Mapped[str | None] = mapped_column(String)
+    inputs: Mapped[dict[str, str] | None] = mapped_column(JSON)
+    inputs_hash: Mapped[str | None] = mapped_column(String)
+    plan_path: Mapped[str | None] = mapped_column(String)
+    args: Mapped[list[str] | None] = mapped_column(JSON)
     container_id: Mapped[str | None] = mapped_column(String)
     pid: Mapped[int | None] = mapped_column(Integer)
     api_port: Mapped[int | None] = mapped_column(Integer)

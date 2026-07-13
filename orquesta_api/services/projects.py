@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
 from pathlib import Path
@@ -98,7 +99,10 @@ class ProjectService:
         await self._session.refresh(project)
 
         workspace_obj = Path(effective_workspace)
-        if repo_url is not None or (workspace_obj.exists() and git.is_git_repo(workspace_obj)):
+        workspace_is_git = False
+        if workspace_obj.exists():
+            workspace_is_git = await asyncio.to_thread(git.is_git_repo, workspace_obj)
+        if repo_url is not None or workspace_is_git:
             try:
                 await RepoManager(self._session).ensure(project)
             except Exception as exc:

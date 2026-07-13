@@ -1,11 +1,9 @@
 """Run lifecycle service: launch, stop, inspect, and list runs."""
 
-import asyncio
-import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from orquesta_api.config import settings
@@ -13,114 +11,28 @@ from orquesta_api.db.session import SessionLocal
 from orquesta_api.db.tables import ProjectRow, RunRow
 from orquesta_api.logger import get_logger
 from orquesta_api.meta.executor import ExecutorInterface
-from orquesta_api.meta.models import EventKind, Run, RunEvent, RunHandle, RunKind, RunSpec, RunState
+from orquesta_api.meta.models import EventKind, Run, RunEvent, RunHandle, RunKind, RunState
 from orquesta_api.services.events import EventBus, get_event_bus
-from orquesta_api.services.examples_overlay import overlay_examples
+from orquesta_api.services.run_execution import ensure_workspace_ready, make_executor
+from orquesta_api.services.run_models import build_handle as _build_handle
+from orquesta_api.services.run_models import row_to_model as _row_to_model
+from orquesta_api.services.run_queue import (
+    PROCESS_RUN_STATES,
+    build_run_row,
+    queue_run,
+    start_oldest_queued,
+    start_run_row,
+)
+from orquesta_api.services.run_tasks import SUPERVISOR_TASKS as _SUPERVISOR_TASKS  # noqa: F401
+from orquesta_api.services.run_tasks import track as _track
 
 logger = get_logger(__name__)
-
-
-def _row_to_model(row: RunRow) -> Run:
-    return Run(
-        id=row.id,
-        project_id=row.project_id,
-        kind=RunKind(row.kind),
-        state=RunState(row.state),
-        executor=row.executor,
-        container_id=row.container_id,
-        pid=row.pid,
-        api_port=row.api_port,
-        started_at=row.started_at,
-        finished_at=row.finished_at,
-        exit_code=row.exit_code,
-        base_sha=row.base_sha,
-        head_sha=row.head_sha,
-        error=row.error,
-        orq_run_id=row.orq_run_id,
-    )
-
-
-def _build_handle(row: RunRow) -> RunHandle:
-    return RunHandle(
-        pid=row.pid, api_port=row.api_port, container_id=row.container_id, run_id=row.id
-    )
 
 
 # States for which the executor is still the source of truth about liveness.
 _ACTIVE_RUN_STATES = frozenset(
     {RunState.queued, RunState.starting, RunState.running, RunState.stopping}
 )
-
-
-_LOCAL_EXECUTOR: ExecutorInterface | None = None
-_DOCKER_EXECUTOR: ExecutorInterface | None = None
-
-
-def _make_executor() -> ExecutorInterface:
-    # Both backends keep live state in memory (local: process handles/log
-    # buffers; docker: a shared DockerClient), so each must be a process-wide
-    # singleton: /logs and /stop run in later requests and need the same
-    # instance that launched the run. (Assumes a single uvicorn worker, which
-    # is how the container runs it.)
-    global _LOCAL_EXECUTOR, _DOCKER_EXECUTOR
-    if settings.run_executor == "local":
-        from orquesta_api.executors.local import LocalExecutor
-
-        if _LOCAL_EXECUTOR is None:
-            _LOCAL_EXECUTOR = LocalExecutor()
-        return _LOCAL_EXECUTOR
-    if settings.run_executor == "docker":
-        from orquesta_api.executors.docker import DockerExecutor
-
-        if _DOCKER_EXECUTOR is None:
-            _DOCKER_EXECUTOR = DockerExecutor()
-        return _DOCKER_EXECUTOR
-    raise ValueError(f"Unknown executor '{settings.run_executor}'")
-
-
-async def ensure_workspace_ready(workspace: str, bin_path: str) -> None:
-    """Run ``orq-lite init`` in *workspace* if ``team.json`` is absent.
-
-    A fresh clone has no ``team.json`` / ``flows.json`` / ``prompts/`` and every
-    orq-lite command would fail at ``config.Load``.  ``init`` is non-destructive
-    (it does not overwrite existing config), so it is safe to call idempotently.
-
-    Raises:
-        RuntimeError: if ``orq-lite init`` exits with a non-zero code (→502).
-    """
-    if not (Path(workspace) / "team.json").exists():
-        logger.info("Initialising workspace => path=%s", workspace)
-        proc = await asyncio.create_subprocess_exec(
-            bin_path,
-            "init",
-            cwd=workspace,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        exit_code = await proc.wait()
-        if exit_code != 0:
-            raise RuntimeError(
-                f"orq-lite init failed (exit {exit_code}) in workspace {workspace!r}"
-            )
-
-    # Add the shipped example flows (factory_governed, pr_review, issue_fix) and
-    # their roles/prompts on top of the base config. Idempotent.
-    overlay_examples(workspace)
-
-
-# ---------------------------------------------------------------------------
-# Background task registry — prevents garbage-collection of in-flight tasks.
-# asyncio.create_task() result must be held by a strong reference for the life
-# of the task, or it can be GC'd mid-flight (documented asyncio gotcha).
-# ---------------------------------------------------------------------------
-
-_SUPERVISOR_TASKS: set[asyncio.Task[None]] = set()
-
-
-def _track(task: asyncio.Task[None]) -> None:
-    """Register a task so it is not garbage-collected before it completes."""
-    _SUPERVISOR_TASKS.add(task)
-    task.add_done_callback(_SUPERVISOR_TASKS.discard)
 
 
 class RunSupervisor:
@@ -134,7 +46,7 @@ class RunSupervisor:
         events: EventBus | None = None,
     ) -> None:
         self._session = session
-        self._executor = executor if executor is not None else _make_executor()
+        self._executor = executor if executor is not None else make_executor()
         # session_maker used by background _supervise tasks (never the request session).
         self._session_maker = session_maker if session_maker is not None else SessionLocal
         self._events = events if events is not None else get_event_bus()
@@ -144,6 +56,28 @@ class RunSupervisor:
         """Return the executor backing this supervisor."""
         return self._executor
 
+    async def _drain_queue(self, project_id: str, run_id: str | None, context: str) -> None:
+        """Start a queued run, logging and preserving queue state if drain fails."""
+        try:
+            async with self._session_maker() as session:
+                await start_oldest_queued(
+                    session,
+                    self._executor,
+                    self._events,
+                    project_id,
+                    ensure_workspace_ready,
+                    self._supervise,
+                    _track,
+                )
+        except Exception as exc:
+            logger.exception(
+                "Queue drain failed => project_id=%s run_id=%s context=%s error=%s",
+                project_id,
+                run_id,
+                context,
+                exc,
+            )
+
     async def launch(
         self,
         project_id: str,
@@ -152,6 +86,7 @@ class RunSupervisor:
         flow: str | None = None,
         inputs: dict[str, str] | None = None,
         args: list[str] | None = None,
+        queue: bool = True,
     ) -> Run:
         """Start a new run for the project and return a Run in the running state.
 
@@ -172,67 +107,53 @@ class RunSupervisor:
                 "(set watch.prs and/or watch.issues)"
             )
 
-        # Reject concurrent launches for the same project.
+        # Queue behind a process-active run or existing backlog, preserving FIFO admission.
         existing = await self._session.execute(
             select(RunRow).where(
                 RunRow.project_id == project_id,
-                RunRow.state.in_([s.value for s in _ACTIVE_RUN_STATES]),
+                RunRow.state.in_([RunState.queued.value, *[s.value for s in PROCESS_RUN_STATES]]),
             )
         )
-        if existing.scalar_one_or_none() is not None:
+        if existing.scalars().first() is not None:
+            if queue:
+                return _row_to_model(
+                    await queue_run(self._session, project_id, kind, plan_path, flow, inputs, args)
+                )
             raise FileExistsError(f"Project '{project_id}' already has an active run")
 
         workspace = project.workspace_path or ""
         await ensure_workspace_ready(workspace, settings.orq_lite_bin)
 
-        run_id = str(uuid.uuid4())
-        row = RunRow(
-            id=run_id,
+        row = build_run_row(
             project_id=project_id,
-            kind=kind.value,
-            state=RunState.queued.value,
-            executor=settings.run_executor,
-        )
-        self._session.add(row)
-        await self._session.flush()
-
-        row.state = RunState.starting.value
-
-        spec = RunSpec(
-            project_id=project_id,
-            workspace_path=workspace,
             kind=kind,
+            state=RunState.starting,
             plan_path=plan_path,
             flow=flow,
-            inputs=inputs or {},
-            args=args or [],
-            watch_prs=project.watch_prs,
-            watch_issues=project.watch_issues,
+            inputs=inputs,
+            args=args,
         )
+        self._session.add(row)
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            await self._session.rollback()
+            if queue:
+                return _row_to_model(
+                    await queue_run(self._session, project_id, kind, plan_path, flow, inputs, args)
+                )
+            raise FileExistsError(f"Project '{project_id}' already has an active run") from exc
 
-        handle: RunHandle = await self._executor.start(spec, run_id=run_id)
-
-        row.pid = handle.pid
-        row.api_port = handle.api_port
-        row.container_id = handle.container_id
-        row.started_at = datetime.now(tz=UTC)
-        row.state = RunState.running.value
-        # A foreground run marks the project running so the UI disables the flow
-        # launcher while it executes. A watch daemon is a long-lived background
-        # supervisor — it must NOT, or the launcher would stay disabled for its
-        # whole life. stop()/_supervise reset the project when the run ends.
-        if kind is not RunKind.watch:
-            project.state = "running"
-
-        await self._session.commit()
-
-        # Launch background supervision task; hold a strong reference so it
-        # is not garbage-collected before it writes the terminal state.
-        if handle.pid is not None:
-            task = asyncio.create_task(self._supervise(run_id, handle.pid))
-            _track(task)
-
-        await self._emit_lifecycle(row, EventKind.run_started, status=kind.value)
+        await start_run_row(
+            self._session,
+            self._executor,
+            self._events,
+            row,
+            project,
+            workspace,
+            self._supervise,
+            _track,
+        )
         return _row_to_model(row)
 
     async def _supervise(self, run_id: str, pid: int) -> None:
@@ -284,11 +205,35 @@ class RunSupervisor:
 
         await self._emit_lifecycle(row, EventKind.run_finished, status=final_state)
         logger.info("_supervise: run %s finished => exit_code=%s", run_id, exit_code)
+        await self._drain_queue(row.project_id, run_id, "_supervise")
 
     async def get_stream_context(self, run_id: str) -> tuple[Run, RunHandle]:
         """Return (run_model, handle) for log streaming; raises ValueError if not found."""
         row = await self._get_row(run_id)
         return _row_to_model(row), _build_handle(row)
+
+    async def retry(self, run_id: str, feedback: str | None = None) -> Run:
+        """Relaunch a finished run using its persisted launch parameters."""
+        row = await self._get_row(run_id)
+        if RunState(row.state) in _ACTIVE_RUN_STATES:
+            raise ValueError(f"Run '{run_id}' is not finished")
+        kind = RunKind(row.kind)
+        if kind is RunKind.flow and not row.flow:
+            raise ValueError(f"Run '{run_id}' is missing persisted flow launch parameters")
+        if kind is RunKind.plan and not row.plan_path:
+            raise ValueError(f"Run '{run_id}' is missing persisted plan launch parameters")
+        inputs = dict(row.inputs or {})
+        if feedback:
+            inputs["feedback"] = feedback
+        return await self.launch(
+            row.project_id,
+            kind=kind,
+            plan_path=row.plan_path,
+            flow=row.flow,
+            inputs=inputs,
+            args=row.args or [],
+            queue=True,
+        )
 
     async def stop(self, run_id: str) -> Run:
         """Stop a running process and persist the terminal state.
@@ -298,6 +243,16 @@ class RunSupervisor:
         if the process had already exited naturally, uses the real outcome.
         """
         row = await self._get_row(run_id)
+
+        # A queued run has no process; cancel it directly and drain the queue.
+        if RunState(row.state) is RunState.queued:
+            project_id = row.project_id
+            row.state = RunState.cancelled.value
+            row.finished_at = datetime.now(tz=UTC)
+            await self._session.commit()
+            await self._emit_lifecycle(row, EventKind.run_finished, status=row.state)
+            await self._drain_queue(project_id, run_id, "stop")
+            return _row_to_model(row)
 
         # If _supervise already finalized the row, return current state.
         if RunState(row.state) not in _ACTIVE_RUN_STATES:
@@ -351,15 +306,21 @@ class RunSupervisor:
         succeeded/failed when the process exits, so runs would otherwise stay
         'running' forever. Ask the executor and persist a terminal outcome.
         """
-        if RunState(row.state) not in _ACTIVE_RUN_STATES or row.pid is None:
+        if RunState(row.state) not in PROCESS_RUN_STATES or row.pid is None:
             return
         live = await self._executor.status(_build_handle(row))
         if live in (RunState.succeeded, RunState.failed):
             row.state = live.value
             row.exit_code = 0 if live is RunState.succeeded else 1
-            row.finished_at = datetime.now(tz=UTC)
+            finished_at = datetime.now(tz=UTC)
+            row.finished_at = finished_at
+            project = await self._session.get(ProjectRow, row.project_id)
+            if project is not None:
+                project.last_run = finished_at
+                project.state = "idle" if live is RunState.succeeded else "needs_human"
             await self._session.commit()
             await self._emit_lifecycle(row, EventKind.run_finished, status=live.value)
+            await self._drain_queue(row.project_id, row.id, "_reconcile")
 
     async def reconcile(self) -> None:
         """Mark all active RunRows as failed if the executor has no live process for them.
@@ -371,15 +332,11 @@ class RunSupervisor:
         from ``executor.status()`` and are left untouched.
         """
         result = await self._session.execute(
-            select(RunRow).where(RunRow.state.in_([s.value for s in _ACTIVE_RUN_STATES]))
+            select(RunRow).where(RunRow.state.in_([s.value for s in PROCESS_RUN_STATES]))
         )
-        rows = result.scalars().all()
-        if not rows:
-            return
-
         now = datetime.now(tz=UTC)
         count = 0
-        for row in rows:
+        for row in result.scalars().all():
             live = await self._executor.status(_build_handle(row))
             if live not in (RunState.succeeded, RunState.failed):
                 # Executor claims still running; leave it alone.
@@ -395,9 +352,14 @@ class RunSupervisor:
                 project.last_run = now
             count += 1
 
-        if count:
-            await self._session.commit()
+        await self._session.commit()
         logger.info("Startup reconciliation: %d orphaned run(s) marked failed", count)
+
+        projects = await self._session.execute(
+            select(ProjectRow.id).where(ProjectRow.state.in_(["idle", "needs_human"]))
+        )
+        for project_id in projects.scalars().all():
+            await self._drain_queue(project_id, None, "reconcile")
 
     async def list(
         self,

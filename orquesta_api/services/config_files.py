@@ -190,6 +190,12 @@ class TeamConfigStore:
         _write_json(self.path, merged)
         return self._normalise_team(merged)
 
+    def preview_update(self, patch: dict[str, Any]) -> TeamDefinition:
+        """Return the post-merge team config without writing it to disk."""
+        raw = _read_json(self.path, {})
+        merged = _deep_merge(raw, patch)
+        return self._normalise_team(merged)
+
     def _normalise_team(self, raw: dict[str, Any]) -> TeamDefinition:
         agents_raw = raw.get("agents", {}) if isinstance(raw.get("agents", {}), dict) else {}
         roles_raw = raw.get("roles", {}) if isinstance(raw.get("roles", {}), dict) else {}
@@ -213,6 +219,9 @@ class TeamConfigStore:
                 prompt=str(role.get("prompt") or f"prompts/{name}.md"),
                 result_path=str(role.get("result_path") or f".orquestalite/results/{name}.json"),
                 timeout_seconds=int(role.get("timeout_seconds") or 600),
+                skills=[str(skill) for skill in role.get("skills", [])]
+                if isinstance(role.get("skills"), list)
+                else [],
                 escalation_ladder=role.get("escalation_ladder"),
                 decompose_prompt=role.get("decompose_prompt"),
                 mode=role.get("mode"),

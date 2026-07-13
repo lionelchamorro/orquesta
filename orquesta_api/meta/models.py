@@ -118,6 +118,12 @@ class ProjectState(str, Enum):
     paused = "paused"
 
 
+class AttentionKind(str, Enum):
+    run_failed = "run_failed"
+    task_needs_human = "task_needs_human"
+    task_needs_clarification = "task_needs_clarification"
+
+
 class Task(BaseModel):
     id: str
     status: TaskStatus
@@ -182,6 +188,31 @@ class Project(BaseModel):
     source: Literal["mock", "orq-lite"] | None = None
 
 
+class AttentionItem(BaseModel):
+    kind: AttentionKind
+    project_id: str
+    project_name: str
+    ref: str
+    title: str
+    detail: str
+    ts: str
+
+
+class ReviewRun(BaseModel):
+    run_id: str
+    pr_number: int | None = None
+    pr_url: str | None = None
+    state: RunState
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_s: float | None = None
+    cost_usd: float | None = None
+
+
+class AttentionResponse(BaseModel):
+    items: list[AttentionItem] = Field(default_factory=list)
+
+
 class ChatMessage(BaseModel):
     id: str
     role: Literal["user", "assistant"]
@@ -207,6 +238,10 @@ class Run(BaseModel):
     kind: RunKind
     state: RunState
     executor: str
+    flow: str | None = None
+    inputs: dict[str, str] = Field(default_factory=dict)
+    plan_path: str | None = None
+    args: list[str] = Field(default_factory=list)
     container_id: str | None = None
     pid: int | None = None
     api_port: int | None = None
@@ -269,6 +304,7 @@ class TeamRoleDefinition(BaseModel):
     prompt: str
     result_path: str
     timeout_seconds: int
+    skills: list[str] | None = None
     escalation_ladder: list[str] | None = None
     decompose_prompt: str | None = None
     mode: Literal["per_task", "per_cycle", "both", ""] | None = None

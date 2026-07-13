@@ -1,13 +1,33 @@
 "use client"
 
-import { useMemo, useState, type FormEvent } from "react"
-import { Bot, Braces, Check, Copy, ListPlus, Save, Shield, Trash2, Users } from "lucide-react"
+import { useEffect, useMemo, useState, type FormEvent } from "react"
+import { Bot, Braces, Copy, ListPlus, Save, Shield, Trash2, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
-import type { AgentDefinition, AgentProvider, Project, TeamDefinition, TeamRoleDefinition } from "@/lib/types"
+import { normalizeError } from "@/lib/error-message"
+import { useToast } from "@/lib/toast"
+import type {
+  AgentDefinition,
+  AgentProvider,
+  Project,
+  SkillSummary,
+  SkillsResponse,
+  TeamDefinition,
+  TeamRoleDefinition,
+} from "@/lib/types"
 
 const providers: AgentProvider[] = ["codex", "claude", "gemini", "opencode", "cmd"]
+
+export const SKILLS_START_MARKER = "<!-- orquesta:skills start -->"
+export const SKILLS_END_MARKER = "<!-- orquesta:skills end -->"
+
+export function composeSkillPreview(skillIds: string[], skills: SkillSummary[]): string {
+  if (skillIds.length === 0) return ""
+  const byId = new Map(skills.map((skill) => [skill.id, skill.body]))
+  const bodies = skillIds.map((skillId) => byId.get(skillId)).filter(Boolean).join("\n\n")
+  return `${SKILLS_START_MARKER}\n${bodies}\n${SKILLS_END_MARKER}`
+}
 
 function teamExport(team: TeamDefinition) {
   return {
@@ -39,25 +59,40 @@ export function TeamManager({
   projects?: Project[]
   initialProjectId?: string
 }) {
+  const toast = useToast()
   const [teams, setTeams] = useState(initialTeams)
   const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "")
   const [selectedId, setSelectedId] = useState(initialTeams[0]?.id ?? "default")
-  const [message, setMessage] = useState("")
+  const [skills, setSkills] = useState<SkillSummary[]>([])
   const selected = teams.find((team) => team.id === selectedId) ?? teams[0]
   const selectedJson = useMemo(() => JSON.stringify(selected ? teamExport(selected) : {}, null, 2), [selected])
 
+  useEffect(() => {
+    let cancelled = false
+    async function loadSkills() {
+      const res = await fetch("/api/control-plane/skills", { cache: "no-store" })
+      if (!res.ok) return
+      const body: SkillsResponse = await res.json()
+      if (!cancelled) setSkills(body.skills)
+    }
+    loadSkills()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   async function switchProject(nextProjectId: string) {
     setProjectId(nextProjectId)
-    setMessage("Loading team...")
     const res = await fetch(`/api/control-plane/projects/${nextProjectId}/team`, { cache: "no-store" })
     if (!res.ok) {
-      setMessage(`Could not load team for ${nextProjectId}`)
+      const body = await res.json().catch(() => null)
+      const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+      toast.error(message, detail)
       return
     }
     const team: TeamDefinition = await res.json()
     setTeams([team])
     setSelectedId(team.id)
-    setMessage("")
   }
 
   function updateSelected(patch: Partial<TeamDefinition>) {
@@ -73,6 +108,15 @@ export function TeamManager({
   function updateRole(roleName: string, patch: Partial<TeamRoleDefinition>) {
     if (!selected) return
     updateSelected({ roles: selected.roles.map((role) => (role.role === roleName ? { ...role, ...patch } : role)) })
+  }
+
+  function toggleRoleSkill(role: TeamRoleDefinition, skillId: string) {
+    const current = role.skills ?? []
+    updateRole(role.role, {
+      skills: current.includes(skillId)
+        ? current.filter((candidate) => candidate !== skillId)
+        : [...current, skillId],
+    })
   }
 
   function addAgent(event: FormEvent<HTMLFormElement>) {
@@ -91,7 +135,7 @@ export function TeamManager({
         },
       ],
     })
-    setMessage("Draft agent added")
+    toast.success("Draft agent added")
     event.currentTarget.reset()
   }
 
@@ -113,19 +157,29 @@ export function TeamManager({
         },
       ],
     })
-    setMessage("Draft role added")
+    toast.success("Draft role added")
     event.currentTarget.reset()
   }
 
   async function saveSelected() {
     if (!selected || !projectId) return
-    setMessage("Saving team...")
-    const res = await fetch(`/api/control-plane/projects/${projectId}/team`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(selected),
-    })
-    setMessage(res.ok ? "Saved to team.json" : "Local draft only; control plane is not available")
+    try {
+      const res = await fetch(`/api/control-plane/projects/${projectId}/team`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selected),
+      })
+      if (res.ok) {
+        toast.success("Saved to team.json")
+      } else {
+        const body = await res.json().catch(() => null)
+        const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+        toast.error(message, detail)
+      }
+    } catch (err) {
+      const { message, detail } = normalizeError(err)
+      toast.error(message, detail)
+    }
   }
 
   if (!selected) {
@@ -247,6 +301,32 @@ export function TeamManager({
                     <input value={role.agents.join(", ")} onChange={(event) => updateRole(role.role, { agents: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
                     <input value={role.prompt} onChange={(event) => updateRole(role.role, { prompt: event.target.value })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
                     <input type="number" value={role.timeout_seconds} onChange={(event) => updateRole(role.role, { timeout_seconds: Number(event.target.value) })} className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm outline-none focus:border-primary/50" />
+                    {skills.length > 0 && (
+                      <div className="rounded-lg border border-border bg-card p-3">
+                        <p className="mb-2 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Skills</p>
+                        <div className="space-y-2">
+                          {skills.map((skill) => (
+                            <label key={skill.id} className="flex cursor-pointer items-start gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={(role.skills ?? []).includes(skill.id)}
+                                onChange={() => toggleRoleSkill(role, skill.id)}
+                                className="mt-1 h-4 w-4 rounded border-border"
+                              />
+                              <span className="min-w-0">
+                                <span className="block font-mono text-xs font-medium">{skill.name}</span>
+                                <span className="block text-xs leading-relaxed text-muted-foreground">{skill.description}</span>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {(role.skills ?? []).length > 0 && (
+                      <pre className="max-h-64 overflow-auto rounded-lg border border-border bg-card p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                        {composeSkillPreview(role.skills ?? [], skills)}
+                      </pre>
+                    )}
                   </div>
                 </div>
               ))}
@@ -260,7 +340,6 @@ export function TeamManager({
             <Button size="sm" variant="ghost" className="font-mono text-xs" onClick={() => navigator.clipboard?.writeText(selectedJson)}><Copy />Copy</Button>
           </div>
           <pre className="max-h-96 overflow-auto rounded-lg border border-border bg-background p-4 font-mono text-xs leading-relaxed text-muted-foreground">{selectedJson}</pre>
-          {message && <p className="mt-3 inline-flex items-center gap-2 font-mono text-xs text-muted-foreground"><Check className="h-3.5 w-3.5 text-ok" />{message}</p>}
         </div>
       </div>
     </div>

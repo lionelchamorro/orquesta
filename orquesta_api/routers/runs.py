@@ -4,28 +4,21 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.db.session import get_session
-from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import Run, RunKind, RunState
-from orquesta_api.services.runs import RunSupervisor, _make_executor
+from orquesta_api.routers.dependencies import ExecutorDep
+from orquesta_api.services.runs import RunSupervisor
 
 router = APIRouter(tags=["runs"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 HEARTBEAT_INTERVAL_S: float = 15.0
-
-
-def _get_executor() -> ExecutorInterface:
-    return _make_executor()
-
-
-ExecutorDep = Annotated[ExecutorInterface, Depends(_get_executor)]
 
 
 class RunCreate(BaseModel):
@@ -36,6 +29,13 @@ class RunCreate(BaseModel):
     flow: str | None = None
     inputs: dict[str, str] = Field(default_factory=dict)
     args: list[str] = Field(default_factory=list)
+    queue: bool = True
+
+
+class RunRetry(BaseModel):
+    """Request body for POST /runs/{id}/retry."""
+
+    feedback: str | None = None
 
 
 async def _event_stream(log_iter: AsyncIterator[str], is_tail: bool) -> AsyncGenerator[str, None]:
@@ -72,6 +72,7 @@ async def launch_run(
         flow=body.flow,
         inputs=body.inputs,
         args=body.args,
+        queue=body.queue,
     )
 
 
@@ -111,6 +112,18 @@ async def get_run(run_id: str, session: SessionDep) -> Run:
     """Return a single run by id."""
     svc = RunSupervisor(session)
     return await svc.get(run_id)
+
+
+@router.post("/runs/{run_id}/retry")
+async def retry_run(
+    run_id: str,
+    session: SessionDep,
+    executor: ExecutorDep,
+    body: Annotated[RunRetry | None, Body()] = None,
+) -> Run:
+    """Relaunch a finished run using its persisted launch parameters."""
+    svc = RunSupervisor(session, executor=executor)
+    return await svc.retry(run_id, feedback=body.feedback if body is not None else None)
 
 
 @router.post("/runs/{run_id}/stop")

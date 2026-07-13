@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { Play, Square } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { useFlowCatalog } from "@/lib/use-flow-catalog"
 import type { ConnectionState } from "@/lib/use-office-data"
 import type { Project } from "@/lib/types"
 import { roleIdentity } from "./sprites"
@@ -38,9 +39,14 @@ export function OfficeHud({
   const [launching, setLaunching] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
+  const [selectedFlow, setSelectedFlow] = useState("")
+  const { flows, fallbackFlows, unavailable } = useFlowCatalog(project.id)
   const isRunning = project.state === "running"
   const doneTasks = project.tasks.filter((t) => t.status === "done").length
   const activeFeature = project.features.find((f) => f.status === "in_progress")
+
+  const flowNames = flows ? flows.map((f) => f.name) : [...fallbackFlows]
+  const effectiveFlow = selectedFlow || (flowNames[0] ?? "factory")
 
   useEffect(() => {
     if (!isRunning) return
@@ -58,17 +64,19 @@ export function OfficeHud({
     }
   }, [isRunning, project.id])
 
-  // A stale id from a previous run is harmless: everything that uses it is
-  // gated on isRunning, so it is derived here instead of reset in the effect.
   const effectiveRunId = isRunning ? activeRunId : null
 
   async function launch() {
     setLaunching(true)
     try {
+      const body =
+        unavailable && effectiveFlow === "factory"
+          ? { kind: "factory" }
+          : { kind: "flow", flow: effectiveFlow, inputs: {} }
       await fetch(`/api/control-plane/projects/${project.id}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "factory" }),
+        body: JSON.stringify(body),
       })
     } finally {
       setLaunching(false)
@@ -136,10 +144,26 @@ export function OfficeHud({
           {stopping ? "stopping…" : "Stop"}
         </Button>
       ) : (
-        <Button size="sm" className="font-mono text-xs" disabled={launching} onClick={launch}>
-          <Play className="h-3.5 w-3.5" />
-          {launching ? "launching…" : "Run flow"}
-        </Button>
+        <div className="flex items-center gap-1">
+          {flowNames.length > 1 && (
+            <select
+              value={effectiveFlow}
+              onChange={(e) => setSelectedFlow(e.target.value)}
+              disabled={launching}
+              className="rounded-lg border border-white/20 bg-transparent px-1.5 py-1 font-mono text-[10px] text-white/70 outline-none focus:border-white/40 disabled:opacity-50"
+            >
+              {flowNames.map((name) => (
+                <option key={name} value={name} className="bg-[#15102b]">
+                  {name}
+                </option>
+              ))}
+            </select>
+          )}
+          <Button size="sm" className="font-mono text-xs" disabled={launching} onClick={launch}>
+            <Play className="h-3.5 w-3.5" />
+            {launching ? "launching…" : "Run flow"}
+          </Button>
+        </div>
       )}
     </div>
   )

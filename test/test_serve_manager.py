@@ -2,7 +2,9 @@
 
 import asyncio
 import stat
+import time
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -240,6 +242,72 @@ async def test_snapshot_proxies_from_serve(session) -> None:
     assert len(snap.features) == 1
     assert snap.cost.available is True
     assert snap.cost.total_usd == 1.5
+
+
+async def test_snapshot_fetches_tasks_factory_and_cost_concurrently() -> None:
+    """Aggregator.snapshot should pay one serve round trip, not three serial waits."""
+    from orquesta_api.core.integrations.orq_lite_client import OrqLiteClient
+
+    class SlowClient(OrqLiteClient):
+        _empty_tasks: ClassVar[dict[str, object]] = {"tasks": []}
+        _empty_factory: ClassVar[dict[str, object]] = {"features": []}
+        _cost: ClassVar[dict[str, object]] = {"available": True, "total_usd": 2.0}
+
+        # ast-grep-ignore: no-dict-return-annotation
+        async def get_tasks(self, base_url: str) -> dict:
+            await asyncio.sleep(0.05)
+            return self._empty_tasks
+
+        # ast-grep-ignore: no-dict-return-annotation
+        async def get_factory(self, base_url: str) -> dict:
+            await asyncio.sleep(0.05)
+            return self._empty_factory
+
+        # ast-grep-ignore: no-dict-return-annotation
+        async def get_cost(self, base_url: str) -> dict:
+            await asyncio.sleep(0.05)
+            return self._cost
+
+    sm = ServeManager()
+    sm._ports["proj"] = 9999
+    sm._processes["proj"] = _FakeAliveProcess()
+
+    started = time.perf_counter()
+    snap = await Aggregator(serves=sm, client=SlowClient()).snapshot("proj")
+    elapsed = time.perf_counter() - started
+
+    assert snap.cost.total_usd == 2.0
+    assert elapsed < 0.12
+
+
+async def test_snapshot_preserves_runtime_error_type_from_serve() -> None:
+    from orquesta_api.core.integrations.orq_lite_client import OrqLiteClient
+
+    class FailingClient(OrqLiteClient):
+        _empty_factory: ClassVar[dict[str, object]] = {"features": []}
+        _empty_cost: ClassVar[dict[str, object]] = {"available": True, "total_usd": 2.0}
+
+        # ast-grep-ignore: no-dict-return-annotation
+        async def get_tasks(self, base_url: str) -> dict:
+            raise RuntimeError("serve unavailable")
+
+        # ast-grep-ignore: no-dict-return-annotation
+        async def get_factory(self, base_url: str) -> dict:
+            await asyncio.sleep(0)
+            return self._empty_factory
+
+        # ast-grep-ignore: no-dict-return-annotation
+        async def get_cost(self, base_url: str) -> dict:
+            await asyncio.sleep(0)
+            return self._empty_cost
+
+    sm = ServeManager()
+    sm._ports["proj"] = 9999
+    sm._processes["proj"] = _FakeAliveProcess()
+
+    with pytest.raises(RuntimeError, match="serve unavailable") as exc_info:
+        await Aggregator(serves=sm, client=FailingClient()).snapshot("proj")
+    assert type(exc_info.value) is RuntimeError
 
 
 async def test_get_diff_raises_when_no_serve() -> None:

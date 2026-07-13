@@ -5,11 +5,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from orquesta_api.db.tables import ProjectRow, WebhookDeliveryRow
+from orquesta_api.db.tables import ProjectRow, RunRow, WebhookDeliveryRow
 from orquesta_api.logger import get_logger
 from orquesta_api.meta.models import Run, RunKind
+from orquesta_api.services.run_queue import PROCESS_RUN_STATES, canonical_inputs_hash
 from orquesta_api.services.runs import RunSupervisor
 
 logger = get_logger(__name__)
@@ -51,6 +53,56 @@ class WatcherService:
                 return row
         return None
 
+    async def _has_matching_active_or_queued_run(
+        self,
+        project_id: str,
+        flow: str,
+        inputs: dict[str, str],
+    ) -> bool:
+        states = [state.value for state in PROCESS_RUN_STATES]
+        states.append("queued")
+        result = await self._session.execute(
+            select(RunRow.id).where(
+                RunRow.project_id == project_id,
+                RunRow.state.in_(states),
+                RunRow.flow == flow,
+                RunRow.inputs_hash == canonical_inputs_hash(inputs),
+            )
+        )
+        return result.scalars().first() is not None
+
+    async def _launch_flow(
+        self,
+        project_id: str,
+        flow: str,
+        inputs: dict[str, str],
+    ) -> Run | None:
+        if await self._has_matching_active_or_queued_run(project_id, flow, inputs):
+            logger.info(
+                "Skipped webhook launch: identical active or queued run exists => "
+                "project_id=%s flow=%s",
+                project_id,
+                flow,
+            )
+            return None
+
+        try:
+            return await RunSupervisor(self._session).launch(
+                project_id,
+                kind=RunKind.flow,
+                flow=flow,
+                inputs=inputs,
+                queue=True,
+            )
+        except IntegrityError:
+            await self._session.rollback()
+            logger.info(
+                "Skipped webhook launch: deduped by queued run uniqueness => project_id=%s flow=%s",
+                project_id,
+                flow,
+            )
+            return None
+
     async def handle_pull_request(self, payload: dict[str, Any]) -> Run | None:
         """PR opened/synchronize + watch.prs -> flow=pr_review. Returns the launched Run, if any."""
         if payload.get("action") not in {"opened", "synchronize"}:
@@ -70,9 +122,8 @@ class WatcherService:
             pr_number,
             payload.get("action"),
         )
-        return await RunSupervisor(self._session).launch(
+        return await self._launch_flow(
             project.id,
-            kind=RunKind.flow,
             flow="pr_review",
             inputs={"pr_number": str(pr_number), "publish": "true"},
         )
@@ -91,9 +142,8 @@ class WatcherService:
             return None
 
         logger.info("GitHub issue event => project_id=%s issue_number=%s", project.id, issue_number)
-        return await RunSupervisor(self._session).launch(
+        return await self._launch_flow(
             project.id,
-            kind=RunKind.flow,
             flow="issue_fix",
             inputs={"issue_number": str(issue_number)},
         )

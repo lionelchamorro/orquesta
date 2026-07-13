@@ -115,7 +115,65 @@ export interface ProjectWatch {
 
 export type RunKind = "run" | "factory" | "plan" | "flow" | "watch"
 
+export type RunState =
+  | "queued"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+
+export interface Run {
+  id: string
+  project_id: string
+  kind: RunKind
+  state: RunState
+  executor: string
+  flow?: string | null
+  inputs: Record<string, string>
+  plan_path?: string | null
+  args: string[]
+  container_id?: string | null
+  pid?: number | null
+  api_port?: number | null
+  started_at?: string | null
+  finished_at?: string | null
+  exit_code?: number | null
+  base_sha?: string | null
+  head_sha?: string | null
+  error?: string | null
+  orq_run_id?: string | null
+}
+
 export type ProjectState = "running" | "idle" | "needs_human" | "paused"
+
+export type AttentionKind = "run_failed" | "task_needs_human" | "task_needs_clarification"
+
+export interface AttentionItem {
+  kind: AttentionKind
+  project_id: string
+  project_name: string
+  ref: string
+  title: string
+  detail: string
+  ts: string
+}
+
+export interface AttentionResponse {
+  items: AttentionItem[]
+}
+
+export interface ReviewRun {
+  run_id: string
+  pr_number: number | null
+  pr_url: string | null
+  state: RunState
+  started_at: string | null
+  finished_at: string | null
+  duration_s: number | null
+  cost_usd: number | null
+}
 
 // projects.json entry plus derived in-memory state for the UI.
 export interface Project {
@@ -163,6 +221,7 @@ export interface TeamRoleDefinition {
   prompt: string
   result_path: string
   timeout_seconds: number
+  skills?: string[]
   escalation_ladder?: string[]
   decompose_prompt?: string
   mode?: "per_task" | "per_cycle" | "both" | ""
@@ -191,6 +250,18 @@ export interface TeamDefinition {
   lint_command?: string
   conventions_file?: string
   source?: "mock" | "orq-lite" | "orquesta-api"
+}
+
+export interface SkillSummary {
+  id: string
+  name: string
+  description: string
+  suggested_roles: string[]
+  body: string
+}
+
+export interface SkillsResponse {
+  skills: SkillSummary[]
 }
 
 export type FlowStepType = "agent" | "command" | "action" | "loop" | "retry_until" | "eval"
