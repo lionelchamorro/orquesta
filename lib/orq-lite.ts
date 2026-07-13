@@ -39,14 +39,19 @@ export async function getProjects(): Promise<Project[]> {
 export async function getAttention(): Promise<AttentionItem[]> {
   const baseURL = orquestaApiBaseURL()
   if (!baseURL) return []
-  const response = await fetchJSON<AttentionResponse>(`${baseURL}/attention`, { items: [] })
+  const response = await fetchControlPlaneJSON<AttentionResponse>(`${baseURL}/attention`, {
+    items: [],
+  })
   return response.items
 }
 
 export async function getProject(id: string): Promise<Project | undefined> {
   const baseURL = orquestaApiBaseURL()
   if (!baseURL) return undefined
-  const project = await fetchJSON<Project | undefined>(`${baseURL}/projects/${id}`, undefined)
+  const project = await fetchControlPlaneJSON<Project | undefined>(
+    `${baseURL}/projects/${id}`,
+    undefined,
+  )
   return project ? { ...project, source: project.source ?? "orq-lite" } : undefined
 }
 
@@ -55,7 +60,10 @@ export async function getFlows(projectId?: string): Promise<FlowDefinition[]> {
   if (!baseURL) return demoModeEnabled() ? mockFlows : []
   if (!projectId) return []
 
-  const raw = await fetchJSON<unknown>(`${baseURL}/projects/${projectId}/flows`, undefined)
+  const raw = await fetchControlPlaneJSON<unknown>(
+    `${baseURL}/projects/${projectId}/flows`,
+    undefined,
+  )
   // Backend is the source of truth once configured (flows.json is seeded with
   // real defaults); reflect an empty list as empty instead of masking it with
   // mock flows.
@@ -68,7 +76,10 @@ export async function getTeams(projectId?: string): Promise<TeamDefinition[]> {
   if (!projectId) return demoModeEnabled() ? mockTeams : []
 
   // GET /projects/{projectId}/team returns a single TeamDefinition, not an array.
-  const raw = await fetchJSON<unknown>(`${baseURL}/projects/${projectId}/team`, undefined)
+  const raw = await fetchControlPlaneJSON<unknown>(
+    `${baseURL}/projects/${projectId}/team`,
+    undefined,
+  )
   if (!raw) return demoModeEnabled() ? mockTeams : []
   // Wrap in array for backward-compatibility with callers that expect TeamDefinition[].
   return normalizeTeams(Array.isArray(raw) ? raw : [raw])
@@ -77,7 +88,7 @@ export async function getTeams(projectId?: string): Promise<TeamDefinition[]> {
 async function getControlPlaneProjects(): Promise<Project[]> {
   const baseURL = orquestaApiBaseURL()
   if (!baseURL) return []
-  const projects = await fetchJSON<Project[]>(`${baseURL}/projects`, [])
+  const projects = await fetchControlPlaneJSON<Project[]>(`${baseURL}/projects`, [])
   return projects.map((project) => ({
     ...project,
     tasks: project.tasks ?? [],
@@ -87,7 +98,7 @@ async function getControlPlaneProjects(): Promise<Project[]> {
   }))
 }
 
-async function fetchJSON<T>(url: string, fallback: T): Promise<T> {
+async function fetchControlPlaneJSON<T>(url: string, fallback: T): Promise<T> {
   try {
     // Server Components fetch the control plane directly (not through the
     // /api/control-plane proxy), so the token has to be attached here too —

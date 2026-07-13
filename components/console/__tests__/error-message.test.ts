@@ -9,6 +9,20 @@ describe("normalizeError", () => {
     expect(result.detail).toBe("Failed to fetch")
   })
 
+  it("returns a connectivity message for a network TypeError", () => {
+    const err = new TypeError("NetworkError when attempting to fetch resource.")
+    const result = normalizeError(err)
+    expect(result.message).toBe("Could not connect to the server")
+    expect(result.detail).toBe("NetworkError when attempting to fetch resource.")
+  })
+
+  it("surfaces non-network TypeError messages", () => {
+    const err = new TypeError("Cannot read properties of null (reading 'id')")
+    const result = normalizeError(err)
+    expect(result.message).toBe("Cannot read properties of null (reading 'id')")
+    expect(result.detail).toBe("Cannot read properties of null (reading 'id')")
+  })
+
   it("surfaces a string FastAPI detail directly", () => {
     const body = { detail: "project not found" }
     const result = normalizeError(body)

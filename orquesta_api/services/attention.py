@@ -50,11 +50,11 @@ class AttentionService:
         items: list[AttentionItem] = []
         projects_by_id = {project.id: project for project in projects}
 
-        failed_runs = await self._failed_runs_by_project(
+        failed_runs = await self._failed_runs_for_projects(
             [project.id for project in projects if project.state == "needs_human"]
         )
-        for project_id, row in failed_runs.items():
-            project = projects_by_id[project_id]
+        for row in failed_runs:
+            project = projects_by_id[row.project_id]
             run_item = await self._failed_run_item(project, row)
             if run_item is not None:
                 items.append(run_item)
@@ -67,9 +67,9 @@ class AttentionService:
         items.sort(key=lambda item: item.ts, reverse=True)
         return AttentionResponse(items=items)
 
-    async def _failed_runs_by_project(self, project_ids: Sequence[str]) -> dict[str, RunRow]:
+    async def _failed_runs_for_projects(self, project_ids: Sequence[str]) -> Sequence[RunRow]:
         if not project_ids:
-            return {}
+            return []
         result = await self._session.execute(
             select(RunRow)
             .where(
@@ -82,10 +82,14 @@ class AttentionService:
                 RunRow.id.desc(),
             )
         )
-        rows_by_project: dict[str, RunRow] = {}
+        rows: list[RunRow] = []
+        seen_project_ids: set[str] = set()
         for row in result.scalars():
-            rows_by_project.setdefault(row.project_id, row)
-        return rows_by_project
+            if row.project_id in seen_project_ids:
+                continue
+            rows.append(row)
+            seen_project_ids.add(row.project_id)
+        return rows
 
     async def _failed_run_item(self, project: ProjectRow, row: RunRow) -> AttentionItem | None:
         detail_parts = [part for part in [row.error, await self._log_tail(row)] if part]

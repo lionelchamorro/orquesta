@@ -13,6 +13,8 @@ import { GlobalChat } from "@/components/console/global-chat"
 import { FlowLauncher } from "@/components/console/flow-launcher"
 import { RunHistory } from "@/components/console/run-history"
 import { normalizeError } from "@/lib/error-message"
+import { fetchJSON } from "@/lib/fetch-json"
+import { fmtDuration } from "@/lib/format"
 import type { Project, ReviewRun, Run } from "@/lib/types"
 
 const tabs = ["Factory", "Tasks", "Reviews", "Runs", "Chat"] as const
@@ -20,13 +22,6 @@ type Tab = (typeof tabs)[number]
 
 function parseTab(value: string | null): Tab {
   return tabs.find((tab) => tab === value) ?? "Factory"
-}
-
-function fmtDuration(seconds?: number | null): string {
-  if (seconds == null) return "—"
-  const m = Math.floor(seconds / 60)
-  const s = Math.round(seconds % 60)
-  return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
 export function ReviewsList({
@@ -128,16 +123,18 @@ function ReviewsTab({ projectId }: { projectId: string }) {
         { method: "POST" },
       )
       if (!res.ok) {
-        const detail = await res.json().catch(() => ({}))
-        setMessages((m) => ({ ...m, [key]: `failed: ${detail?.detail ?? `HTTP ${res.status}`}` }))
+        const body = await res.json().catch(() => null)
+        const { message } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+        setMessages((m) => ({ ...m, [key]: `failed: ${message}` }))
         return
       }
       const run = (await res.json()) as Run
       setMessages((m) => ({ ...m, [key]: `relaunched (${run.state})` }))
     } catch (err) {
+      const { message } = normalizeError(err)
       setMessages((m) => ({
         ...m,
-        [key]: `failed: ${err instanceof Error ? err.message : String(err)}`,
+        [key]: `failed: ${message}`,
       }))
     } finally {
       setRerunning(null)
@@ -149,15 +146,6 @@ function ReviewsTab({ projectId }: { projectId: string }) {
   }
 
   return <ReviewsList reviews={reviews} rerunning={rerunning} messages={messages} onRerun={rerun} />
-}
-
-async function fetchJSON<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url, { cache: "no-store" })
-    return res.ok ? ((await res.json()) as T) : null
-  } catch {
-    return null
-  }
 }
 
 export async function stopQueuedRun(runId: string): Promise<string | null> {
@@ -358,13 +346,15 @@ export function ProjectActions({ project }: { project: Project }) {
         return
       }
       if (!res.ok) {
-        const detail = await res.json().catch(() => ({}))
-        setWatchMessage(`launch failed: ${detail?.detail ?? `HTTP ${res.status}`}`)
+        const body = await res.json().catch(() => null)
+        const { message } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+        setWatchMessage(`launch failed: ${message}`)
         return
       }
       setWatchMessage("watch daemon started")
     } catch (err) {
-      setWatchMessage(`launch failed: ${err instanceof Error ? err.message : String(err)}`)
+      const { message } = normalizeError(err)
+      setWatchMessage(`launch failed: ${message}`)
     } finally {
       setLaunchingWatch(false)
     }
