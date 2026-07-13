@@ -4,10 +4,12 @@ import asyncio
 import hashlib
 import json
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.config import settings
@@ -19,7 +21,7 @@ from orquesta_api.services.events import EventBus
 _PROCESS_RUN_STATES = frozenset({RunState.starting, RunState.running, RunState.stopping})
 
 EnsureWorkspace = Callable[[str, str], Awaitable[None]]
-SuperviseRun = Callable[[str, int], Awaitable[None]]
+SuperviseRun = Callable[[str, int], Coroutine[Any, Any, None]]
 TrackTask = Callable[[asyncio.Task[None]], None]
 
 
@@ -169,11 +171,14 @@ async def start_oldest_queued(
     if row is None:
         return
 
-    claimed = await session.execute(
-        update(RunRow)
-        .where(RunRow.id == row.id, RunRow.state == RunState.queued.value)
-        .values(state=RunState.starting.value)
-        .execution_options(synchronize_session=False)
+    claimed = cast(
+        CursorResult[Any],
+        await session.execute(
+            update(RunRow)
+            .where(RunRow.id == row.id, RunRow.state == RunState.queued.value)
+            .values(state=RunState.starting.value)
+            .execution_options(synchronize_session=False)
+        ),
     )
     if claimed.rowcount != 1:
         return
