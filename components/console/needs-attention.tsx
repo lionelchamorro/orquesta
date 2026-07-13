@@ -5,6 +5,7 @@ import Link from "next/link"
 import { AlertTriangle, ArrowUpRight, CheckCircle2, RotateCcw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
+import { normalizeError } from "@/lib/error-message"
 import type { AttentionItem, AttentionResponse, Run } from "@/lib/types"
 
 type RetryMessages = Record<string, string>
@@ -148,19 +149,21 @@ export function NeedsAttention() {
     try {
       const res = await fetch(`/api/control-plane/runs/${item.ref}/retry`, retryRequestInit(item))
       if (!res.ok) {
-        const detail = await res.json().catch(() => ({}))
+        const body = await res.json().catch(() => null)
+        const { message } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
         setMessages((current) => ({
           ...current,
-          [item.ref]: `retry failed: ${detail?.detail ?? `HTTP ${res.status}`}`,
+          [item.ref]: `retry failed: ${message}`,
         }))
         return
       }
       const run = (await res.json()) as Run
       setMessages((current) => ({ ...current, [item.ref]: `retry ${run.state}` }))
     } catch (err) {
+      const { message } = normalizeError(err)
       setMessages((current) => ({
         ...current,
-        [item.ref]: `retry failed: ${err instanceof Error ? err.message : String(err)}`,
+        [item.ref]: `retry failed: ${message}`,
       }))
     } finally {
       setRetrying(null)

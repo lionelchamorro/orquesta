@@ -190,6 +190,12 @@ class TeamConfigStore:
         _write_json(self.path, merged)
         return self._normalise_team(merged)
 
+    def preview_update(self, patch: dict[str, Any]) -> TeamDefinition:
+        """Return the post-merge team config without writing it to disk."""
+        raw = _read_json(self.path, {})
+        merged = _deep_merge(raw, patch)
+        return self._normalise_team(merged)
+
     def _normalise_team(self, raw: dict[str, Any]) -> TeamDefinition:
         agents_raw = raw.get("agents", {}) if isinstance(raw.get("agents", {}), dict) else {}
         roles_raw = raw.get("roles", {}) if isinstance(raw.get("roles", {}), dict) else {}

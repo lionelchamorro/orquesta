@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from orquesta_api.db.tables import Base, ProjectRow, RunRow
 from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import Container, RunHandle, RunKind, RunSpec, RunState
-from orquesta_api.meta.query_models import OrqRunSummary
+from orquesta_api.meta.query_models import OrqRunsPage, OrqRunSummary
 from orquesta_api.routers.projects import (
     get_project_reviews,
     rerun_review,
@@ -347,16 +347,29 @@ async def test_reviews_populates_cost_and_duration_from_history(
 ) -> None:
     now = datetime.now(tz=UTC)
 
-    async def fake_get_run(self, project_id: str, run_id: str) -> OrqRunSummary:
+    async def fake_list_runs(
+        self, project_id: str, limit: int = 50, offset: int = 0, active: bool | None = None
+    ) -> OrqRunsPage:
         assert project_id == project
-        assert run_id == "abc123"
-        return OrqRunSummary(
-            run_id="abc123",
-            duration_s=45.0,
-            cost_usd=0.08,
+        assert limit == 50
+        assert offset == 0
+        assert active is None
+        return OrqRunsPage(
+            runs=[
+                OrqRunSummary(
+                    run_id="abc123",
+                    duration_s=45.0,
+                    cost_usd=0.08,
+                )
+            ],
+            total=1,
         )
 
-    monkeypatch.setattr("orquesta_api.services.aggregator.Aggregator.get_run", fake_get_run)
+    async def fail_get_run(self, project_id: str, run_id: str) -> OrqRunSummary:
+        raise AssertionError("review listing should batch via list_runs")
+
+    monkeypatch.setattr("orquesta_api.services.aggregator.Aggregator.list_runs", fake_list_runs)
+    monkeypatch.setattr("orquesta_api.services.aggregator.Aggregator.get_run", fail_get_run)
 
     async with db() as session:
         session.add(
@@ -385,10 +398,12 @@ async def test_reviews_degrades_cost_and_duration_when_history_unreachable(
 ) -> None:
     now = datetime.now(tz=UTC)
 
-    async def fake_get_run(self, project_id: str, run_id: str) -> OrqRunSummary:
+    async def fake_list_runs(
+        self, project_id: str, limit: int = 50, offset: int = 0, active: bool | None = None
+    ) -> OrqRunsPage:
         raise RuntimeError("serve unreachable")
 
-    monkeypatch.setattr("orquesta_api.services.aggregator.Aggregator.get_run", fake_get_run)
+    monkeypatch.setattr("orquesta_api.services.aggregator.Aggregator.list_runs", fake_list_runs)
 
     async with db() as session:
         session.add(
@@ -410,6 +425,57 @@ async def test_reviews_degrades_cost_and_duration_when_history_unreachable(
 
     assert reviews[0].duration_s is None
     assert reviews[0].cost_usd is None
+
+
+async def test_reviews_pages_run_summaries_beyond_default_limit(
+    db, project: str, monkeypatch
+) -> None:
+    now = datetime.now(tz=UTC)
+    seen_offsets: list[int] = []
+
+    async def fake_list_runs(
+        self, project_id: str, limit: int = 50, offset: int = 0, active: bool | None = None
+    ) -> OrqRunsPage:
+        assert project_id == project
+        assert active is None
+        seen_offsets.append(offset)
+        runs = [
+            OrqRunSummary(
+                run_id=f"orq-{index}",
+                duration_s=float(index),
+                cost_usd=float(index) / 100,
+            )
+            for index in range(offset, min(offset + limit, 51))
+        ]
+        return OrqRunsPage(runs=runs, total=51)
+
+    async def fail_get_run(self, project_id: str, run_id: str) -> OrqRunSummary:
+        raise AssertionError("review listing should not call get_run per row")
+
+    monkeypatch.setattr("orquesta_api.services.aggregator.Aggregator.list_runs", fake_list_runs)
+    monkeypatch.setattr("orquesta_api.services.aggregator.Aggregator.get_run", fail_get_run)
+
+    async with db() as session:
+        session.add(
+            RunRow(
+                id="rev-page-2",
+                project_id=project,
+                kind=RunKind.flow.value,
+                state=RunState.succeeded.value,
+                executor="local",
+                created_at=now,
+                flow="pr_review",
+                inputs={"pr_number": "50"},
+                orq_run_id="orq-50",
+            )
+        )
+        await session.commit()
+
+        reviews = await get_project_reviews(project, session, ServeManager())
+
+    assert seen_offsets == [0, 50]
+    assert reviews[0].duration_s == 50.0
+    assert reviews[0].cost_usd == 0.5
 
 
 async def test_rerun_review_relaunches_with_persisted_inputs(db, project: str) -> None:

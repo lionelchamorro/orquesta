@@ -18,43 +18,14 @@ import type {
 } from "@/lib/types"
 
 const providers: AgentProvider[] = ["codex", "claude", "gemini", "opencode", "cmd"]
-const skillBodies: Record<string, string> = {
-  "code-review-checklist": `Review the change for hidden assumptions: inputs that are trusted without validation, timing or ordering assumptions, default values that may differ in production, and contracts that are implied but not enforced.
-
-Trace error paths as carefully as success paths. Check external I/O, filesystem access, network calls, subprocesses, retries, cancellation, partial writes, and cleanup after failures.
-
-Verify tests assert observable behavior through public interfaces rather than private implementation details. Prefer tests that would catch a real regression over tests that mirror the current code structure.
-
-Inspect security-sensitive sinks: shell commands, path joins, file writes, environment handling, logs, auth decisions, SQL or query construction, template rendering, and user-controlled data crossing trust boundaries.`,
-  "repo-conventions": `Before writing code, read and honor the target repository's CLAUDE.md or AGENTS.md files that apply to the working directory.
-
-Inspect the lint, format, typecheck, and test configuration before choosing implementation style. Existing repo configuration wins over generic defaults.
-
-Match the repository's naming, module layout, logging, error handling, data modeling, and test style.
-
-When local instructions and general habits conflict, follow the local repo instructions.`,
-  "tdd-workflow": `Work in small vertical slices. write a failing test first that captures the next required behavior.
-
-Implement the minimum code needed to make that test pass. Keep the change narrow, run the relevant test, and get back to green before adding the next behavior.
-
-After the test passes, refactor only when the refactor preserves behavior and improves the code. Run the test again after refactoring.
-
-never weaken an assertion to make a test pass. If a test exposes a mismatch, fix the implementation or correct the test only when the test was asserting the wrong contract.`,
-  "verification-evidence": `Any claim of "pass" must quote the command that was run and the actual output that supports the claim.
-
-Do not report success from memory, intent, or an assumed result. If the command was not run, say that it was not run.
-
-When output is long, include the meaningful summary lines: command, exit status, failing or passing test names, and the final result line.
-
-No success claims without evidence.`,
-}
 
 export const SKILLS_START_MARKER = "<!-- orquesta:skills start -->"
 export const SKILLS_END_MARKER = "<!-- orquesta:skills end -->"
 
-export function composeSkillPreview(skillIds: string[]): string {
+export function composeSkillPreview(skillIds: string[], skills: SkillSummary[]): string {
   if (skillIds.length === 0) return ""
-  const bodies = skillIds.map((skillId) => skillBodies[skillId]).filter(Boolean).join("\n\n")
+  const byId = new Map(skills.map((skill) => [skill.id, skill.body]))
+  const bodies = skillIds.map((skillId) => byId.get(skillId)).filter(Boolean).join("\n\n")
   return `${SKILLS_START_MARKER}\n${bodies}\n${SKILLS_END_MARKER}`
 }
 
@@ -353,7 +324,7 @@ export function TeamManager({
                     )}
                     {(role.skills ?? []).length > 0 && (
                       <pre className="max-h-64 overflow-auto rounded-lg border border-border bg-card p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
-                        {composeSkillPreview(role.skills ?? [])}
+                        {composeSkillPreview(role.skills ?? [], skills)}
                       </pre>
                     )}
                   </div>

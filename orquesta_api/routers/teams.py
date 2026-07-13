@@ -51,4 +51,4 @@ async def update_team(project_id: str, body: TeamDefinition, session: SessionDep
     are preserved; only the fields known to ``TeamDefinition`` are patched.
     """
     workspace = await _get_workspace(project_id, session)
-    return TeamService().update_with_skills(workspace, body, load_skill_catalog())
+    return await TeamService().update_with_skills(workspace, body, load_skill_catalog())

@@ -54,6 +54,15 @@ class RunRow(Base):
             sqlite_where=text("state IN ('starting', 'running', 'stopping')"),
             postgresql_where=text("state IN ('starting', 'running', 'stopping')"),
         ),
+        Index(
+            "uq_runs_queued_flow_inputs",
+            "project_id",
+            "flow",
+            "inputs_hash",
+            unique=True,
+            sqlite_where=text("state = 'queued'"),
+            postgresql_where=text("state = 'queued'"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -65,6 +74,7 @@ class RunRow(Base):
     queued_at: Mapped[datetime | None] = mapped_column(DateTime)
     flow: Mapped[str | None] = mapped_column(String)
     inputs: Mapped[dict[str, str] | None] = mapped_column(JSON)
+    inputs_hash: Mapped[str | None] = mapped_column(String)
     plan_path: Mapped[str | None] = mapped_column(String)
     args: Mapped[list[str] | None] = mapped_column(JSON)
     container_id: Mapped[str | None] = mapped_column(String)

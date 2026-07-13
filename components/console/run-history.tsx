@@ -4,6 +4,8 @@ import { useEffect, useState } from "react"
 import { ChevronLeft, History } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
+import { fetchJSON } from "@/lib/fetch-json"
+import { fmtDuration } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { PAGE_SIZE, paginationSlice } from "@/lib/paginate"
 import type { AgentRunRecord, OrqRunSummary, RunEvent } from "@/lib/types"
@@ -12,22 +14,6 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
-}
-
-function fmtDuration(seconds?: number | null): string {
-  if (seconds == null) return "—"
-  const m = Math.floor(seconds / 60)
-  const s = Math.round(seconds % 60)
-  return m > 0 ? `${m}m ${s}s` : `${s}s`
-}
-
-async function fetchJSON<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url, { cache: "no-store" })
-    return res.ok ? ((await res.json()) as T) : null
-  } catch {
-    return null
-  }
 }
 
 function RunDetail({ projectId, run, onBack }: { projectId: string; run: OrqRunSummary; onBack: () => void }) {

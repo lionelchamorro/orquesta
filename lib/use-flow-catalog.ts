@@ -1,18 +1,10 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { fetchJSON } from "@/lib/fetch-json"
 import type { DoctorReport, FlowCatalog, FlowCatalogEntry } from "@/lib/types"
 
 const FALLBACK_FLOWS = ["factory", "factory_fast"] as const
-
-async function fetchJSON<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url, { cache: "no-store" })
-    return res.ok ? ((await res.json()) as T) : null
-  } catch {
-    return null
-  }
-}
 
 export interface FlowCatalogState {
   flows: FlowCatalogEntry[] | null

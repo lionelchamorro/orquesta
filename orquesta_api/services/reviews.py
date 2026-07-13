@@ -1,8 +1,8 @@
 """Review run query and rerun service."""
 
-import asyncio
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,11 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orquesta_api.db.tables import ProjectRow, RunRow
 from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import ReviewRun, Run, RunKind, RunState
+from orquesta_api.meta.query_models import OrqRunSummary
 from orquesta_api.services.aggregator import Aggregator
 from orquesta_api.services.runs import RunSupervisor
 
 _GITHUB_HTTPS = re.compile(r"^https://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$")
 _GITHUB_SSH = re.compile(r"^git@github\.com:([^/]+/[^/]+?)(?:\.git)?$")
+
+
+@dataclass(frozen=True)
+class OrqRunSummaries:
+    """Run summaries indexed by upstream orq-lite run id."""
+
+    by_id: Mapping[str, OrqRunSummary]
 
 
 def github_pr_url(repo_url: str | None, pr_number: int) -> str | None:
@@ -43,17 +51,17 @@ class ReviewService:
         """Return pr_review flow runs for the project, newest-first."""
         project = await self._project(project_id)
         rows = await self._pr_review_rows(project_id)
-        async with asyncio.TaskGroup() as tg:
-            cost_tasks = [
-                tg.create_task(self._orq_cost_duration(agg, project_id, row.orq_run_id))
-                for row in rows
-            ]
+        summaries = (
+            await self._orq_run_summaries_by_id(agg, project_id)
+            if rows
+            else OrqRunSummaries(by_id={})
+        )
 
         reviews: list[ReviewRun] = []
-        for row, cost_task in zip(rows, cost_tasks, strict=True):
+        for row in rows:
             pr_number = _pr_number_from_inputs(row.inputs)
             pr_url = github_pr_url(project.repo_url, pr_number) if pr_number is not None else None
-            duration_s, cost_usd = cost_task.result()
+            duration_s, cost_usd = self._orq_cost_duration(summaries, row.orq_run_id)
             reviews.append(
                 ReviewRun(
                     run_id=row.id,
@@ -104,14 +112,28 @@ class ReviewService:
         )
         return result.scalars().all()
 
-    async def _orq_cost_duration(
-        self, agg: Aggregator, project_id: str, orq_run_id: str | None
+    async def _orq_run_summaries_by_id(self, agg: Aggregator, project_id: str) -> OrqRunSummaries:
+        summaries: dict[str, OrqRunSummary] = {}
+        limit = 50
+        offset = 0
+        try:
+            while True:
+                page = await agg.list_runs(project_id, limit=limit, offset=offset)
+                summaries.update((summary.run_id, summary) for summary in page.runs)
+                offset += limit
+                if offset >= page.total or not page.runs:
+                    break
+        except (ValueError, RuntimeError):
+            return OrqRunSummaries(by_id={})
+        return OrqRunSummaries(by_id=summaries)
+
+    def _orq_cost_duration(
+        self, summaries: OrqRunSummaries, orq_run_id: str | None
     ) -> tuple[float | None, float | None]:
         """Return (duration_s, cost_usd) from serve history, or (None, None)."""
         if orq_run_id is None:
             return None, None
-        try:
-            summary = await agg.get_run(project_id, orq_run_id)
-            return summary.duration_s, summary.cost_usd
-        except (ValueError, RuntimeError):
+        summary = summaries.by_id.get(orq_run_id)
+        if summary is None:
             return None, None
+        return summary.duration_s, summary.cost_usd

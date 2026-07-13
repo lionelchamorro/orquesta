@@ -6,9 +6,9 @@ per CLAUDE.md's "Los modelos Pydantic espejan lib/types.ts campo por
 campo" rule. This re-implements scripts/gen-ts-contract.ts's brace-depth
 interface extraction directly in Python so the check runs without Node.
 
-Models that exist only on one side (e.g. Repo/Run/RunSpec are backend-
-internal, never exposed as a typed TS interface) are intentionally not
-in MIRRORED_MODELS below.
+Models that exist only on one side (e.g. Repo/RunSpec are backend-internal,
+never exposed as a typed TS interface) are intentionally not in
+MIRRORED_MODELS below.
 """
 
 import re
@@ -24,6 +24,7 @@ from orquesta_api.meta.models import (
     FlowStep,
     Project,
     ReviewRun,
+    Run,
     RunEvent,
     Task,
     TeamDefinition,
@@ -48,6 +49,7 @@ _TYPES_TS = Path(__file__).resolve().parents[1] / "lib" / "types.ts"
 MIRRORED_MODELS: dict[str, tuple[type, dict[str, str]]] = {
     "Task": (Task, {}),
     "Feature": (Feature, {}),
+    "Run": (Run, {}),
     "RunEvent": (RunEvent, {}),
     "Project": (Project, {}),
     "ChatMessage": (ChatMessage, {}),

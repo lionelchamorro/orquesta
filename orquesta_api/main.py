@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import cast
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -30,8 +31,10 @@ from orquesta_api.routers.webhooks import router as webhooks_router
 from orquesta_api.services.correlation import RunCorrelator
 from orquesta_api.services.events import EventIngestManager, get_event_bus
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
-from orquesta_api.services.runs import RunSupervisor, make_executor
+from orquesta_api.services.run_execution import make_executor
+from orquesta_api.services.runs import RunSupervisor
 from orquesta_api.services.serves import ServeManager
+from orquesta_api.services.teams import UnknownSkillsError
 
 logger = get_logger(__name__)
 
@@ -40,6 +43,14 @@ class HealthResponse(BaseModel):
     """Response body for GET /health."""
 
     status: str = "ok"
+
+
+async def _unknown_skills_handler(_request: Request, exc: Exception) -> JSONResponse:
+    unknown_skills = cast(UnknownSkillsError, exc)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": {"unknown_skill_ids": unknown_skills.unknown_skill_ids}},
+    )
 
 
 @asynccontextmanager
@@ -101,6 +112,8 @@ def _register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RunInFlightError)
     async def run_in_flight_handler(_request: Request, exc: RunInFlightError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    app.add_exception_handler(UnknownSkillsError, _unknown_skills_handler)
 
     @app.exception_handler(RuntimeError)
     async def runtime_error_handler(_request: Request, exc: RuntimeError) -> JSONResponse:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ START_MARKER = "<!-- orquesta:skills start -->"
 END_MARKER = "<!-- orquesta:skills end -->"
 _HEADER_FIELDS = ("id", "name", "description", "suggested_roles")
 _SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
+_SKILL_CATALOG_CACHE: dict[Path, tuple[SkillDefinition, ...]] = {}
 
 
 @dataclass(frozen=True)
@@ -66,11 +68,19 @@ def parse_skill_file(path: Path) -> SkillDefinition:
 
 def load_skill_catalog(skills_dir: Path | None = None) -> list[SkillDefinition]:
     """Load all markdown skills in deterministic id order."""
-    root = skills_dir or _SKILLS_DIR
-    skills = [parse_skill_file(path) for path in sorted(root.glob("*.md"))]
-    ordered = sorted(skills, key=lambda skill: skill.id)
-    logger.debug("skill_catalog_loaded => count=%s skills_dir=%s", len(ordered), root)
-    return ordered
+    root = (skills_dir or _SKILLS_DIR).resolve()
+    cached = _SKILL_CATALOG_CACHE.get(root)
+    if cached is None:
+        skills = [parse_skill_file(path) for path in sorted(root.glob("*.md"))]
+        cached = tuple(sorted(skills, key=lambda skill: skill.id))
+        _SKILL_CATALOG_CACHE[root] = cached
+        logger.debug("skill_catalog_loaded => count=%s skills_dir=%s", len(cached), root)
+    return list(cached)
+
+
+def reset_skill_catalog_cache() -> None:
+    """Clear the process-local skill catalog cache for tests."""
+    _SKILL_CATALOG_CACHE.clear()
 
 
 def selected_skills(
@@ -91,20 +101,28 @@ def compose_skill_block(skills: Sequence[SkillDefinition]) -> str:
     return f"{START_MARKER}\n{bodies}\n{END_MARKER}"
 
 
+def _strip_orphaned_markers(content: str) -> str:
+    """Remove malformed marker fragments while preserving user content."""
+    return content.replace(START_MARKER, "").replace(END_MARKER, "")
+
+
 def rewrite_prompt_skill_block(content: str, skills: Sequence[SkillDefinition]) -> str:
     """Replace, append, or remove the managed skill block in *content*."""
     start = content.find(START_MARKER)
     end = content.find(END_MARKER, start + len(START_MARKER)) if start != -1 else -1
     replacement = compose_skill_block(skills) if skills else ""
 
-    if start != -1 and end != -1:
-        return content[:start] + replacement + content[end + len(END_MARKER) :]
+    if start != -1 and end != -1 and start < end:
+        before = _strip_orphaned_markers(content[:start])
+        after = _strip_orphaned_markers(content[end + len(END_MARKER) :])
+        return before + replacement + after
 
+    cleaned = _strip_orphaned_markers(content)
     if not skills:
-        return content
+        return cleaned
 
-    separator = "" if not content or content.endswith("\n") else "\n"
-    return f"{content}{separator}{replacement}"
+    separator = "" if not cleaned or cleaned.endswith("\n") else "\n"
+    return f"{cleaned}{separator}{replacement}"
 
 
 def compose_role_prompt_file(
@@ -126,3 +144,13 @@ def compose_role_prompt_file(
         return
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(rewritten)
+
+
+async def compose_role_prompt_file_async(
+    workspace: Path,
+    prompt: str,
+    skill_ids: Sequence[str],
+    catalog: Sequence[SkillDefinition],
+) -> None:
+    """Rewrite one role prompt file without blocking the event loop."""
+    await asyncio.to_thread(compose_role_prompt_file, workspace, prompt, skill_ids, catalog)

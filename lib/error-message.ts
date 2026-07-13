@@ -3,8 +3,12 @@ export interface NormalizedError {
   detail: string | null
 }
 
+function isNetworkTypeError(err: TypeError): boolean {
+  return /fetch|network/i.test(err.message)
+}
+
 export function normalizeError(err: unknown): NormalizedError {
-  if (err instanceof TypeError) {
+  if (err instanceof TypeError && isNetworkTypeError(err)) {
     return { message: "Could not connect to the server", detail: err.message }
   }
 
