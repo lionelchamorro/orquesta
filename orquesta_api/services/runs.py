@@ -107,14 +107,14 @@ class RunSupervisor:
                 "(set watch.prs and/or watch.issues)"
             )
 
-        # Queue behind a process-active run, or preserve the explicit 409 path.
+        # Queue behind a process-active run or existing backlog, preserving FIFO admission.
         existing = await self._session.execute(
             select(RunRow).where(
                 RunRow.project_id == project_id,
-                RunRow.state.in_([s.value for s in _PROCESS_RUN_STATES]),
+                RunRow.state.in_([RunState.queued.value, *[s.value for s in _PROCESS_RUN_STATES]]),
             )
         )
-        if existing.scalar_one_or_none() is not None:
+        if existing.scalars().first() is not None:
             if queue:
                 return _row_to_model(
                     await queue_run(self._session, project_id, kind, plan_path, flow, inputs, args)

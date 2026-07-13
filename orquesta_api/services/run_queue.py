@@ -1,11 +1,13 @@
 """Per-project run queue helpers."""
 
 import asyncio
+import hashlib
+import json
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.config import settings
@@ -19,6 +21,12 @@ _PROCESS_RUN_STATES = frozenset({RunState.starting, RunState.running, RunState.s
 EnsureWorkspace = Callable[[str, str], Awaitable[None]]
 SuperviseRun = Callable[[str, int], Awaitable[None]]
 TrackTask = Callable[[asyncio.Task[None]], None]
+
+
+def canonical_inputs_hash(inputs: Mapping[str, object] | None) -> str:
+    """Return a stable hash for run inputs, independent of JSON key order."""
+    payload = json.dumps(inputs or {}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def build_run_row(
@@ -43,6 +51,7 @@ def build_run_row(
         queued_at=queued_at,
         flow=flow,
         inputs=inputs or {},
+        inputs_hash=canonical_inputs_hash(inputs),
         plan_path=plan_path,
         args=args or [],
     )
@@ -160,8 +169,16 @@ async def start_oldest_queued(
     if row is None:
         return
 
+    claimed = await session.execute(
+        update(RunRow)
+        .where(RunRow.id == row.id, RunRow.state == RunState.queued.value)
+        .values(state=RunState.starting.value)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        return
+
     row.state = RunState.starting.value
-    await session.flush()
     workspace = project.workspace_path or ""
     await ensure_workspace_ready(workspace, settings.orq_lite_bin)
     await start_run_row(session, executor, events, row, project, workspace, supervise, track)

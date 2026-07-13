@@ -14,6 +14,8 @@ from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import Container, RunHandle, RunKind, RunSpec, RunState
 from orquesta_api.routers.runs import RunRetry, retry_run
 from orquesta_api.services import runs as runs_module
+from orquesta_api.services.events import EventBus
+from orquesta_api.services.run_queue import canonical_inputs_hash, start_oldest_queued
 from orquesta_api.services.runs import RunSupervisor
 from orquesta_api.services.watchers import WatcherService
 
@@ -70,6 +72,25 @@ class QueueExecutor(ExecutorInterface):
 
     def finish(self, pid: int, exit_code: int = 0) -> None:
         self._waits[pid].set_result(exit_code)
+
+
+class BlockingStartExecutor(QueueExecutor):
+    """Executor fake that pauses starts so concurrent drain claims can overlap."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_start_entered = asyncio.Event()
+        self.release_starts = asyncio.Event()
+
+    async def start(self, spec: RunSpec, run_id: str = "") -> RunHandle:
+        self._pid += 1
+        pid = self._pid
+        self.started[run_id] = spec
+        self._by_pid[pid] = run_id
+        self._waits[pid] = asyncio.get_running_loop().create_future()
+        self.first_start_entered.set()
+        await self.release_starts.wait()
+        return RunHandle(pid=pid, run_id=run_id)
 
 
 @pytest.fixture
@@ -146,6 +167,115 @@ async def test_launch_queues_behind_active_run(db, project: str) -> None:
     assert active.pid is not None
     executor.finish(active.pid)
     await _wait_for_supervisor_tasks()
+
+
+async def test_launch_queues_behind_existing_queued_run_when_no_process_active(
+    db, project: str
+) -> None:
+    executor = QueueExecutor()
+    now = datetime.now(tz=UTC)
+    async with db() as session:
+        session.add(
+            RunRow(
+                id="older-queued",
+                project_id=project,
+                kind=RunKind.flow.value,
+                state=RunState.queued.value,
+                executor="local",
+                flow="older",
+                inputs={"ticket": "1"},
+                inputs_hash=canonical_inputs_hash({"ticket": "1"}),
+                created_at=now,
+                queued_at=now,
+            )
+        )
+        await session.commit()
+
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        launched = await svc.launch(
+            project,
+            kind=RunKind.flow,
+            flow="newer",
+            inputs={"ticket": "2"},
+            queue=True,
+        )
+
+    assert launched.state == RunState.queued
+    assert launched.pid is None
+    assert executor.started == {}
+
+    async with db() as session:
+        rows = await session.execute(
+            select(RunRow)
+            .where(RunRow.project_id == project, RunRow.state == RunState.queued.value)
+            .order_by(RunRow.queued_at.asc(), RunRow.created_at.asc())
+        )
+        assert [row.flow for row in rows.scalars().all()] == ["older", "newer"]
+
+
+async def test_concurrent_drains_claim_oldest_queued_run_once(db, project: str) -> None:
+    executor = BlockingStartExecutor()
+    now = datetime.now(tz=UTC)
+    async with db() as session:
+        session.add(
+            RunRow(
+                id="queued-once",
+                project_id=project,
+                kind=RunKind.flow.value,
+                state=RunState.queued.value,
+                executor="local",
+                flow="issue_fix",
+                inputs={"issue_number": "7"},
+                inputs_hash=canonical_inputs_hash({"issue_number": "7"}),
+                created_at=now,
+                queued_at=now,
+            )
+        )
+        await session.commit()
+
+    async def ensure_ready(_workspace: str, _bin_path: str) -> None:
+        return None
+
+    async def supervise(_run_id: str, _pid: int) -> None:
+        return None
+
+    async with db() as session_a, db() as session_b:
+        task_a = asyncio.create_task(
+            start_oldest_queued(
+                session_a,
+                executor,
+                EventBus(),
+                project,
+                ensure_ready,
+                supervise,
+                runs_module._track,
+            )
+        )
+        await asyncio.wait_for(executor.first_start_entered.wait(), timeout=1)
+        task_b = asyncio.create_task(
+            start_oldest_queued(
+                session_b,
+                executor,
+                EventBus(),
+                project,
+                ensure_ready,
+                supervise,
+                runs_module._track,
+            )
+        )
+        await asyncio.sleep(0.05)
+        executor.release_starts.set()
+        await asyncio.gather(task_a, task_b)
+
+    assert list(executor.started) == ["queued-once"]
+
+    async with db() as session:
+        row = await session.get(RunRow, "queued-once")
+        assert row is not None
+        assert row.state == RunState.running.value
+        assert row.pid is not None
+
+    executor.finish(row.pid)
 
 
 async def test_retry_finished_run_launches_with_persisted_parameters(db, project: str) -> None:
@@ -739,7 +869,7 @@ async def test_webhook_queues_busy_project_and_dedupes(
         assert rows[0].flow == "pr_review"
         assert rows[0].inputs == {"pr_number": "42", "publish": "true"}
 
-    assert "identical queued run exists" in caplog.text
+    assert "identical active or queued run exists" in caplog.text
     assert active.pid is not None
     executor.finish(active.pid)
     await _wait_for_supervisor_tasks()
@@ -767,6 +897,7 @@ async def test_webhook_dedupe_matches_inputs_independent_of_json_key_order(
                 executor="local",
                 flow="pr_review",
                 inputs={"publish": "true", "pr_number": "42"},
+                inputs_hash=canonical_inputs_hash({"publish": "true", "pr_number": "42"}),
                 created_at=datetime.now(tz=UTC),
             )
         )
@@ -792,7 +923,173 @@ async def test_webhook_dedupe_matches_inputs_independent_of_json_key_order(
         )
         assert len(result.scalars().all()) == 1
 
-    assert "identical queued run exists" in caplog.text
+    assert "identical active or queued run exists" in caplog.text
     assert active.pid is not None
     executor.finish(active.pid)
     await _wait_for_supervisor_tasks()
+
+
+async def test_webhook_dedupes_matching_process_active_run(
+    db, project: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    now = datetime.now(tz=UTC)
+    async with db() as session:
+        row = await session.get(ProjectRow, project)
+        assert row is not None
+        row.repo_url = "https://github.com/acme/atlas"
+        row.watch_prs = True
+        row.state = "running"
+        session.add(
+            RunRow(
+                id="starting-pr",
+                project_id=project,
+                kind=RunKind.flow.value,
+                state=RunState.starting.value,
+                executor="local",
+                flow="pr_review",
+                inputs={"pr_number": "42", "publish": "true"},
+                inputs_hash=canonical_inputs_hash({"pr_number": "42", "publish": "true"}),
+                created_at=now,
+            )
+        )
+        await session.commit()
+
+        duplicate = await WatcherService(session).handle_pull_request(
+            {
+                "action": "opened",
+                "number": 42,
+                "pull_request": {"number": 42},
+                "repository": {"clone_url": "https://github.com/acme/atlas.git"},
+            }
+        )
+
+        assert duplicate is None
+        result = await session.execute(
+            select(RunRow).where(RunRow.project_id == project, RunRow.flow == "pr_review")
+        )
+        assert len(result.scalars().all()) == 1
+
+    assert "identical active or queued run exists" in caplog.text
+
+
+async def test_concurrent_identical_webhooks_enqueue_one_row(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'webhook-race.sqlite'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    db: async_sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    project = "proj1"
+    now = datetime.now(tz=UTC)
+    try:
+        async with db() as session:
+            session.add_all(
+                [
+                    ProjectRow(
+                        id=project,
+                        name="Project",
+                        repo_url="https://github.com/acme/atlas",
+                        workspace_path=str(tmp_path / "workspace"),
+                        watch_prs=True,
+                        state="running",
+                    ),
+                    RunRow(
+                        id="active-run",
+                        project_id=project,
+                        kind=RunKind.flow.value,
+                        state=RunState.running.value,
+                        executor="local",
+                        flow="other",
+                        created_at=now,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        payload = {
+            "action": "opened",
+            "number": 42,
+            "pull_request": {"number": 42},
+            "repository": {"clone_url": "https://github.com/acme/atlas.git"},
+        }
+        async with db() as session_a, db() as session_b:
+            first, second = await asyncio.gather(
+                WatcherService(session_a).handle_pull_request(payload),
+                WatcherService(session_b).handle_pull_request(payload),
+            )
+
+        assert sum(run is not None for run in (first, second)) == 1
+
+        async with db() as session:
+            result = await session.execute(
+                select(RunRow).where(
+                    RunRow.project_id == project,
+                    RunRow.state == RunState.queued.value,
+                    RunRow.flow == "pr_review",
+                )
+            )
+            rows = result.scalars().all()
+            assert len(rows) == 1
+            assert rows[0].inputs == {"pr_number": "42", "publish": "true"}
+    finally:
+        await engine.dispose()
+
+    assert "deduped by queued run uniqueness" in caplog.text
+
+
+async def test_webhook_dedupe_preserves_different_inputs(db, project: str) -> None:
+    now = datetime.now(tz=UTC)
+    async with db() as session:
+        row = await session.get(ProjectRow, project)
+        assert row is not None
+        row.repo_url = "https://github.com/acme/atlas"
+        row.watch_prs = True
+        row.state = "running"
+        session.add_all(
+            [
+                RunRow(
+                    id="active-run",
+                    project_id=project,
+                    kind=RunKind.flow.value,
+                    state=RunState.running.value,
+                    executor="local",
+                    flow="other",
+                    created_at=now,
+                ),
+                RunRow(
+                    id="queued-pr-42",
+                    project_id=project,
+                    kind=RunKind.flow.value,
+                    state=RunState.queued.value,
+                    executor="local",
+                    flow="pr_review",
+                    inputs={"pr_number": "42", "publish": "true"},
+                    inputs_hash=canonical_inputs_hash({"pr_number": "42", "publish": "true"}),
+                    created_at=now,
+                    queued_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+        run = await WatcherService(session).handle_pull_request(
+            {
+                "action": "opened",
+                "number": 43,
+                "pull_request": {"number": 43},
+                "repository": {"clone_url": "https://github.com/acme/atlas.git"},
+            }
+        )
+
+        assert run is not None
+        assert run.state == RunState.queued
+        result = await session.execute(
+            select(RunRow).where(
+                RunRow.project_id == project,
+                RunRow.state == RunState.queued.value,
+                RunRow.flow == "pr_review",
+            )
+        )
+        rows = result.scalars().all()
+        assert len(rows) == 2
+        assert {row.inputs["pr_number"] for row in rows if row.inputs is not None} == {"42", "43"}
