@@ -18,7 +18,7 @@ from orquesta_api.meta.executor import ExecutorInterface
 from orquesta_api.meta.models import EventKind, RunEvent, RunKind, RunSpec, RunState
 from orquesta_api.services.events import EventBus
 
-_PROCESS_RUN_STATES = frozenset({RunState.starting, RunState.running, RunState.stopping})
+PROCESS_RUN_STATES = frozenset({RunState.starting, RunState.running, RunState.stopping})
 
 EnsureWorkspace = Callable[[str, str], Awaitable[None]]
 SuperviseRun = Callable[[str, int], Coroutine[Any, Any, None]]
@@ -151,7 +151,7 @@ async def start_oldest_queued(
     active = await session.execute(
         select(RunRow).where(
             RunRow.project_id == project_id,
-            RunRow.state.in_([state.value for state in _PROCESS_RUN_STATES]),
+            RunRow.state.in_([state.value for state in PROCESS_RUN_STATES]),
         )
     )
     if active.scalar_one_or_none() is not None:

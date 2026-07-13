@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orquesta_api.db.tables import ProjectRow, RunRow, WebhookDeliveryRow
 from orquesta_api.logger import get_logger
 from orquesta_api.meta.models import Run, RunKind
-from orquesta_api.services.run_queue import _PROCESS_RUN_STATES, canonical_inputs_hash
+from orquesta_api.services.run_queue import PROCESS_RUN_STATES, canonical_inputs_hash
 from orquesta_api.services.runs import RunSupervisor
 
 logger = get_logger(__name__)
@@ -59,7 +59,7 @@ class WatcherService:
         flow: str,
         inputs: dict[str, str],
     ) -> bool:
-        states = [state.value for state in _PROCESS_RUN_STATES]
+        states = [state.value for state in PROCESS_RUN_STATES]
         states.append("queued")
         result = await self._session.execute(
             select(RunRow.id).where(

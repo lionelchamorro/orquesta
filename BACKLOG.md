@@ -44,3 +44,51 @@ cleaned = _strip_orphaned_markers(content)
 **Tests to add:**
 - `snapshot()` when one of the three HTTP calls raises `RuntimeError` → raises the same `RuntimeError` (not an ExceptionGroup).
 - `snapshot()` when all three calls succeed → returns correct Snapshot.
+
+---
+
+## `run_tasks.track()` done-callback only discards — `_supervise` task exceptions silently lost
+
+**Failure scenario:** `session.commit()` (line 204 of `runs.py`) or `_emit_lifecycle` (line 206) inside `_supervise` raises a DB error (e.g. connection reset). The exception propagates out of `_supervise` into the asyncio Task. The sole done-callback — `SUPERVISOR_TASKS.discard` — removes the task from the set; the exception is never logged. Python may eventually emit "Task exception was never retrieved" when the task is GC'd (non-deterministic, not structured). Result: the run stays in `state='running'` forever, `project.state` stays `'running'`, all queued runs for that project are blocked until the next API restart.
+
+**Fix:** Add an exception-logging done-callback in `run_tasks.track()`:
+```python
+def _log_task_exc(task: asyncio.Task[None]) -> None:
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        logger.exception("Supervisor task raised unhandled exception", exc_info=exc)
+
+def track(task: asyncio.Task[None]) -> None:
+    SUPERVISOR_TASKS.add(task)
+    task.add_done_callback(SUPERVISOR_TASKS.discard)
+    task.add_done_callback(_log_task_exc)
+```
+
+**Tests to add:**
+- `track()` on a task that raises → exception is logged (caplog captures it) and task is removed from the set.
+
+---
+
+## `_reconcile()` blocks GET /runs/{id} while draining the queue
+
+**Failure scenario:** `GET /runs/{id}` is called after an API restart while a queued run exists. `_reconcile` detects the run is dead (executor has no live process), commits a terminal state, then synchronously `await`s `_drain_queue` which calls `ensure_workspace_ready` (may run `orq-lite init`, a subprocess taking several seconds) and `executor.start()`. The HTTP client waits the full duration; if the workspace init is slow (cold clone), the GET can block 10–30 s with no indication why.
+
+**Fix:** Fire-and-forget inside `_reconcile` using the same `_track` mechanism as `start_run_row`:
+```python
+task = asyncio.create_task(self._drain_queue(row.project_id, row.id, "_reconcile"))
+_track(task)
+```
+`_drain_queue` already catches and logs all exceptions, so no error surface changes.
+
+**Tests to add:**
+- `get()` on a reconciled run with a queued successor returns immediately (before the successor starts).
+
+---
+
+## TOCTOU race between `preview_update` and `update` in `update_with_skills`
+
+**Failure scenario:** Two concurrent `PUT /teams/{project_id}` requests for the same project. Request A calls `preview_update` (reads `team.json`), validates the merged result. Before A calls `store.update`, Request B also validates and calls `store.update`, writing a new `team.json` that adds a role referencing a deleted skill ID. Request A then calls `store.update`, reading the freshly-written `team.json` from B, deep-merging A's patch on top — the resulting write can contain a role with an unknown skill ID that A's validation never saw. `compose_role_prompt_file_async` then raises inside the for-loop for that role.
+
+**Fix:** Introduce a per-workspace file lock around the validate+write window in `TeamConfigStore`, or combine `preview_update` and `update` into a single `validate_and_update` method that reads once, validates, and writes — all under the same lock.
+
+**Tests to add:**
+- Concurrent PUT requests where one introduces a deleted-skill role → only the first write succeeds; the second returns 422 (or is serialized safely).

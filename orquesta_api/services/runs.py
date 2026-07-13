@@ -17,7 +17,7 @@ from orquesta_api.services.run_execution import ensure_workspace_ready, make_exe
 from orquesta_api.services.run_models import build_handle as _build_handle
 from orquesta_api.services.run_models import row_to_model as _row_to_model
 from orquesta_api.services.run_queue import (
-    _PROCESS_RUN_STATES,
+    PROCESS_RUN_STATES,
     build_run_row,
     queue_run,
     start_oldest_queued,
@@ -111,7 +111,7 @@ class RunSupervisor:
         existing = await self._session.execute(
             select(RunRow).where(
                 RunRow.project_id == project_id,
-                RunRow.state.in_([RunState.queued.value, *[s.value for s in _PROCESS_RUN_STATES]]),
+                RunRow.state.in_([RunState.queued.value, *[s.value for s in PROCESS_RUN_STATES]]),
             )
         )
         if existing.scalars().first() is not None:
@@ -306,7 +306,7 @@ class RunSupervisor:
         succeeded/failed when the process exits, so runs would otherwise stay
         'running' forever. Ask the executor and persist a terminal outcome.
         """
-        if RunState(row.state) not in _PROCESS_RUN_STATES or row.pid is None:
+        if RunState(row.state) not in PROCESS_RUN_STATES or row.pid is None:
             return
         live = await self._executor.status(_build_handle(row))
         if live in (RunState.succeeded, RunState.failed):
@@ -332,7 +332,7 @@ class RunSupervisor:
         from ``executor.status()`` and are left untouched.
         """
         result = await self._session.execute(
-            select(RunRow).where(RunRow.state.in_([s.value for s in _PROCESS_RUN_STATES]))
+            select(RunRow).where(RunRow.state.in_([s.value for s in PROCESS_RUN_STATES]))
         )
         now = datetime.now(tz=UTC)
         count = 0
