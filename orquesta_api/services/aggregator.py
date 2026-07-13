@@ -1,5 +1,7 @@
 """Aggregator service: resolve serve port and proxy orq-lite state."""
 
+import asyncio
+
 from pydantic import BaseModel, Field
 
 from orquesta_api.core.integrations.orq_lite_client import OrqLiteClient
@@ -67,9 +69,30 @@ class Aggregator:
         # file is absent (e.g. factory.json for a project that hasn't run a
         # factory yet — i.e. every freshly-registered project), so coalesce to
         # an empty dict before reading keys.
-        tasks_resp = await self._client.get_tasks(base_url) or {}
-        factory_resp = await self._client.get_factory(base_url) or {}
-        cost_resp = await self._client.get_cost(base_url) or {}
+        tasks_task = None
+        factory_task = None
+        cost_task = None
+        try:
+            async with asyncio.TaskGroup() as tg:
+                tasks_task = tg.create_task(self._client.get_tasks(base_url))
+                factory_task = tg.create_task(self._client.get_factory(base_url))
+                cost_task = tg.create_task(self._client.get_cost(base_url))
+        except* Exception as exc_group:
+            for task in (tasks_task, factory_task, cost_task):
+                if (
+                    task is not None
+                    and task.done()
+                    and not task.cancelled()
+                    and (exc := task.exception()) is not None
+                ):
+                    raise exc from None
+            raise exc_group.exceptions[0] from None
+
+        if tasks_task is None or factory_task is None or cost_task is None:
+            raise RuntimeError("snapshot task initialization failed")
+        tasks_resp = tasks_task.result() or {}
+        factory_resp = factory_task.result() or {}
+        cost_resp = cost_task.result() or {}
 
         return Snapshot(
             tasks=[Task(**t) for t in tasks_resp.get("tasks", [])],

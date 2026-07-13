@@ -25,8 +25,13 @@ from orquesta_api.services.serves import ServeManager
 class FakeLogExecutor(ExecutorInterface):
     """Executor fake that returns persisted log tail lines by run id."""
 
-    def __init__(self, logs_by_run: dict[str, list[str]] | None = None) -> None:
+    def __init__(
+        self,
+        logs_by_run: dict[str, list[str]] | None = None,
+        failing_run_ids: set[str] | None = None,
+    ) -> None:
         self._logs_by_run = logs_by_run or {}
+        self._failing_run_ids = failing_run_ids or set()
 
     async def start(self, spec: RunSpec, run_id: str = "") -> RunHandle:
         return RunHandle(run_id=run_id)
@@ -44,6 +49,8 @@ class FakeLogExecutor(ExecutorInterface):
         return self._logs(handle, tail)
 
     async def _logs(self, handle: RunHandle, tail: int | None) -> AsyncIterator[str]:
+        if handle.run_id in self._failing_run_ids:
+            raise RuntimeError("log tail unavailable")
         lines = self._logs_by_run.get(handle.run_id or "", [])
         if tail is not None:
             lines = lines[-tail:]
@@ -193,6 +200,87 @@ async def test_attention_ignores_unreachable_serve_and_keeps_run_items(session) 
     assert len(response.items) == 1
     assert response.items[0].kind == AttentionKind.run_failed
     assert response.items[0].ref == "run1"
+
+
+async def test_attention_degrades_one_failed_run_item_without_dropping_others(
+    session, monkeypatch
+) -> None:
+    now = datetime.now(tz=UTC)
+    session.add_all(
+        [
+            ProjectRow(
+                id="proj1",
+                name="Project 1",
+                workspace_path="/workspace/1",
+                state="needs_human",
+                last_run=now,
+            ),
+            ProjectRow(
+                id="proj2",
+                name="Project 2",
+                workspace_path="/workspace/2",
+                state="needs_human",
+                last_run=now,
+            ),
+            RunRow(
+                id="run-good",
+                project_id="proj1",
+                kind=RunKind.run.value,
+                state=RunState.failed.value,
+                executor="local",
+                created_at=now,
+                finished_at=now,
+                error="good failed",
+            ),
+            RunRow(
+                id="run-log-fail",
+                project_id="proj2",
+                kind=RunKind.run.value,
+                state=RunState.failed.value,
+                executor="local",
+                created_at=now,
+                finished_at=now,
+                error="log failed",
+            ),
+        ]
+    )
+    await session.commit()
+
+    serves = ServeManager()
+    serves._ports["proj1"] = 9999
+    serves._processes["proj1"] = FakeAliveProcess()
+    client = _client_for_tasks(
+        [
+            {
+                "id": "task-human",
+                "title": "Fix auth",
+                "status": "needs_human",
+                "attempts": 1,
+                "failure_reason": "needs operator",
+            }
+        ]
+    )
+    service = AttentionService(
+        session,
+        serves,
+        client=client,
+        executor=FakeLogExecutor({"run-good": ["good tail"]}),
+    )
+    original_failed_run_item = service._failed_run_item
+
+    async def fake_failed_run_item(project: ProjectRow, row: RunRow):
+        if row.id == "run-log-fail":
+            raise RuntimeError("failed-run item exploded")
+        return await original_failed_run_item(project, row)
+
+    monkeypatch.setattr(service, "_failed_run_item", fake_failed_run_item)
+
+    response = await service.list()
+
+    details_by_ref = {item.ref: item.detail for item in response.items}
+    assert details_by_ref["run-good"] == "good failed\ngood tail"
+    assert details_by_ref["task-human"] == "needs operator"
+    assert "run-log-fail" not in details_by_ref
 
 
 async def test_attention_ignores_failed_runs_for_non_needs_human_projects(session) -> None:

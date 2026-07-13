@@ -9,7 +9,7 @@ from orquesta_api.meta.models import TeamDefinition
 from orquesta_api.services.config_files import TeamConfigStore
 from orquesta_api.services.skills import (
     SkillDefinition,
-    compose_role_prompt_file,
+    compose_role_prompt_file_async,
     selected_skills,
 )
 
@@ -17,7 +17,7 @@ from orquesta_api.services.skills import (
 class TeamService:
     """Business operations for a project's team.json configuration."""
 
-    def update_with_skills(
+    async def update_with_skills(
         self,
         workspace: Path,
         body: TeamDefinition,
@@ -30,7 +30,7 @@ class TeamService:
         self._validate_skill_ids(merged, catalog)
         updated = store.update(patch)
         for role in updated.roles:
-            compose_role_prompt_file(workspace, role.prompt, role.skills or [], catalog)
+            await compose_role_prompt_file_async(workspace, role.prompt, role.skills or [], catalog)
         return updated
 
     def _validate_skill_ids(self, body: TeamDefinition, catalog: list[SkillDefinition]) -> None:

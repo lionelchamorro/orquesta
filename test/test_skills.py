@@ -14,13 +14,16 @@ from orquesta_api.services.config_files import TeamConfigStore
 from orquesta_api.services.skills import (
     END_MARKER,
     START_MARKER,
+    compose_role_prompt_file_async,
     compose_skill_block,
     load_skill_catalog,
+    reset_skill_catalog_cache,
     rewrite_prompt_skill_block,
 )
 
 
 def test_shipped_skill_catalog_parses_deterministically() -> None:
+    reset_skill_catalog_cache()
     catalog = load_skill_catalog()
 
     assert [skill.id for skill in catalog] == [
@@ -59,6 +62,35 @@ def test_shipped_skill_catalog_parses_deterministically() -> None:
     ]
     assert "hidden assumptions" in catalog[0].body
     assert "never weaken an assertion" in next(s for s in catalog if s.id == "tdd-workflow").body
+
+
+def test_skill_catalog_is_cached_until_reset(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "one.md").write_text(
+        "id: one\nname: One\ndescription: First skill\nsuggested_roles: coder\n\nBody one\n"
+    )
+    calls: list[Path] = []
+    from orquesta_api.services import skills as skills_module
+
+    original_parse = skills_module.parse_skill_file
+
+    def counting_parse(path: Path):
+        calls.append(path)
+        return original_parse(path)
+
+    reset_skill_catalog_cache()
+    monkeypatch.setattr(skills_module, "parse_skill_file", counting_parse)
+
+    first = load_skill_catalog(skills_dir)
+    second = load_skill_catalog(skills_dir)
+    reset_skill_catalog_cache()
+    third = load_skill_catalog(skills_dir)
+
+    assert [skill.id for skill in first] == ["one"]
+    assert [skill.id for skill in second] == ["one"]
+    assert [skill.id for skill in third] == ["one"]
+    assert len(calls) == 2
 
 
 def _make_skills_app() -> FastAPI:
@@ -183,6 +215,38 @@ def test_prompt_skill_block_removal_preserves_surrounding_text() -> None:
     existing = f"alpha\n{block}\nomega\n"
 
     assert rewrite_prompt_skill_block(existing, []) == "alpha\n\nomega\n"
+
+
+async def test_compose_role_prompt_file_async_runs_file_rewrite_in_thread(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[object, tuple[object, ...]]] = []
+    from orquesta_api.services import skills as skills_module
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        calls.append((func, args))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(skills_module.asyncio, "to_thread", fake_to_thread)
+    prompt_path = tmp_path / "prompts" / "coder.md"
+    prompt_path.parent.mkdir()
+    prompt_path.write_text("base\n")
+    catalog = load_skill_catalog()
+
+    await compose_role_prompt_file_async(
+        tmp_path,
+        "prompts/coder.md",
+        ["tdd-workflow"],
+        catalog,
+    )
+
+    assert calls == [
+        (
+            skills_module.compose_role_prompt_file,
+            (tmp_path, "prompts/coder.md", ["tdd-workflow"], catalog),
+        )
+    ]
+    assert "write a failing test first" in prompt_path.read_text()
 
 
 async def test_update_team_composes_role_prompt_and_rejects_unknown_skill(

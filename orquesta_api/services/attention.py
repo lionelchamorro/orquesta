@@ -53,14 +53,16 @@ class AttentionService:
         failed_runs = await self._failed_runs_for_projects(
             [project.id for project in projects if project.state == "needs_human"]
         )
-        for row in failed_runs:
-            project = projects_by_id[row.project_id]
-            run_item = await self._failed_run_item(project, row)
+        async with asyncio.TaskGroup() as tg:
+            failed_run_item_tasks = [
+                tg.create_task(self._safe_failed_run_item(projects_by_id[row.project_id], row))
+                for row in failed_runs
+            ]
+            task_item_tasks = [tg.create_task(self._task_items(project)) for project in projects]
+        for task in failed_run_item_tasks:
+            run_item = task.result()
             if run_item is not None:
                 items.append(run_item)
-
-        async with asyncio.TaskGroup() as tg:
-            task_item_tasks = [tg.create_task(self._task_items(project)) for project in projects]
         for task in task_item_tasks:
             items.extend(task.result())
 
@@ -102,6 +104,17 @@ class AttentionService:
             detail="\n".join(detail_parts),
             ts=_iso(row.finished_at or row.created_at or project.last_run),
         )
+
+    async def _safe_failed_run_item(self, project: ProjectRow, row: RunRow) -> AttentionItem | None:
+        try:
+            return await self._failed_run_item(project, row)
+        except Exception as exc:
+            logger.warning(
+                "Could not build failed-run attention item => run_id=%s error=%s",
+                row.id,
+                exc,
+            )
+            return None
 
     async def _log_tail(self, row: RunRow) -> str:
         lines: list[str] = []
