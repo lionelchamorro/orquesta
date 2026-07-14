@@ -1,6 +1,6 @@
 """Run lifecycle service: launch, stop, inspect, and list runs."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -33,6 +33,12 @@ logger = get_logger(__name__)
 _ACTIVE_RUN_STATES = frozenset(
     {RunState.queued, RunState.starting, RunState.running, RunState.stopping}
 )
+
+# A run that has been in a process state for longer than this without a live
+# executor entry is considered stale (the supervisor task silently died or the
+# API was restarted without cleaning up).  We reconcile these lazily on list()
+# so the UI always reflects reality.
+_RUN_STALE_AFTER: timedelta = timedelta(hours=2)
 
 
 class RunSupervisor:
@@ -366,14 +372,56 @@ class RunSupervisor:
         project_id: str | None = None,
         state: RunState | None = None,
     ) -> list[Run]:
-        """Return runs with optional project_id and state filters."""
+        """Return runs with optional project_id and state filters.
+
+        Reconciles rows that are in a process-active state but whose executor
+        has no live process (i.e. the supervisor task silently died or the API
+        was restarted and the startup reconcile missed them due to a PID that
+        now belongs to an unrelated OS process).  Only rows older than
+        ``_RUN_STALE_AFTER`` are touched to avoid racing with a run that just
+        started.
+        """
         q = select(RunRow)
         if project_id is not None:
             q = q.where(RunRow.project_id == project_id)
         if state is not None:
             q = q.where(RunRow.state == state.value)
         result = await self._session.execute(q)
-        return [_row_to_model(r) for r in result.scalars().all()]
+        rows = list(result.scalars().all())
+
+        now = datetime.now(tz=UTC)
+        stale_cutoff = now - _RUN_STALE_AFTER
+        commit_needed = False
+        for row in rows:
+            if RunState(row.state) not in PROCESS_RUN_STATES:
+                continue
+            started = row.started_at or row.created_at
+            # Skip rows that started recently — they may still be legitimately active.
+            if started is not None and started.replace(tzinfo=UTC) > stale_cutoff:
+                continue
+            live = await self._executor.status(_build_handle(row))
+            if live not in (RunState.succeeded, RunState.failed):
+                continue
+            # Mark the run as failed with a stale annotation.
+            row.state = RunState.failed.value
+            row.error = row.error or "stale: no live process detected at list time"
+            row.exit_code = row.exit_code if row.exit_code is not None else 1
+            row.finished_at = row.finished_at or now
+            project = await self._session.get(ProjectRow, row.project_id)
+            if project is not None and project.state == "running":
+                project.state = "needs_human"
+                project.last_run = project.last_run or now
+            commit_needed = True
+            logger.info(
+                "list(): stale run marked failed => run_id=%s project_id=%s",
+                row.id,
+                row.project_id,
+            )
+
+        if commit_needed:
+            await self._session.commit()
+
+        return [_row_to_model(r) for r in rows]
 
     async def _get_row(self, run_id: str) -> RunRow:
         row = await self._session.get(RunRow, run_id)

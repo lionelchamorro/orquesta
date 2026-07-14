@@ -4,10 +4,11 @@ Steps covered:
   Step 1 — Happy path: launch → _supervise writes succeeded, project.state=idle.
   Step 2 — Failure path: exit 3 → failed, project.state=needs_human.
   Step 3 — Startup reconciliation: orphaned running row → failed + error message.
+  Step 4 — Stale-run TTL: list() reconciles a running row with no live process.
 """
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -462,3 +463,99 @@ async def test_launch_and_finish_publish_lifecycle_events(
         assert finished.event == EventKind.run_finished
         assert finished.project == project
         assert finished.status == RunState.succeeded.value
+
+
+# ---------------------------------------------------------------------------
+# Step 4: Stale-run TTL — list() reconciles a running row with no live process
+# ---------------------------------------------------------------------------
+
+
+async def test_list_reconciles_stale_running_row(db, project: str) -> None:
+    """list() marks a stale running row as failed when the executor has no live process.
+
+    Scenario: a run was started long ago (> _RUN_STALE_AFTER threshold), the
+    supervisor task silently died, and the process is gone.  The next call to
+    list() must detect this and report the run as failed rather than running.
+    """
+    from orquesta_api.services.runs import _RUN_STALE_AFTER
+
+    stale_start = datetime.now(tz=UTC) - _RUN_STALE_AFTER - timedelta(minutes=5)
+    stale_run_id = "stale-run-1"
+
+    async with db() as session:
+        # Seed a project in running state (as if the run is still active).
+        proj_row = await session.get(ProjectRow, project)
+        assert proj_row is not None
+        proj_row.state = "running"
+        session.add(
+            RunRow(
+                id=stale_run_id,
+                project_id=project,
+                kind=RunKind.run.value,
+                state=RunState.running.value,
+                executor="local",
+                pid=99998,  # Not in any executor's _processes dict
+                started_at=stale_start,
+            )
+        )
+        await session.commit()
+
+    # A fresh executor has an empty _processes dict → status() returns failed.
+    executor = LocalExecutor()
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        runs = await svc.list(project_id=project)
+
+    stale = next((r for r in runs if r.id == stale_run_id), None)
+    assert stale is not None, "stale run must appear in the list"
+    assert stale.state == RunState.failed, (
+        f"stale run should be failed, got {stale.state}"
+    )
+    assert stale.error is not None and "stale" in stale.error
+
+    # Project state must also be updated for header/sidebar consistency.
+    async with db() as session:
+        proj = await session.get(ProjectRow, project)
+        assert proj is not None
+        # Running project should have been set to needs_human.
+        assert proj.state in {"needs_human", "idle"}, (
+            f"project state must no longer be 'running', got {proj.state}"
+        )
+
+
+async def test_list_does_not_reconcile_recently_started_run(db, project: str) -> None:
+    """list() leaves a freshly-started running row alone even with no executor entry.
+
+    A run launched within the staleness window is legitimately active; we must
+    not mark it failed just because the executor doesn't know about it yet.
+    """
+    recent_run_id = "recent-run-1"
+
+    async with db() as session:
+        proj_row = await session.get(ProjectRow, project)
+        assert proj_row is not None
+        proj_row.state = "running"
+        session.add(
+            RunRow(
+                id=recent_run_id,
+                project_id=project,
+                kind=RunKind.run.value,
+                state=RunState.running.value,
+                executor="local",
+                pid=99997,
+                # Started just now — well within the staleness window.
+                started_at=datetime.now(tz=UTC),
+            )
+        )
+        await session.commit()
+
+    executor = LocalExecutor()
+    async with db() as session:
+        svc = RunSupervisor(session, executor=executor, session_maker=db)
+        runs = await svc.list(project_id=project)
+
+    recent = next((r for r in runs if r.id == recent_run_id), None)
+    assert recent is not None
+    assert recent.state == RunState.running, (
+        "recently-started run must not be prematurely marked failed"
+    )

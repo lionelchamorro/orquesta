@@ -283,14 +283,15 @@ async def test_attention_degrades_one_failed_run_item_without_dropping_others(
     assert "run-log-fail" not in details_by_ref
 
 
-async def test_attention_ignores_failed_runs_for_non_needs_human_projects(session) -> None:
+async def test_attention_includes_recent_failed_runs_for_idle_projects(session) -> None:
+    """A project that is idle can still have recent failed runs that need attention."""
     now = datetime.now(tz=UTC)
     session.add(
         ProjectRow(
             id="proj1",
             name="Project",
             workspace_path="/workspace",
-            state="idle",
+            state="idle",  # NOT needs_human — should still surface the run
             last_run=now,
         )
     )
@@ -304,6 +305,44 @@ async def test_attention_ignores_failed_runs_for_non_needs_human_projects(sessio
             created_at=now,
             finished_at=now,
             error="failed",
+        )
+    )
+    await session.commit()
+
+    response = await AttentionService(
+        session,
+        ServeManager(),
+        client=_client_for_tasks([]),
+        executor=FakeLogExecutor(),
+    ).list()
+
+    assert len(response.items) == 1
+    assert response.items[0].kind == AttentionKind.run_failed
+    assert response.items[0].ref == "run1"
+
+
+async def test_attention_omits_failed_runs_outside_window(session) -> None:
+    """Failed runs older than _FAILED_RUN_WINDOW_DAYS are excluded from attention."""
+    old_ts = datetime.now(tz=UTC) - timedelta(days=30)
+    session.add(
+        ProjectRow(
+            id="proj1",
+            name="Project",
+            workspace_path="/workspace",
+            state="idle",
+            last_run=old_ts,
+        )
+    )
+    session.add(
+        RunRow(
+            id="run-old",
+            project_id="proj1",
+            kind=RunKind.run.value,
+            state=RunState.failed.value,
+            executor="local",
+            created_at=old_ts,
+            finished_at=old_ts,
+            error="stale failure",
         )
     )
     await session.commit()

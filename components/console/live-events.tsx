@@ -1,9 +1,16 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import type { RunEvent } from "@/lib/types"
+
+// If we haven't heard from the EventSource (no onopen / onmessage) within this
+// many milliseconds, transition to "disconnected" so the UI shows a retry button
+// rather than a perpetual spinner.
+const CONNECT_TIMEOUT_MS = 10_000
 
 function parseRunEvent(data: string): RunEvent | undefined {
   try {
@@ -79,20 +86,27 @@ const borderColor: Record<string, string> = {
   cycle_end: "border-l-run",
 }
 
-type ConnectionState = "idle" | "connecting" | "streaming" | "error"
+export type ConnectionState = "idle" | "connecting" | "streaming" | "error" | "disconnected"
 
-const connectionLabel: Record<ConnectionState, string> = {
+export const connectionLabel: Record<ConnectionState, string> = {
   idle: "idle",
   connecting: "connecting…",
   streaming: "streaming · live",
   error: "connection error · retrying",
+  disconnected: "disconnected",
 }
 
-const connectionDot: Record<ConnectionState, string> = {
+export const connectionDot: Record<ConnectionState, string> = {
   idle: "bg-muted-foreground",
   connecting: "animate-pulse bg-run",
   streaming: "animate-pulse bg-ok",
   error: "bg-err",
+  disconnected: "bg-err",
+}
+
+/** Returns true when the connection state should surface a manual retry button. */
+export function connectionShowsRetry(state: ConnectionState): boolean {
+  return state === "disconnected" || state === "error"
 }
 
 export function LiveEvents({
@@ -108,22 +122,45 @@ export function LiveEvents({
   // (factory OR the background watch daemon) is active, so the panel must not be
   // gated on the project being "running".
   const [esState, setEsState] = useState<Exclude<ConnectionState, "idle">>("connecting")
+  // Incrementing retryKey tears down the old EventSource and creates a fresh one.
+  const [retryKey, setRetryKey] = useState(0)
   const listRef = useRef<HTMLUListElement>(null)
+
+  const retry = useCallback(() => {
+    setEsState("connecting")
+    setRetryKey((k) => k + 1)
+  }, [])
 
   useEffect(() => {
     const es = new EventSource(`/api/control-plane/projects/${projectId}/events`)
-    es.onopen = () => setEsState("streaming")
+
+    // If neither onopen nor onmessage fires within CONNECT_TIMEOUT_MS, the
+    // proxy/backend is not reachable — surface a disconnected state with a
+    // retry button instead of showing "connecting…" forever.
+    const connectTimer = setTimeout(() => {
+      setEsState((prev) => (prev === "connecting" ? "disconnected" : prev))
+    }, CONNECT_TIMEOUT_MS)
+
+    es.onopen = () => {
+      clearTimeout(connectTimer)
+      setEsState("streaming")
+    }
     es.onmessage = (message) => {
+      clearTimeout(connectTimer)
       const event = parseRunEvent(message.data)
       if (!event) return
       setEsState("streaming")
       setEvents((prev) => [...prev, event].slice(-200))
     }
     es.onerror = () => {
+      clearTimeout(connectTimer)
       setEsState("error")
     }
-    return () => es.close()
-  }, [projectId])
+    return () => {
+      clearTimeout(connectTimer)
+      es.close()
+    }
+  }, [projectId, retryKey])
 
   const connection: ConnectionState = esState
 
@@ -140,6 +177,19 @@ export function LiveEvents({
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">
           {connectionLabel[connection]}
         </span>
+        {(connection === "disconnected" || connection === "error") && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 font-mono text-[11px]"
+            onClick={retry}
+            aria-label="Retry SSE connection"
+          >
+            <RefreshCw className="h-3 w-3" />
+            Retry
+          </Button>
+        )}
       </div>
       <ul ref={listRef} className="flex-1 space-y-0.5 overflow-y-auto py-2 font-mono text-xs">
         {events.length === 0 && (

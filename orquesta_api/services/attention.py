@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,11 @@ from orquesta_api.services.run_execution import make_executor
 from orquesta_api.services.serves import ServeManager
 
 logger = get_logger(__name__)
+
+# Include failed runs that finished within this window.  Older failures have
+# usually been acknowledged; surfacing them would create noise on dashboards
+# that have accumulated historical runs.
+_FAILED_RUN_WINDOW_DAYS: int = 7
 
 
 class AttentionService:
@@ -50,8 +55,11 @@ class AttentionService:
         items: list[AttentionItem] = []
         projects_by_id = {project.id: project for project in projects}
 
+        # Include recent failed runs for ALL projects, not only those currently
+        # in needs_human state.  A project may have been reset to idle after a
+        # failed run, but the operator still needs to see the failure.
         failed_runs = await self._failed_runs_for_projects(
-            [project.id for project in projects if project.state == "needs_human"]
+            [project.id for project in projects]
         )
         async with asyncio.TaskGroup() as tg:
             failed_run_item_tasks = [
@@ -72,11 +80,15 @@ class AttentionService:
     async def _failed_runs_for_projects(self, project_ids: Sequence[str]) -> Sequence[RunRow]:
         if not project_ids:
             return []
+        cutoff = datetime.now(tz=UTC) - timedelta(days=_FAILED_RUN_WINDOW_DAYS)
         result = await self._session.execute(
             select(RunRow)
             .where(
                 RunRow.project_id.in_(project_ids),
                 RunRow.state == RunState.failed.value,
+                # Limit to runs that finished (or were created) within the window.
+                # Use coalesce-style: finished_at if set, otherwise created_at.
+                (RunRow.finished_at >= cutoff) | (RunRow.created_at >= cutoff),
             )
             .order_by(
                 RunRow.finished_at.desc().nullslast(),
