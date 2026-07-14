@@ -102,7 +102,7 @@ export function OfficeHud({
         </span>
       )}
 
-      <div className="flex items-center gap-1.5 overflow-x-auto">
+      <div className="flex flex-wrap items-center gap-1.5">
         {roles.map((role) => {
           const identity = roleIdentity(role)
           return (

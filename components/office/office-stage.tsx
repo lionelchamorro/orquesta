@@ -63,14 +63,26 @@ function DeskButton({
         selected ? "border-primary bg-primary/10" : "border-white/10 bg-black/20 hover:bg-black/30",
       )}
     >
+      {/*
+        Layout outer span reserves 48×60 (or 60×75 for hub) in the flex column.
+        The inner span is exactly scale×scale so each box-shadow entry is also
+        scale×scale — not 48×60 — which keeps the bottommost shadow pixel
+        within the outer span's bounds and prevents it from painting over the
+        role label below.
+      */}
       <span
-        className="shrink-0"
-        style={{
-          width: SPR_COLS * scale,
-          height: SPR_ROWS * scale,
-          boxShadow: spriteBoxShadow(identity, scale),
-        }}
-      />
+        className="relative shrink-0"
+        style={{ width: SPR_COLS * scale, height: SPR_ROWS * scale }}
+      >
+        <span
+          className="absolute left-0 top-0"
+          style={{
+            width: scale,
+            height: scale,
+            boxShadow: spriteBoxShadow(identity, scale),
+          }}
+        />
+      </span>
       <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide text-white/80">
         <span
           className={cn("h-1.5 w-1.5 rounded-full", status === "working" && "motion-safe:animate-pulse")}
