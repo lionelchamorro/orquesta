@@ -1,11 +1,12 @@
 """Projects router: CRUD endpoints for the project registry."""
 
+import asyncio
 import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.db.session import get_session
@@ -67,6 +68,25 @@ class ProjectPatch(BaseModel):
     description: str | None = None
 
 
+class AddFeatureRequest(BaseModel):
+    """Request body for POST /projects/{id}/features."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    description: str = ""
+
+
+class AddFeatureResponse(BaseModel):
+    """Response body for POST /projects/{id}/features."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    description: str
+    features_path: str
+
+
 def _row_to_project(row: ProjectRow) -> Project:
     return Project(
         id=row.id,
@@ -84,11 +104,22 @@ def _row_to_project(row: ProjectRow) -> Project:
 
 
 @router.get("")
-async def list_projects(session: SessionDep) -> list[Project]:
-    """Return all registered projects."""
+async def list_projects(session: SessionDep, serves: ServesDep) -> list[Project]:
+    """Return all registered projects with live cost figures from their serves."""
     svc = ProjectService(session)
     rows = await svc.list()
-    return [_row_to_project(r) for r in rows]
+    if not rows:
+        return []
+    agg = Aggregator(serves=serves)
+    # Fetch snapshots in parallel; any individual serve failure yields cost=0.0.
+    snapshots = await asyncio.gather(*[agg.snapshot(r.id) for r in rows], return_exceptions=True)
+    projects: list[Project] = []
+    for row, snapshot in zip(rows, snapshots, strict=True):
+        project = _row_to_project(row)
+        if not isinstance(snapshot, BaseException):
+            project = project.model_copy(update={"cost_usd": snapshot.cost.total_usd})
+        projects.append(project)
+    return projects
 
 
 @router.post("", status_code=201)
@@ -211,3 +242,26 @@ async def rerun_review(
 ) -> Run:
     """Relaunch the most recent pr_review run for this pr_number using its persisted inputs."""
     return await ReviewService(session).rerun_review(project_id, pr_number, executor)
+
+
+@router.post("/{project_id}/features", status_code=201)
+async def add_project_feature(
+    project_id: str,
+    body: AddFeatureRequest,
+    session: SessionDep,
+) -> AddFeatureResponse:
+    """Append a feature to the project's features.md queue file.
+
+    Writes a ``## title`` section to the workspace's ``features.md`` (creating
+    the file if absent). The format matches what orq-lite's
+    ``factory_extract_features`` action expects. No run is launched — the
+    caller must trigger a factory flow separately to process the new entry.
+    """
+    from orquesta_api.services.features import FeatureService
+
+    path = await FeatureService(session).add_feature(project_id, body.title, body.description)
+    return AddFeatureResponse(
+        title=body.title,
+        description=body.description,
+        features_path=str(path),
+    )

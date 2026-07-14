@@ -303,13 +303,15 @@ export function ProjectView({ project }: { project: Project }) {
         </div>
 
         <div className="mt-5">
-          {tab === "Factory" && <FactoryQueue features={project.features} />}
+          {tab === "Factory" && (
+            <FactoryQueue projectId={project.id} initialFeatures={project.features} />
+          )}
           {tab === "Tasks" && <TasksTable tasks={project.tasks} />}
           {tab === "Reviews" && <ReviewsTab projectId={project.id} />}
           {tab === "Runs" && <RunHistory projectId={project.id} />}
           {tab === "Chat" && (
             <div className="h-[60vh] overflow-hidden rounded-xl border border-border bg-card">
-              <GlobalChat compact />
+              <GlobalChat compact scope={{ kind: "project", projectId: project.id }} />
             </div>
           )}
         </div>

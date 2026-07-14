@@ -12,8 +12,9 @@ export function TasksTable({ tasks }: { tasks: Task[] }) {
   if (tasks.length === 0) {
     return (
       <div className="rounded-xl border border-border bg-card p-6 text-center font-mono text-sm text-muted-foreground">
-        No tasks yet — run <span className="text-foreground">orq-lite plan</span> or{" "}
-        <span className="text-foreground">orq-lite factory</span>.
+        No tasks yet. Add a feature from the{" "}
+        <span className="text-foreground">Factory</span> tab or ask the project chat,
+        then launch a factory run to generate tasks.
       </div>
     )
   }

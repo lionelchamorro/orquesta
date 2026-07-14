@@ -1,11 +1,10 @@
 """Chat tool schemas + dispatch: each tool maps 1:1 onto an existing service call.
 
-No tool ever touches a workspace file directly — every mutation goes through
-RunSupervisor.launch() (which shells out to the orq-lite CLI) or
-ProjectService, exactly like the console UI does. append_feature is the
-sharpest instance of that: it does not write features.md itself, it passes
-the feature text as a flow *input* so whichever orq-lite step in the
-project's flows.json is responsible for it performs the actual write.
+All mutations go through the same service layer the REST API uses. In
+particular, ``append_feature`` writes to the project's features.md via
+``FeatureService.add_feature`` — the same path the ``POST
+/projects/{id}/features`` endpoint takes — so chat and the UI always produce
+identical queue entries.
 """
 
 from dataclasses import dataclass
@@ -79,16 +78,21 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "append_feature",
         "description": (
-            "Queue a feature for a project by launching its 'factory' flow with the feature "
-            "description as an input — the flow itself is responsible for recording it."
+            "Add a feature to the project's feature queue (features.md). "
+            "The feature will appear in the Factory tab and be picked up the next time "
+            "the factory flow runs. No run is launched automatically."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string"},
-                "feature_text": {"type": "string"},
+                "title": {"type": "string", "description": "Short feature heading"},
+                "description": {
+                    "type": "string",
+                    "description": "Feature plan or description body (may be empty)",
+                },
             },
-            "required": ["project_id", "feature_text"],
+            "required": ["project_id", "title"],
         },
     },
 ]
@@ -197,12 +201,14 @@ class ToolExecutor:
         )
         return ToolResult(payload={"id": row.id, "state": row.state}, action="done", project=row.id)
 
-    async def _tool_append_feature(self, project_id: str, feature_text: str) -> ToolResult:
-        run = await RunSupervisor(self._session).launch(
-            project_id, kind=RunKind.flow, flow="factory", inputs={"feature": feature_text}
-        )
+    async def _tool_append_feature(
+        self, project_id: str, title: str, description: str = ""
+    ) -> ToolResult:
+        from orquesta_api.services.features import FeatureService
+
+        path = await FeatureService(self._session).add_feature(project_id, title, description)
         return ToolResult(
-            payload={"run_id": run.id, "state": run.state},
-            action="in_progress",
+            payload={"status": "queued", "features_path": str(path), "title": title},
+            action="done",
             project=project_id,
         )

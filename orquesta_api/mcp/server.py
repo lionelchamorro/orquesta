@@ -151,6 +151,23 @@ async def stop_run(run_id: str) -> Any:
     return await _request("POST", f"/runs/{run_id}/stop")
 
 
+@mcp.tool
+async def append_feature(project_id: str, title: str, description: str = "") -> Any:
+    """Add a feature to a project's feature queue (features.md).
+
+    Writes a ``## title`` section to the workspace's ``features.md``, which is
+    the file the factory flow reads when enqueuing work. No run is launched
+    automatically — trigger the factory flow separately to process the entry.
+
+    Args:
+        project_id: Registered project identifier.
+        title: Short feature heading (non-empty).
+        description: Feature plan or description body (may be omitted).
+    """
+    body: dict[str, Any] = {"title": title, "description": description}
+    return await _request("POST", f"/projects/{project_id}/features", json=body)
+
+
 def main() -> None:
     """Serve the MCP tools over streamable HTTP for opencode to connect to."""
     logger.info(
