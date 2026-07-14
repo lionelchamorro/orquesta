@@ -406,3 +406,27 @@ export interface DoctorReport {
   ok: boolean
   checks: DoctorCheck[]
 }
+
+// ---------------------------------------------------------------------------
+// Run artifact browser (local filesystem, not proxied through orq-lite serve)
+// ---------------------------------------------------------------------------
+
+export interface ArtifactEntry {
+  name: string
+  size: number
+  is_dir: boolean
+  path: string // relative to the run root
+}
+
+export interface ArtifactListing {
+  root: string // run_id
+  dir: string // subpath listed (empty == run root)
+  entries: ArtifactEntry[]
+}
+
+export interface ArtifactContent {
+  path: string
+  content: string
+  size: number
+  truncated: boolean
+}

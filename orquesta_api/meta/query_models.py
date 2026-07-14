@@ -150,3 +150,40 @@ class AttemptDiff(BaseModel):
     attempt: int = 0
     artifacts_dir: str = ""
     diff: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Artifacts browser (local filesystem — not proxied through orq-lite serve)
+# ---------------------------------------------------------------------------
+
+
+class ArtifactEntry(BaseModel):
+    """One file or directory entry inside a run's artifact tree."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    size: int
+    is_dir: bool
+    path: str  # relative to the run root
+
+
+class ArtifactListing(BaseModel):
+    """Shallow directory listing for a run artifacts subtree."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    root: str  # run_id
+    dir: str  # subpath listed (empty string == run root)
+    entries: list[ArtifactEntry] = Field(default_factory=list)
+
+
+class ArtifactContent(BaseModel):
+    """Text content of one artifact file, optionally truncated."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    content: str
+    size: int
+    truncated: bool
