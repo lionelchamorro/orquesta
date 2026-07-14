@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import cast
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -14,6 +15,7 @@ from orquesta_api.db.migrations import ensure_schema_current
 from orquesta_api.db.session import SessionLocal, engine
 from orquesta_api.db.tables import ProjectRow
 from orquesta_api.logger import get_logger
+from orquesta_api.routers.attention import router as attention_router
 from orquesta_api.routers.chat import router as chat_router
 from orquesta_api.routers.containers import images_router
 from orquesta_api.routers.containers import router as containers_router
@@ -23,13 +25,16 @@ from orquesta_api.routers.history import router as history_router
 from orquesta_api.routers.projects import router as projects_router
 from orquesta_api.routers.repos import router as repos_router
 from orquesta_api.routers.runs import router as runs_router
+from orquesta_api.routers.skills import router as skills_router
 from orquesta_api.routers.teams import router as teams_router
 from orquesta_api.routers.webhooks import router as webhooks_router
 from orquesta_api.services.correlation import RunCorrelator
 from orquesta_api.services.events import EventIngestManager, get_event_bus
 from orquesta_api.services.repos import CloneTargetError, RunInFlightError, WorkspaceDirtyError
-from orquesta_api.services.runs import RunSupervisor, _make_executor
+from orquesta_api.services.run_execution import make_executor
+from orquesta_api.services.runs import RunSupervisor
 from orquesta_api.services.serves import ServeManager
+from orquesta_api.services.teams import UnknownSkillsError
 
 logger = get_logger(__name__)
 
@@ -40,6 +45,14 @@ class HealthResponse(BaseModel):
     status: str = "ok"
 
 
+async def _unknown_skills_handler(_request: Request, exc: Exception) -> JSONResponse:
+    unknown_skills = cast(UnknownSkillsError, exc)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": {"unknown_skill_ids": unknown_skills.unknown_skill_ids}},
+    )
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await ensure_schema_current(engine)
@@ -48,7 +61,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Reconcile any runs that were active when the API last shut down.
     # Must run before serving requests so stale "running" rows are cleaned up.
     async with SessionLocal() as session:
-        supervisor = RunSupervisor(session, executor=_make_executor())
+        supervisor = RunSupervisor(session, executor=make_executor())
         await supervisor.reconcile()
 
     serves = ServeManager()
@@ -100,6 +113,8 @@ def _register_exception_handlers(app: FastAPI) -> None:
     async def run_in_flight_handler(_request: Request, exc: RunInFlightError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
+    app.add_exception_handler(UnknownSkillsError, _unknown_skills_handler)
+
     @app.exception_handler(RuntimeError)
     async def runtime_error_handler(_request: Request, exc: RuntimeError) -> JSONResponse:
         return JSONResponse(status_code=502, content={"detail": str(exc)})
@@ -125,7 +140,9 @@ def create_app() -> FastAPI:
     app.include_router(teams_router)
     app.include_router(repos_router)
     app.include_router(runs_router)
+    app.include_router(skills_router)
     app.include_router(events_router)
+    app.include_router(attention_router)
     app.include_router(chat_router)
     app.include_router(webhooks_router)
     app.include_router(containers_router)

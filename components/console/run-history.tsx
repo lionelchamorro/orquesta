@@ -4,29 +4,16 @@ import { useEffect, useState } from "react"
 import { ChevronLeft, History } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
+import { fetchJSON } from "@/lib/fetch-json"
+import { fmtDuration } from "@/lib/format"
 import { cn } from "@/lib/utils"
+import { PAGE_SIZE, paginationSlice } from "@/lib/paginate"
 import type { AgentRunRecord, OrqRunSummary, RunEvent } from "@/lib/types"
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
-}
-
-function fmtDuration(seconds?: number | null): string {
-  if (seconds == null) return "—"
-  const m = Math.floor(seconds / 60)
-  const s = Math.round(seconds % 60)
-  return m > 0 ? `${m}m ${s}s` : `${s}s`
-}
-
-async function fetchJSON<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url, { cache: "no-store" })
-    return res.ok ? ((await res.json()) as T) : null
-  } catch {
-    return null
-  }
 }
 
 function RunDetail({ projectId, run, onBack }: { projectId: string; run: OrqRunSummary; onBack: () => void }) {
@@ -144,6 +131,7 @@ export function RunHistory({ projectId }: { projectId: string }) {
   const [runs, setRuns] = useState<OrqRunSummary[] | null>(null)
   const [unavailable, setUnavailable] = useState(false)
   const [selected, setSelected] = useState<OrqRunSummary | null>(null)
+  const [loaded, setLoaded] = useState(PAGE_SIZE)
 
   useEffect(() => {
     let cancelled = false
@@ -176,32 +164,45 @@ export function RunHistory({ projectId }: { projectId: string }) {
     return <RunDetail projectId={projectId} run={selected} onBack={() => setSelected(null)} />
   }
 
+  const allRuns = runs ?? []
+  const { visible: visibleRuns, hasMore } = paginationSlice(allRuns, loaded)
+
   return (
-    <div className="rounded-xl border border-border bg-card">
-      {runs === null && <p className="p-4 font-mono text-xs text-muted-foreground">Loading run history…</p>}
-      {runs?.length === 0 && (
-        <p className="p-4 font-mono text-xs text-muted-foreground">No runs indexed yet for this project.</p>
+    <div className="space-y-3">
+      <div className="rounded-xl border border-border bg-card">
+        {runs === null && <p className="p-4 font-mono text-xs text-muted-foreground">Loading run history…</p>}
+        {runs?.length === 0 && (
+          <p className="p-4 font-mono text-xs text-muted-foreground">No runs indexed yet for this project.</p>
+        )}
+        <ul className="divide-y divide-border/50">
+          {visibleRuns.map((run) => (
+            <li key={run.run_id}>
+              <button
+                onClick={() => setSelected(run)}
+                className="flex w-full flex-wrap items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+              >
+                <StatusBadge status={run.status} />
+                <span className="font-mono text-sm">{run.run_id}</span>
+                <span className="font-mono text-xs text-muted-foreground">
+                  {run.command} {run.args.join(" ")}
+                </span>
+                <span className="ml-auto font-mono text-xs text-muted-foreground">
+                  {run.tasks_done} done{run.tasks_failed > 0 ? ` · ${run.tasks_failed} failed` : ""} ·{" "}
+                  {fmtDuration(run.duration_s)} · <span className="text-warn">${run.cost_usd.toFixed(2)}</span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      {hasMore && (
+        <button
+          onClick={() => setLoaded((n) => n + PAGE_SIZE)}
+          className="w-full rounded-xl border border-border bg-card px-4 py-2.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+        >
+          Load more ({allRuns.length - loaded} remaining)
+        </button>
       )}
-      <ul className="divide-y divide-border/50">
-        {runs?.map((run) => (
-          <li key={run.run_id}>
-            <button
-              onClick={() => setSelected(run)}
-              className="flex w-full flex-wrap items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
-            >
-              <StatusBadge status={run.status} />
-              <span className="font-mono text-sm">{run.run_id}</span>
-              <span className="font-mono text-xs text-muted-foreground">
-                {run.command} {run.args.join(" ")}
-              </span>
-              <span className="ml-auto font-mono text-xs text-muted-foreground">
-                {run.tasks_done} done{run.tasks_failed > 0 ? ` · ${run.tasks_failed} failed` : ""} ·{" "}
-                {fmtDuration(run.duration_s)} · <span className="text-warn">${run.cost_usd.toFixed(2)}</span>
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
     </div>
   )
 }

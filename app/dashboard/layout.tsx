@@ -14,7 +14,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   return (
     <div className="flex min-h-dvh">
       <ConsoleSidebar projects={projects} />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col pt-14 lg:pt-0">
         <ControlPlaneBanner />
         {children}
       </div>

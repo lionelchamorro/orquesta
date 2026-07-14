@@ -5,6 +5,8 @@ import { Copy, ListPlus, Play, Save, Workflow, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
+import { normalizeError } from "@/lib/error-message"
+import { useToast } from "@/lib/toast"
 import { emptyStep, type StepPath } from "@/lib/flow-steps"
 import { pathFromLocator, validateFlowSteps, type FlowStepError } from "@/lib/flow-validate"
 import { FormView } from "@/components/console/flow-editor/form-view"
@@ -21,6 +23,7 @@ export function FlowManager({
   projects: Project[]
   initialProjectId?: string
 }) {
+  const toast = useToast()
   const [flows, setFlows] = useState(initialFlows)
   const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "")
   const [selectedId, setSelectedId] = useState(initialFlows[0]?.id ?? "")
@@ -33,16 +36,17 @@ export function FlowManager({
   async function switchProject(nextProjectId: string) {
     setProjectId(nextProjectId)
     setInvalidPaths([])
-    setMessage("Loading flows...")
+    setMessage("")
     const res = await fetch(`/api/control-plane/projects/${nextProjectId}/flows`, { cache: "no-store" })
     if (!res.ok) {
-      setMessage(`Could not load flows for ${nextProjectId}`)
+      const body = await res.json().catch(() => null)
+      const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+      toast.error(message, detail)
       return
     }
     const next: FlowDefinition[] = await res.json()
     setFlows(next)
     setSelectedId(next[0]?.id ?? "")
-    setMessage("")
   }
 
   function updateSelected(patch: Partial<FlowDefinition>) {
@@ -68,24 +72,24 @@ export function FlowManager({
     setSelectedId(next.id)
     setInvalidPaths([])
     setAdding(false)
-    setMessage("Draft flow created")
+    toast.success("Draft flow created")
     event.currentTarget.reset()
   }
 
   async function saveSelected() {
     if (!selected) return
     if (!projectId) {
-      setMessage("Select a project first — flows are saved per project.")
+      toast.error("Select a project first — flows are saved per project.")
       return
     }
-    // Validación local (espejo del backend): feedback inmediato sin round-trip.
+    // Local validation (mirror of the backend): immediate feedback, no round-trip.
     const localErrors = validateFlowSteps(selected.steps)
     if (localErrors.length > 0) {
       applyStepErrors(localErrors)
       return
     }
     setInvalidPaths([])
-    setMessage("Saving flow...")
+    setMessage("")
     try {
       const res = await fetch(`/api/control-plane/projects/${projectId}/flows/${selected.id}`, {
         method: "PUT",
@@ -93,20 +97,19 @@ export function FlowManager({
         body: JSON.stringify(selected),
       })
       if (res.ok) {
-        setMessage("Saved to flows.json")
+        toast.success("Saved to flows.json")
         return
       }
-      const detail = await res.json().catch(() => null)
-      if (Array.isArray(detail?.detail) && detail.detail.length > 0 && detail.detail.every((d: { step?: string }) => typeof d?.step === "string")) {
-        applyStepErrors(detail.detail as FlowStepError[])
+      const body = await res.json().catch(() => null)
+      if (Array.isArray(body?.detail) && body.detail.length > 0 && body.detail.every((d: { step?: string }) => typeof d?.step === "string")) {
+        applyStepErrors(body.detail as FlowStepError[])
         return
       }
-      const problems = Array.isArray(detail?.detail)
-        ? detail.detail.map((d: { error?: string; msg?: string }) => d.error ?? d.msg ?? JSON.stringify(d)).join("; ")
-        : (detail?.detail ?? `HTTP ${res.status}`)
-      setMessage(`Save failed: ${problems}`)
+      const { message, detail } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+      toast.error(message, detail)
     } catch (err) {
-      setMessage(`Save failed: ${err instanceof Error ? err.message : String(err)}`)
+      const { message, detail } = normalizeError(err)
+      toast.error(message, detail)
     }
   }
 

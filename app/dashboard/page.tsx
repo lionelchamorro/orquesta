@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { ConsoleHeader } from "@/components/console/console-header"
 import { ProjectCard } from "@/components/console/project-card"
 import { GlobalChat } from "@/components/console/global-chat"
+import { NeedsAttention } from "@/components/console/needs-attention"
 import { getProjects } from "@/lib/orq-lite"
 
 export default async function DashboardPage() {
@@ -49,6 +50,8 @@ export default async function DashboardPage() {
               </div>
             ))}
           </div>
+
+          <NeedsAttention />
 
           <div className="mb-3 mt-8 flex items-center justify-between">
             <h2 className="font-mono text-sm font-semibold uppercase tracking-wide text-muted-foreground">

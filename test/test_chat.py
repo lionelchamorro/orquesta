@@ -101,8 +101,8 @@ async def test_launch_run_tool_sets_in_progress_action(
     # is not exposed, so exercise the real path with the fake binary on PATH-equivalent:
     import orquesta_api.services.runs as runs_module
 
-    original = runs_module._make_executor
-    runs_module._make_executor = lambda: LocalExecutor(
+    original = runs_module.make_executor
+    runs_module.make_executor = lambda: LocalExecutor(
         bin_path=fake_bin, log_dir=tmp_path / "run-logs"
     )
     try:
@@ -110,7 +110,7 @@ async def test_launch_run_tool_sets_in_progress_action(
             "launch_run", {"project_id": project_id, "kind": "run", "flow": None, "inputs": {}}
         )
     finally:
-        runs_module._make_executor = original
+        runs_module.make_executor = original
 
     assert result.action == "in_progress"
     assert result.project == project_id

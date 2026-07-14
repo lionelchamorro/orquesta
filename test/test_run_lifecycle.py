@@ -163,8 +163,11 @@ async def test_launch_marks_project_running(
 async def test_watch_launch_does_not_mark_project_running(
     monkeypatch, db, project: str, fake_bin: str, tmp_path: Path
 ) -> None:
-    """A watch daemon is a background supervisor — it must NOT flip the project
-    to running, otherwise the flow launcher stays disabled for its whole life."""
+    """A watch daemon is a background supervisor.
+
+    It must NOT flip the project to running, otherwise the flow launcher stays
+    disabled for its whole life.
+    """
     monkeypatch.setenv("FAKE_SLEEP_S", "10")
     await _enable_watch(db, project)
 
@@ -192,8 +195,11 @@ async def test_watch_launch_does_not_mark_project_running(
 async def test_stop_resets_project_state(
     monkeypatch, db, project: str, fake_bin: str, tmp_path: Path
 ) -> None:
-    """Stopping a run resets project.state — otherwise a stopped foreground run
-    leaves the project stuck 'running' and the launcher disabled forever."""
+    """Stopping a run resets project.state.
+
+    Otherwise a stopped foreground run leaves the project stuck 'running' and
+    the launcher disabled forever.
+    """
     monkeypatch.setenv("FAKE_SLEEP_S", "30")
 
     log_dir = tmp_path / "run-logs"

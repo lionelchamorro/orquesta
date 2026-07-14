@@ -1,8 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
-import { GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar } from "lucide-react"
+import { GitBranch, Folder, GitPullRequest, CircleDot, Gamepad2, Radar, XCircle, RotateCcw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/status-badge"
@@ -12,13 +12,242 @@ import { LiveEvents } from "@/components/console/live-events"
 import { GlobalChat } from "@/components/console/global-chat"
 import { FlowLauncher } from "@/components/console/flow-launcher"
 import { RunHistory } from "@/components/console/run-history"
-import type { Project } from "@/lib/types"
+import { normalizeError } from "@/lib/error-message"
+import { fetchJSON } from "@/lib/fetch-json"
+import { fmtDuration } from "@/lib/format"
+import type { Project, ReviewRun, Run } from "@/lib/types"
 
-const tabs = ["Factory", "Tasks", "Runs", "Chat"] as const
+const tabs = ["Factory", "Tasks", "Reviews", "Runs", "Chat"] as const
 type Tab = (typeof tabs)[number]
+
+function parseTab(value: string | null): Tab {
+  return tabs.find((tab) => tab === value) ?? "Factory"
+}
+
+export function ReviewsList({
+  reviews,
+  rerunning,
+  messages,
+  onRerun,
+}: {
+  reviews: ReviewRun[]
+  rerunning: string | null
+  messages: Record<string, string>
+  onRerun: (review: ReviewRun) => void
+}) {
+  if (reviews.length === 0) {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-xl border border-border bg-card p-8 text-center">
+        <GitPullRequest className="h-5 w-5 text-muted-foreground" />
+        <p className="font-mono text-sm text-muted-foreground">No PR reviews yet.</p>
+        <p className="max-w-md font-mono text-xs text-muted-foreground">
+          Reviews appear here when a PR watcher picks up a pull request, or when you launch a{" "}
+          <span className="font-semibold">pr_review</span> flow manually.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card">
+      <ul className="divide-y divide-border/50">
+        {reviews.map((review) => (
+          <li key={review.run_id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+            <StatusBadge status={review.state} />
+            {review.pr_number != null ? (
+              review.pr_url ? (
+                <a
+                  href={review.pr_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-sm text-primary hover:underline"
+                >
+                  #{review.pr_number}
+                </a>
+              ) : (
+                <span className="font-mono text-sm">#{review.pr_number}</span>
+              )
+            ) : (
+              <span className="font-mono text-sm text-muted-foreground">—</span>
+            )}
+            <span className="font-mono text-xs text-muted-foreground">
+              {fmtDuration(review.duration_s)}
+              {review.cost_usd != null && (
+                <> · <span className="text-warn">${review.cost_usd.toFixed(2)}</span></>
+              )}
+            </span>
+            {messages[review.run_id] && (
+              <span className="font-mono text-xs text-muted-foreground">
+                {messages[review.run_id]}
+              </span>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto font-mono text-xs"
+              disabled={rerunning === review.run_id || review.pr_number == null}
+              onClick={() => onRerun(review)}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Re-run review
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function ReviewsTab({ projectId }: { projectId: string }) {
+  const [reviews, setReviews] = useState<ReviewRun[] | null>(null)
+  const [rerunning, setRerunning] = useState<string | null>(null)
+  const [messages, setMessages] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    fetchJSON<ReviewRun[]>(`/api/control-plane/projects/${projectId}/reviews`).then((data) => {
+      if (!cancelled) setReviews(data ?? [])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
+  async function rerun(review: ReviewRun) {
+    if (review.pr_number == null) return
+    const key = review.run_id
+    setRerunning(key)
+    try {
+      const res = await fetch(
+        `/api/control-plane/projects/${projectId}/reviews/${review.pr_number}/rerun`,
+        { method: "POST" },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        const { message } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+        setMessages((m) => ({ ...m, [key]: `failed: ${message}` }))
+        return
+      }
+      const run = (await res.json()) as Run
+      setMessages((m) => ({ ...m, [key]: `relaunched (${run.state})` }))
+    } catch (err) {
+      const { message } = normalizeError(err)
+      setMessages((m) => ({
+        ...m,
+        [key]: `failed: ${message}`,
+      }))
+    } finally {
+      setRerunning(null)
+    }
+  }
+
+  if (reviews === null) {
+    return <p className="font-mono text-xs text-muted-foreground">Loading reviews…</p>
+  }
+
+  return <ReviewsList reviews={reviews} rerunning={rerunning} messages={messages} onRerun={rerun} />
+}
+
+export async function stopQueuedRun(runId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/control-plane/runs/${runId}/stop`, { method: "POST" })
+    if (res.ok) {
+      return null
+    }
+    const body = await res.json().catch(() => null)
+    const { message } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+    return `cancel failed: ${message}`
+  } catch (err) {
+    const { message } = normalizeError(err)
+    return `cancel failed: ${message}`
+  }
+}
+
+function QueuedRuns({ projectId }: { projectId: string }) {
+  const [runs, setRuns] = useState<Run[] | null>(null)
+  const [cancelling, setCancelling] = useState<string | null>(null)
+  const [cancelError, setCancelError] = useState("")
+
+  useEffect(() => {
+    let cancelled = false
+    fetchJSON<Run[]>(`/api/control-plane/runs?project=${projectId}&state=queued`).then((data) => {
+      if (!cancelled) setRuns(data ?? [])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
+  async function refresh() {
+    const data = await fetchJSON<Run[]>(
+      `/api/control-plane/runs?project=${projectId}&state=queued`,
+    )
+    setRuns(data ?? [])
+  }
+
+  async function cancelRun(runId: string) {
+    setCancelling(runId)
+    setCancelError("")
+    try {
+      const error = await stopQueuedRun(runId)
+      if (error !== null) {
+        setCancelError(error)
+        return
+      }
+      await refresh()
+    } finally {
+      setCancelling(null)
+    }
+  }
+
+  if (runs === null || runs.length === 0) return null
+
+  return (
+    <div className="mt-4 rounded-xl border border-border bg-card">
+      <div className="border-b border-border/50 px-4 py-2 font-mono text-xs text-muted-foreground">
+        Queued runs
+      </div>
+      {cancelError && (
+        <div className="border-b border-border/50 px-4 py-2 font-mono text-xs text-warn">
+          {cancelError}
+        </div>
+      )}
+      <ul className="divide-y divide-border/50">
+        {runs.map((run) => (
+          <li key={run.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+            <StatusBadge status={run.state} />
+            <span className="font-mono text-sm">{run.flow ?? run.kind}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+              {Object.entries(run.inputs ?? {})
+                .map(([key, value]) => `${key}=${value}`)
+                .join(" ")}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="font-mono text-xs"
+              disabled={cancelling === run.id}
+              onClick={() => cancelRun(run.id)}
+            >
+              <XCircle className="h-3.5 w-3.5" />
+              Cancel
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
 export function ProjectView({ project }: { project: Project }) {
   const [tab, setTab] = useState<Tab>("Factory")
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setTab(parseTab(new URLSearchParams(window.location.search).get("tab")))
+    }, 0)
+    return () => window.clearTimeout(timeout)
+  }, [])
 
   return (
     <div className="grid flex-1 xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -53,6 +282,7 @@ export function ProjectView({ project }: { project: Project }) {
           </span>
           <span className="ml-auto text-warn">${project.cost_usd.toFixed(2)} spend</span>
         </div>
+        <QueuedRuns projectId={project.id} />
 
         {/* tabs */}
         <div className="mt-6 flex items-center gap-1 border-b border-border">
@@ -75,6 +305,7 @@ export function ProjectView({ project }: { project: Project }) {
         <div className="mt-5">
           {tab === "Factory" && <FactoryQueue features={project.features} />}
           {tab === "Tasks" && <TasksTable tasks={project.tasks} />}
+          {tab === "Reviews" && <ReviewsTab projectId={project.id} />}
           {tab === "Runs" && <RunHistory projectId={project.id} />}
           {tab === "Chat" && (
             <div className="h-[60vh] overflow-hidden rounded-xl border border-border bg-card">
@@ -115,13 +346,15 @@ export function ProjectActions({ project }: { project: Project }) {
         return
       }
       if (!res.ok) {
-        const detail = await res.json().catch(() => ({}))
-        setWatchMessage(`launch failed: ${detail?.detail ?? `HTTP ${res.status}`}`)
+        const body = await res.json().catch(() => null)
+        const { message } = normalizeError(body ?? new Error(`HTTP ${res.status}`))
+        setWatchMessage(`launch failed: ${message}`)
         return
       }
       setWatchMessage("watch daemon started")
     } catch (err) {
-      setWatchMessage(`launch failed: ${err instanceof Error ? err.message : String(err)}`)
+      const { message } = normalizeError(err)
+      setWatchMessage(`launch failed: ${message}`)
     } finally {
       setLaunchingWatch(false)
     }
@@ -136,7 +369,7 @@ export function ProjectActions({ project }: { project: Project }) {
           Office
         </Link>
       </Button>
-      <FlowLauncher projectId={project.id} disabled={isRunning} />
+      <FlowLauncher projectId={project.id} disabled={false} />
       {watchEnabled && (
         <Button
           size="sm"

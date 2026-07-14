@@ -3,18 +3,26 @@
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.db.session import get_session
 from orquesta_api.db.tables import ProjectRow
-from orquesta_api.meta.models import Feature, Project, ProjectState, ProjectWatch, Task
+from orquesta_api.meta.models import (
+    Feature,
+    Project,
+    ProjectState,
+    ProjectWatch,
+    ReviewRun,
+    Run,
+    Task,
+)
+from orquesta_api.routers.dependencies import ExecutorDep, IngestDep, ServesDep
 from orquesta_api.services.aggregator import Aggregator, CostSnapshot
-from orquesta_api.services.events import EventIngestManager
 from orquesta_api.services.projects import ProjectService
-from orquesta_api.services.serves import ServeManager
+from orquesta_api.services.reviews import ReviewService
 
 # Role names are opaque strings owned by team.json, not a closed enum (orq-lite
 # accepts arbitrary role names and returns null for unknown ones itself,
@@ -24,20 +32,6 @@ _VALID_ROLE_PATTERN = re.compile(r"^[a-z0-9_-]{1,32}$")
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-
-
-def _get_serves(request: Request) -> ServeManager:
-    """FastAPI dependency: read ServeManager from app.state.serves."""
-    return request.app.state.serves  # type: ignore[no-any-return]
-
-
-def _get_ingest(request: Request) -> EventIngestManager:
-    """FastAPI dependency: read EventIngestManager from app.state.ingest."""
-    return request.app.state.ingest  # type: ignore[no-any-return]
-
-
-ServesDep = Annotated[ServeManager, Depends(_get_serves)]
-IngestDep = Annotated[EventIngestManager, Depends(_get_ingest)]
 
 
 class TasksResponse(BaseModel):
@@ -201,3 +195,19 @@ async def get_project_result(
         raise ValueError(f"invalid role {role!r}")
     agg = Aggregator(serves=serves)
     return await agg.get_result(project_id, role)
+
+
+@router.get("/{project_id}/reviews")
+async def get_project_reviews(
+    project_id: str, session: SessionDep, serves: ServesDep
+) -> list[ReviewRun]:
+    """Return pr_review flow runs for the project, newest-first."""
+    return await ReviewService(session).list_reviews(project_id, Aggregator(serves=serves))
+
+
+@router.post("/{project_id}/reviews/{pr_number}/rerun")
+async def rerun_review(
+    project_id: str, pr_number: int, session: SessionDep, executor: ExecutorDep
+) -> Run:
+    """Relaunch the most recent pr_review run for this pr_number using its persisted inputs."""
+    return await ReviewService(session).rerun_review(project_id, pr_number, executor)

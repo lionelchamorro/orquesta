@@ -34,3 +34,10 @@ workspaces/
 .scratch/
 .worktrees/
 .journals/
+team.json
+prompts/
+schemas/
+flows.json
+*.pyc
+*.pyo
+.mypy_cache/

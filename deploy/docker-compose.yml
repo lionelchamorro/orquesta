@@ -47,6 +47,9 @@ services:
       # Anthropic SDK, which needs a real API key — the Claude OAuth/subscription
       # in ~/.claude does NOT work for it). Put it in deploy/.env.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # Shared bearer token used by the web UI and MCP bridge when calling the
+      # loopback control-plane API. Put it in deploy/.env.
+      AUTH_TOKEN: "${AUTH_TOKEN:-}"
     volumes:
       # Host subscription credentials (read-write: tokens refresh in place).
       - ~/.claude:/home/ubuntu/.claude
