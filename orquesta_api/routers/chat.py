@@ -4,7 +4,7 @@ from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orquesta_api.config import settings
@@ -41,8 +41,14 @@ def _make_chat_model() -> ChatModel:
 class ChatRequest(BaseModel):
     """Request body for POST /chat."""
 
+    model_config = ConfigDict(extra="forbid")
+
     message: str
     conversation_id: str = DEFAULT_CONVERSATION_ID
+    # Optional project scope. When provided the system prompt is extended with
+    # the active project's id so the assistant treats it as the default target
+    # without requiring the user to name it on every turn.
+    project_id: str | None = None
 
 
 @router.post("")
@@ -51,7 +57,8 @@ async def post_chat(body: ChatRequest, session: SessionDep, serves: ServesDep) -
     tools = ToolExecutor(session, serves)
     service = ChatService(session, tools, _make_chat_model())
     return StreamingResponse(
-        service.send(body.message, body.conversation_id), media_type="text/event-stream"
+        service.send(body.message, body.conversation_id, body.project_id),
+        media_type="text/event-stream",
     )
 
 

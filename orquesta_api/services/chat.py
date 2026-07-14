@@ -25,12 +25,29 @@ logger = get_logger(__name__)
 DEFAULT_CONVERSATION_ID = "default"
 MAX_TOOL_ROUNDS = 6
 
-SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_BASE = (
     "You are the orquesta admin assistant, embedded in a multi-project control "
     "plane for the orq-lite delivery engine. Use the tools to look up real state "
     "before answering — never fabricate project status, run results, or ids. "
     "Ask a clarifying question when the target project is ambiguous."
 )
+
+
+def build_system_prompt(project_id: str | None = None) -> str:
+    """Return the system prompt, optionally scoped to an active project.
+
+    When ``project_id`` is provided the prompt is extended with a context
+    line that tells the assistant which project is currently in scope so the
+    user does not need to name it on every message.
+    """
+    if project_id:
+        return (
+            f"{_SYSTEM_PROMPT_BASE}\n\n"
+            f"Active project context: {project_id}. "
+            "Prefer this project when the user's request is project-specific "
+            "and no other project is explicitly named."
+        )
+    return _SYSTEM_PROMPT_BASE
 
 
 @dataclass
@@ -114,9 +131,17 @@ class ChatService:
         return await get_history(self._session, conversation_id)
 
     async def send(
-        self, user_text: str, conversation_id: str = DEFAULT_CONVERSATION_ID
+        self,
+        user_text: str,
+        conversation_id: str = DEFAULT_CONVERSATION_ID,
+        project_id: str | None = None,
     ) -> AsyncIterator[str]:
-        """Yield SSE-formatted event strings for one chat turn."""
+        """Yield SSE-formatted event strings for one chat turn.
+
+        ``project_id`` scopes the system prompt to a specific project so the
+        assistant does not ask for clarification when the active project is
+        already known from the chat context.
+        """
         await self._ensure_conversation(conversation_id)
         await self._persist(conversation_id, role="user", content=user_text)
 
@@ -125,13 +150,14 @@ class ChatService:
             for row in await self.history(conversation_id)
         ]
 
+        system_prompt = build_system_prompt(project_id)
         assistant_text = ""
         action: str | None = None
-        project: str | None = None
+        project: str | None = project_id
 
         for _round in range(MAX_TOOL_ROUNDS):
             tool_uses: list[ToolUse] = []
-            async for event in self._model.stream_turn(SYSTEM_PROMPT, messages, TOOL_SCHEMAS):
+            async for event in self._model.stream_turn(system_prompt, messages, TOOL_SCHEMAS):
                 if isinstance(event, TextDelta):
                     assistant_text += event.text
                     yield _sse({"type": "text", "text": event.text})

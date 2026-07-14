@@ -9,19 +9,19 @@ import { Button } from "@/components/ui/button"
 import { useSystemStatus } from "@/lib/use-system-status"
 import { BackendBanner } from "@/components/console/system-status"
 import { applyPartUpdate, localUserTurn, turnsFromHistory, type ChatPart, type ChatTurn } from "@/lib/chat-parts"
-
-const suggestions = [
-  "What projects need attention?",
-  "List my projects",
-  "Enable the PR watcher on prm",
-  "Launch factory_fast on prm",
-]
+import {
+  GLOBAL_SCOPE,
+  projectContextHint,
+  scopeLabel,
+  scopeSuggestions,
+  sessionStorageKey,
+  type ChatScope,
+} from "@/lib/chat-scope"
 
 // El browser habla con el opencode loopback a través del proxy same-origin
 // /opencode (app/opencode/[...path]/route.ts). El agente `orquesta`
 // (deploy/opencode.json) opera el control plane vía sus tools MCP.
 const AGENT = "orquesta"
-const SESSION_KEY = "orquesta.chat.session"
 
 function ToolChip({ part }: { part: Extract<ChatPart, { kind: "tool" }> }) {
   const icon =
@@ -45,7 +45,13 @@ function ToolChip({ part }: { part: Extract<ChatPart, { kind: "tool" }> }) {
   )
 }
 
-export function GlobalChat({ compact = false }: { compact?: boolean }) {
+export function GlobalChat({
+  compact = false,
+  scope = GLOBAL_SCOPE,
+}: {
+  compact?: boolean
+  scope?: ChatScope
+}) {
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
@@ -60,6 +66,11 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
   // aparte para poder distinguir los parts del usuario (que no se re-renderan,
   // ver applyPartUpdate) de los del assistant.
   const rolesRef = useRef(new Map<string, "user" | "assistant">())
+
+  // Derive the localStorage key and label from the current scope.
+  const storageKey = sessionStorageKey(scope)
+  const label = scopeLabel(scope)
+  const suggestions = scopeSuggestions(scope)
 
   function client(): OpencodeClient {
     if (!clientRef.current) clientRef.current = createOpencodeClient({ baseUrl: "/opencode" })
@@ -77,12 +88,17 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
   // Al esperar el restore antes de arrancar el listen, cualquier delta que
   // nos perdamos en la ventana del fetch se autocorrige: cada
   // message.part.updated trae el estado completo del part.
+  //
+  // NOTE: storageKey is used inside this effect but we do NOT include it in
+  // the dependency array so the effect runs only once per mount — the same
+  // pattern as the previous SESSION_KEY constant. Switching scope should
+  // unmount/remount the component (e.g. by changing the project tab).
   useEffect(() => {
     let active = true
     let stream: AsyncGenerator<unknown> | null = null
 
     async function start() {
-      const stored = localStorage.getItem(SESSION_KEY)
+      const stored = localStorage.getItem(storageKey)
       if (stored) {
         sessionRef.current = stored
         try {
@@ -90,7 +106,7 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
           if (res.error) {
             // Respuesta definitiva del server: la sesión ya no existe.
             sessionRef.current = null
-            localStorage.removeItem(SESSION_KEY)
+            localStorage.removeItem(storageKey)
           } else if (active && res.data) {
             const history = res.data as Array<{ info: { id: string; role: string }; parts: Part[] }>
             for (const entry of history) {
@@ -146,6 +162,7 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
       active = false
       void stream?.return?.(undefined)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function ensureSession(): Promise<string> {
@@ -154,13 +171,13 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
     const id = (created.data as { id?: string } | undefined)?.id
     if (!id) throw new Error("could not create an opencode session")
     sessionRef.current = id
-    localStorage.setItem(SESSION_KEY, id)
+    localStorage.setItem(storageKey, id)
     return id
   }
 
   function resetConversation() {
     sessionRef.current = null
-    localStorage.removeItem(SESSION_KEY)
+    localStorage.removeItem(storageKey)
     setTurns([])
     setSendError(null)
     rolesRef.current.clear()
@@ -169,16 +186,28 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
   async function send(text: string) {
     const content = text.trim()
     if (!content || sending || opencodeDown) return
+    // Show the user's original text in the UI before any context injection.
     setTurns((prev) => [...prev, localUserTurn(uid(), content)])
     setInput("")
     setSending(true)
     setSendError(null)
 
     try {
+      // Capture whether this send will create a new session so we know
+      // whether to inject the project context hint.
+      const isNewSession = sessionRef.current === null
       const sessionID = await ensureSession()
+
+      // For project-scoped chats: on the very first message of a new session,
+      // prepend a context hint so the orquesta agent knows the active project
+      // without the user having to name it. The hint is NOT shown in the UI
+      // bubble — the UI already rendered `localUserTurn(content)` above.
+      const contextHint = isNewSession ? projectContextHint(scope) : null
+      const textToSend = contextHint ? `${contextHint}\n\n${content}` : content
+
       const result = await client().session.prompt({
         path: { id: sessionID },
-        body: { agent: AGENT, parts: [{ type: "text", text: content }] },
+        body: { agent: AGENT, parts: [{ type: "text", text: textToSend }] },
       })
       if (result.error) throw new Error(JSON.stringify(result.error))
       // Reconciliación final (idempotente): si el SSE se perdió algo, los
@@ -197,12 +226,17 @@ export function GlobalChat({ compact = false }: { compact?: boolean }) {
     }
   }
 
+  // Show the header when:
+  // - not compact (global chat page and overview panel), OR
+  // - project scope (always show scope label in the project tab)
+  const showHeader = !compact || scope.kind === "project"
+
   return (
     <div className="flex h-full flex-col">
-      {!compact && (
+      {showHeader && (
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <Sparkles className="h-4 w-4 text-primary" />
-          <span className="font-mono text-sm font-semibold">Orquesta agent</span>
+          <span className="font-mono text-sm font-semibold">{label}</span>
           <Button size="sm" variant="ghost" className="ml-auto font-mono text-[11px] text-muted-foreground" onClick={resetConversation}>
             <Plus className="h-3.5 w-3.5" /> new conversation
           </Button>

@@ -10,7 +10,14 @@ from pathlib import Path
 import pytest
 
 from orquesta_api.db.tables import ProjectRow
-from orquesta_api.services.chat import ChatService, Stop, TextDelta, ToolUse, get_history
+from orquesta_api.services.chat import (
+    ChatService,
+    Stop,
+    TextDelta,
+    ToolUse,
+    build_system_prompt,
+    get_history,
+)
 from orquesta_api.services.chat_tools import ToolExecutor
 from orquesta_api.services.serves import ServeManager
 
@@ -128,3 +135,119 @@ async def test_unknown_tool_returns_error_payload_not_exception(session) -> None
     tools = ToolExecutor(session, ServeManager())
     result = await tools.execute("delete_everything", {})
     assert "error" in result.payload
+
+
+# ---------------------------------------------------------------------------
+# Scoped conversations: project chat and global chat persist independently
+# ---------------------------------------------------------------------------
+
+
+async def test_project_and_global_conversations_are_isolated(session) -> None:
+    """Messages sent to project:prm and global must not appear in each other's history."""
+    model = FakeChatModel(
+        [
+            [TextDelta("Global reply."), Stop(stop_reason="end_turn")],
+            [TextDelta("Project reply."), Stop(stop_reason="end_turn")],
+        ]
+    )
+    tools = ToolExecutor(session, ServeManager())
+    service = ChatService(session, tools, model)
+
+    # One turn in the global conversation.
+    _ = [e async for e in service.send("global question", conversation_id="global")]
+    # One turn in the project-scoped conversation.
+    _ = [e async for e in service.send("project question", conversation_id="project:prm")]
+
+    global_history = await get_history(session, "global")
+    project_history = await get_history(session, "project:prm")
+
+    # Each conversation has exactly its own two messages (user + assistant).
+    assert [h.role for h in global_history] == ["user", "assistant"]
+    assert [h.role for h in project_history] == ["user", "assistant"]
+
+    assert global_history[0].content == "global question"
+    assert project_history[0].content == "project question"
+    assert global_history[1].content == "Global reply."
+    assert project_history[1].content == "Project reply."
+
+    # Cross-contamination check: the global conversation must not contain
+    # messages from the project scope and vice versa.
+    global_texts = {h.content for h in global_history}
+    project_texts = {h.content for h in project_history}
+    assert "project question" not in global_texts
+    assert "global question" not in project_texts
+
+
+async def test_project_scoped_send_sets_project_field_on_first_message(session) -> None:
+    """The persisted assistant message for a project-scoped send tracks the project."""
+    model = FakeChatModel([[TextDelta("Done."), Stop(stop_reason="end_turn")]])
+    tools = ToolExecutor(session, ServeManager())
+    service = ChatService(session, tools, model)
+
+    _ = [
+        e
+        async for e in service.send(
+            "do something", conversation_id="project:atlas", project_id="atlas"
+        )
+    ]
+
+    history = await get_history(session, "project:atlas")
+    assistant_msg = next(h for h in history if h.role == "assistant")
+    assert assistant_msg.project == "atlas"
+
+
+# ---------------------------------------------------------------------------
+# build_system_prompt: project context injection
+# ---------------------------------------------------------------------------
+
+
+def test_build_system_prompt_without_project_id() -> None:
+    prompt = build_system_prompt()
+    assert "orquesta" in prompt.lower()
+    # No project context line when project_id is absent.
+    assert "Active project" not in prompt
+
+
+def test_build_system_prompt_with_project_id_includes_context() -> None:
+    prompt = build_system_prompt("prm")
+    assert "prm" in prompt
+    assert "Active project" in prompt
+
+
+def test_build_system_prompt_different_projects_produce_different_prompts() -> None:
+    prompt_a = build_system_prompt("alpha")
+    prompt_b = build_system_prompt("beta")
+    assert prompt_a != prompt_b
+    assert "alpha" in prompt_a
+    assert "beta" in prompt_b
+    assert "alpha" not in prompt_b
+    assert "beta" not in prompt_a
+
+
+# ---------------------------------------------------------------------------
+# ChatRequest schema: project_id field is accepted and rejects extra fields
+# ---------------------------------------------------------------------------
+
+
+def test_chat_request_accepts_project_id() -> None:
+    from orquesta_api.routers.chat import ChatRequest
+
+    req = ChatRequest(message="hello", conversation_id="project:prm", project_id="prm")
+    assert req.project_id == "prm"
+    assert req.conversation_id == "project:prm"
+
+
+def test_chat_request_project_id_defaults_to_none() -> None:
+    from orquesta_api.routers.chat import ChatRequest
+
+    req = ChatRequest(message="hello")
+    assert req.project_id is None
+
+
+def test_chat_request_rejects_extra_fields() -> None:
+    from pydantic import ValidationError
+
+    from orquesta_api.routers.chat import ChatRequest
+
+    with pytest.raises(ValidationError):
+        ChatRequest(message="hi", unknown_field="bad")
