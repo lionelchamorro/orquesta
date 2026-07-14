@@ -31,12 +31,16 @@ export function FlowManager({
   const [message, setMessage] = useState("")
   const [tab, setTab] = useState<"graph" | "form" | "json">("graph")
   const [invalidPaths, setInvalidPaths] = useState<StepPath[]>([])
+  // dirty is true once any field of the selected flow has been edited since the
+  // last successful save or flow switch. Used to show the unsaved-changes dot.
+  const [dirty, setDirty] = useState(false)
   const selected = flows.find((flow) => flow.id === selectedId) ?? flows[0]
 
   async function switchProject(nextProjectId: string) {
     setProjectId(nextProjectId)
     setInvalidPaths([])
     setMessage("")
+    setDirty(false)
     const res = await fetch(`/api/control-plane/projects/${nextProjectId}/flows`, { cache: "no-store" })
     if (!res.ok) {
       const body = await res.json().catch(() => null)
@@ -52,6 +56,7 @@ export function FlowManager({
   function updateSelected(patch: Partial<FlowDefinition>) {
     if (!selected) return
     setFlows((prev) => prev.map((flow) => (flow.id === selected.id ? { ...flow, ...patch } : flow)))
+    setDirty(true)
   }
 
   function addFlow(event: FormEvent<HTMLFormElement>) {
@@ -98,6 +103,7 @@ export function FlowManager({
       })
       if (res.ok) {
         toast.success("Saved to flows.json")
+        setDirty(false)
         return
       }
       const body = await res.json().catch(() => null)
@@ -155,6 +161,7 @@ export function FlowManager({
                 onClick={() => {
                   setSelectedId(flow.id)
                   setInvalidPaths([])
+                  setDirty(false)
                 }}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors",
@@ -210,8 +217,15 @@ export function FlowManager({
               <Button size="sm" variant="outline" className="font-mono text-xs" title="Copy CLI command" onClick={() => navigator.clipboard?.writeText(selected.entrypoint)}>
                 <Copy />CLI
               </Button>
-              <Button size="sm" className="font-mono text-xs" onClick={saveSelected}>
-                <Save />Save
+              <Button size="sm" className="relative font-mono text-xs" onClick={saveSelected}>
+                <Save />
+                Save
+                {dirty && (
+                  <span
+                    className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 rounded-full bg-amber-400"
+                    aria-label="unsaved changes"
+                  />
+                )}
               </Button>
             </div>
           </div>
@@ -255,10 +269,18 @@ export function FlowManager({
           setInvalidPaths([])
           updateSelected({ steps })
         }} />}
-        {tab === "graph" && <GraphView steps={selected.steps} onChange={(steps) => {
-          setInvalidPaths([])
-          updateSelected({ steps })
-        }} invalidPaths={invalidPaths} />}
+        {tab === "graph" && (
+          <GraphView
+            key={selected.id}
+            steps={selected.steps}
+            flowName={selected.id}
+            onChange={(steps) => {
+              setInvalidPaths([])
+              updateSelected({ steps })
+            }}
+            invalidPaths={invalidPaths}
+          />
+        )}
         {tab === "json" && (
           <JsonView
             flow={selected}

@@ -1,15 +1,26 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { ReactFlow, Background, Controls, type Node, type Edge, type NodeProps } from "@xyflow/react"
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  type Node,
+  type Edge,
+  type NodeProps,
+} from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { ArrowDown, ArrowUp, CornerDownRight, ListPlus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { FlowStep } from "@/lib/types"
 import { buildFlowGraph, nodeId, stepSummary, type FlowGraphNode } from "@/lib/flow-graph"
+import { breadcrumbText } from "@/lib/flow-breadcrumb"
 import { appendToBody, emptyStep, getStepAt, insertStepAt, moveStep, removeStepAt, updateStepAt, type StepPath } from "@/lib/flow-steps"
 import { StepFields } from "./step-fields"
+
+const FIT_OPTS = { padding: 0.15, duration: 300 } as const
 
 const TYPE_COLORS: Record<string, string> = {
   command: "border-sky-500/50",
@@ -47,10 +58,12 @@ export function GraphView({
   steps,
   onChange,
   invalidPaths,
+  flowName,
 }: {
   steps: FlowStep[]
   onChange: (steps: FlowStep[]) => void
   invalidPaths: StepPath[]
+  flowName?: string
 }) {
   const [selectedPath, setSelectedPath] = useState<StepPath | null>(null)
   const selectedStep = selectedPath ? getStepAt(steps, selectedPath) : undefined
@@ -80,6 +93,10 @@ export function GraphView({
 
   const isContainer = selectedStep && (selectedStep.type === "loop" || selectedStep.type === "retry_until")
 
+  // Human-readable ancestry path, e.g. "factory › loop {tasks} as feature › agent coder"
+  const breadcrumb = selectedPath ? breadcrumbText(steps, selectedPath, flowName) : null
+  const indexLabel = selectedPath ? `step ${selectedPath.map((i) => i + 1).join(".")}` : null
+
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
       <div className="h-[560px] rounded-xl border border-border bg-card">
@@ -89,13 +106,19 @@ export function GraphView({
           nodeTypes={nodeTypes}
           onNodeClick={(_, node) => setSelectedPath(node.data.graph.path)}
           onPaneClick={() => setSelectedPath(null)}
+          onInit={(instance) => {
+            // Defer one frame so the container dimensions are measured first.
+            setTimeout(() => instance.fitView(FIT_OPTS), 50)
+          }}
           fitView
+          fitViewOptions={FIT_OPTS}
           nodesDraggable={false}
           nodesConnectable={false}
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={16} />
           <Controls showInteractive={false} />
+          <MiniMap zoomable pannable className="rounded-lg border border-border" />
         </ReactFlow>
       </div>
 
@@ -106,11 +129,18 @@ export function GraphView({
 
         {selectedPath && selectedStep ? (
           <div className="space-y-4 rounded-xl border border-border bg-card p-4">
-            <div className="flex items-center justify-between">
-              <p className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
-                step {selectedPath.map((i) => i + 1).join(".")}
-              </p>
-              <div className="flex items-center gap-1">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                {breadcrumb && (
+                  <p className="truncate font-mono text-xs font-medium" title={breadcrumb}>
+                    {breadcrumb}
+                  </p>
+                )}
+                {indexLabel && (
+                  <p className="font-mono text-[10px] text-muted-foreground/70">{indexLabel}</p>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
                 <Button
                   size="icon-xs"
                   variant="ghost"
