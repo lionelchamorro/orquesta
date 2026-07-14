@@ -33,15 +33,11 @@ def _make_mock_aggregator_class(costs: dict[str, float]) -> type:
 
     def handler(request: httpx.Request) -> httpx.Response:
         port = request.url.port
-        project_id = next(
-            (pid for pid, p in port_by_project.items() if p == port), None
-        )
+        project_id = next((pid for pid, p in port_by_project.items() if p == port), None)
         if project_id is None:
             return httpx.Response(404)
         if request.url.path == "/api/cost":
-            return httpx.Response(
-                200, json={"available": True, "total_usd": costs[project_id]}
-            )
+            return httpx.Response(200, json={"available": True, "total_usd": costs[project_id]})
         if request.url.path in ("/api/tasks", "/api/factory"):
             return httpx.Response(200, json={"tasks": [], "features": []})
         return httpx.Response(404)

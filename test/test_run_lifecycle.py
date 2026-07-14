@@ -508,9 +508,7 @@ async def test_list_reconciles_stale_running_row(db, project: str) -> None:
 
     stale = next((r for r in runs if r.id == stale_run_id), None)
     assert stale is not None, "stale run must appear in the list"
-    assert stale.state == RunState.failed, (
-        f"stale run should be failed, got {stale.state}"
-    )
+    assert stale.state == RunState.failed, f"stale run should be failed, got {stale.state}"
     assert stale.error is not None and "stale" in stale.error
 
     # Project state must also be updated for header/sidebar consistency.

@@ -58,9 +58,7 @@ class AttentionService:
         # Include recent failed runs for ALL projects, not only those currently
         # in needs_human state.  A project may have been reset to idle after a
         # failed run, but the operator still needs to see the failure.
-        failed_runs = await self._failed_runs_for_projects(
-            [project.id for project in projects]
-        )
+        failed_runs = await self._failed_runs_for_projects([project.id for project in projects])
         async with asyncio.TaskGroup() as tg:
             failed_run_item_tasks = [
                 tg.create_task(self._safe_failed_run_item(projects_by_id[row.project_id], row))

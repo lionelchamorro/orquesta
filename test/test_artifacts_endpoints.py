@@ -166,16 +166,12 @@ async def test_project_not_found_returns_404(client: httpx.AsyncClient) -> None:
 
 
 async def test_project_without_workspace_returns_400(client: httpx.AsyncClient) -> None:
-    resp = await client.get(
-        f"/projects/proj-no-ws/history/runs/{RUN_ID}/artifacts"
-    )
+    resp = await client.get(f"/projects/proj-no-ws/history/runs/{RUN_ID}/artifacts")
     assert resp.status_code == 400
 
 
 async def test_missing_run_dir_returns_404(client: httpx.AsyncClient) -> None:
-    resp = await client.get(
-        "/projects/proj1/history/runs/r99999999T000000Z-none/artifacts"
-    )
+    resp = await client.get("/projects/proj1/history/runs/r99999999T000000Z-none/artifacts")
     assert resp.status_code == 404
 
 

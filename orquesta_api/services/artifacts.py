@@ -83,9 +83,7 @@ class ArtifactsService:
         # Reject absolute paths immediately — they are unambiguously wrong and
         # should not be silently relativised, as that could mask intent.
         if subpath.startswith("/"):
-            raise PathTraversalError(
-                f"Absolute paths are not permitted; got '{subpath}'"
-            )
+            raise PathTraversalError(f"Absolute paths are not permitted; got '{subpath}'")
 
         # Strip any remaining leading slashes (defensive, after the check above).
         stripped = subpath.lstrip("/")
