@@ -76,7 +76,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # Newer pnpm moved `pnpm.overrides` out of package.json and rejects the frozen
 # install with ERR_PNPM_LOCKFILE_CONFIG_MISMATCH.
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
-COPY package.json pnpm-lock.yaml ./
+# pnpm-workspace.yaml carries the dependency overrides recorded in the
+# lockfile; without it the frozen install fails with a config mismatch.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build
