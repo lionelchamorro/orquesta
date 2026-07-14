@@ -147,3 +147,123 @@ if existing.scalars().first() is not None:
 
 **Tests to add:**
 - Migration `upgrade` (and `downgrade`) against a DB seeded with duplicate queued rows → upgrade collapses duplicates and builds the index without error.
+
+---
+
+## Run detail surfaces no failure information for errored runs
+
+**Failure scenario:** A `factory_fast` run ends in `error` after spending $1.97 and 120.6k input tokens. The run detail (`components/console/run-history.tsx`) shows only an agent-runs table and a 3-event timeline (`run_start` → `agent_run` → `run_end error`). No error message, no agent transcript, no last output, no exit code is displayed anywhere — the operator cannot diagnose the failure from the UI. The `artifacts` column truncates the path (`.orquestalite/runs/r20260…`) and is not a link, so the one pointer to the real logs is cut off exactly where it becomes useful.
+
+**Fix:** (1) Surface the failure reason on the run detail header and as a subtitle/tooltip on errored list rows — plumb the error message/exit code from the control plane into `RunDetail`/`RunEvent` if missing. (2) Make artifacts navigable: render the full path and add an API endpoint to list/read files under `artifacts_dir` so the UI can show per-agent logs/transcripts. (3) Expand the timeline per flow step: step name, input/output summary, duration, cost — not just start/end events.
+
+**Tests to add:**
+- Run detail for an errored run renders the error message and exit code.
+- Artifacts listing endpoint returns files under the run's `artifacts_dir` and rejects path traversal.
+- Errored row in the runs list shows a failure summary without opening the detail.
+
+---
+
+## Stale `running` runs never reconcile in the UI; header and sidebar disagree
+
+**Failure scenario:** A run from 10 days ago still shows `running` in the runs list while the project header shows `idle` and the sidebar shows `0 active runs`. Nothing marks abandoned runs as stale, and the three state sources render contradictory values from the same screen.
+
+**Fix:** Watchdog (server-side reconcile or a TTL check at read time) that transitions runs with no live process/heartbeat to `stale`/`error`. Derive header, sidebar, and list state from the same source.
+
+**Tests to add:**
+- A `running` row whose process is gone is reported as stale/terminal after reconcile.
+- Project state, active-run count, and list badges agree for the same fixture.
+
+---
+
+## Runs list rows are indistinguishable — run ID is the primary label
+
+**Failure scenario:** Every row leads with an opaque ID (`r20260709T005846Z-e90d`), all rows show `0 done`, and 6 of 7 errored runs look identical. The operator cannot tell runs apart without opening each one.
+
+**Fix:** Lead with flow name + relative time (`factory_fast · 4d ago`); demote the ID to secondary/copyable text. Show failure summary on errored rows and tasks done/total only when meaningful.
+
+**Tests to add:**
+- Row renders flow + relative timestamp as primary text and the ID as secondary.
+
+---
+
+## Teams page renders every role fully expanded — ~9,900px of scroll to reach team.json
+
+**Failure scenario:** `/dashboard/team` (`components/console/team-manager.tsx`) renders all agents and all roles as fully-expanded cards in two unbalanced columns. Each role repeats the identical 4-skill checkbox block with full descriptions (~300px × ~15 roles). Role inputs (agent list, prompt path, token budget) have no labels. The raw `team.json` viewer sits at the very bottom of a 9,875px page.
+
+**Fix:** Master-detail layout: compact roster list (agents + roles) on the left, one entity edited at a time on the right. Skills as compact chips/multi-select with description tooltips. Label every field. Move the JSON view to a `Form / JSON` tab pair, mirroring the existing Flows `Graph / Form / JSON` pattern.
+
+**Tests to add:**
+- Selecting a role shows only that role's editor; others are not mounted.
+- Every role/agent input has an accessible label.
+- JSON tab renders the current roster without scrolling past editors.
+
+---
+
+## Project chat is the unscoped global chat component
+
+**Failure scenario:** The `Chat` tab in `/projects/prm` renders the same `global-chat.tsx` component as `/dashboard/chat`: identical "Orquesta agent" header, identical global suggestion chips ("What projects need attention?", "List my projects"), shared conversation. A task-injection message sent from the project tab is ambiguous about which project it targets. The Overview embeds the same panel a third time.
+
+**Fix:** Per-project conversations (scope-keyed conversation IDs). Header shows the scope ("Chat · prm"). Project-scoped suggestions ("Run factory on prm", "Show last run"). The agent receives the active project as context so injected commands are unambiguous. Global chat remains only for cross-project operations.
+
+**Tests to add:**
+- Project chat and global chat persist to different conversations.
+- Agent request payload from a project chat includes the project scope.
+
+---
+
+## No UI or chat affordance to enqueue features/tasks
+
+**Failure scenario:** The Factory tab empty state says "Define a feature to enqueue work" with no way to define one; the Tasks tab empty state points to the CLI (`orq-lite plan`). The only paths to enqueue work are editing `features.md` by hand or knowing CLI commands — the dashboard cannot feed its own factory.
+
+**Fix:** Two entrances to the same backlog: (1) an "Add feature" composer (title + description) on the Factory/Tasks empty states that writes to the features queue; (2) chat as an injection path — the project-scoped agent can create the same entries and answers with a card linking to the created task. From a task, "Discuss in chat" opens the project chat with that task as context. Depends on project-scoped chat (previous entry).
+
+**Tests to add:**
+- Composer submit creates a queue entry visible in the Factory tab without a reload.
+- Chat-injected feature lands in the same queue as the composer path.
+
+---
+
+## Flow editor: graph loads cut off, Form view cannot edit nested steps
+
+**Failure scenario:** The Graph tab renders the flow scrolled so the first node is clipped at the canvas top; there is no fit-to-view, zoom, or minimap. The node editor labels steps with opaque paths ("STEP 2.3.1.1") and gives no ancestry context. The Form tab shows "5 nested steps — edit the body from the Graph tab" — for flows like `factory` that are mostly nested, Form view is unusable. Save is global with no dirty indicator.
+
+**Fix:** Fit-to-view on load plus zoom/minimap controls. Breadcrumb of the node's ancestry (`factory › loop tasks › retry_until › coder`) in the editor panel. Recursive rendering of nested steps in Form view. Dirty-state indicator on Save.
+
+**Tests to add:**
+- Graph mounts with the full flow visible in the viewport.
+- Form view renders and edits a step nested two levels deep.
+- Editing any field marks the editor dirty until saved.
+
+---
+
+## Overview "all clear" contradicts run history; spend disagrees with project view
+
+**Failure scenario:** Overview shows "Needs attention: 0 / all clear" and "Spend (total) $0.00" while the prm project page shows 6 errored runs and `$10.48 spend`. The dashboard's summary answers are wrong on both counts.
+
+**Fix:** Include recent failed runs in the needs-attention feed. Compute overview spend from the same source as the project page.
+
+**Tests to add:**
+- A project with errored runs yields a non-empty needs-attention list.
+- Overview spend equals the sum of project spends for the same fixture.
+
+---
+
+## Live events panel permanently stuck in "connecting…"
+
+**Failure scenario:** The Live events panel on the project page shows "connecting…" indefinitely (observed across a whole session) with "No events yet." — the SSE/WebSocket either never connects or never reports failure, so the operator cannot tell "no events" from "broken feed".
+
+**Fix:** Diagnose the live-events transport (`components/console/live-events.tsx`); on failure show an explicit disconnected state with retry, and only show "connecting…" transiently.
+
+**Tests to add:**
+- Failed event-source connection renders a disconnected/retry state, not perpetual "connecting…".
+
+---
+
+## `test_supervise_starts_queued_runs_in_fifo_order` is flaky in the full suite
+
+**Failure scenario:** `test/run_queue/test_run_queue_drain.py::test_supervise_starts_queued_runs_in_fifo_order` intermittently fails (~1 in 5 full-suite runs) on a clean checkout of `4502e20`, while passing 100% of the time when its module runs in isolation — a test-ordering/shared-state interaction, likely the same async-timing family as the other run_queue entries above.
+
+**Fix:** Reproduce with `pytest -p randomly` seeds (or run the full suite in a loop) to find the interfering test; isolate whatever shared state leaks between modules (event loop, executor fake, SQLite pool). Do not mark it `flaky`/retry — root-cause it.
+
+**Tests to add:**
+- The existing test made deterministic (or the leaking fixture fixed) so 20 consecutive full-suite runs pass.
